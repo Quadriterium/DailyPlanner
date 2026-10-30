@@ -1,16 +1,16 @@
 import { useState } from 'react';
-import { ArrowUpRight, Check, Leaf, Search, Trash2 } from 'lucide-react';
+import { ArrowUpRight, Check, Leaf, Pencil, Search, Shuffle, Sparkles, Trash2 } from 'lucide-react';
 import {
   dishDetails, formatDate, normalizedName, seasonalDishes, seasonForDate, seasonLabels,
   type Analysis, type Dish, type Meal, type Slot,
 } from '../shared/model';
 import { EmptyState, Modal } from './components';
-import { errorMessage, save } from './store';
+import { errorMessage, fillMeal, save } from './store';
 import type { Draft } from './repository';
 import { newId } from './id';
 
-export function MealEditor({ date, slot, meal, today, dishes, analyses, onClose, onSaved }: {
-  date: string; slot: Slot; meal?: Meal; today: string; dishes: Dish[]; analyses: Analysis[];
+export function MealEditor({ date, slot, start, meal, today, dishes, analyses, onClose, onSaved }: {
+  date: string; slot: Slot; start: string; meal?: Meal; today: string; dishes: Dish[]; analyses: Analysis[];
   onClose: () => void; onSaved: () => void;
 }) {
   const [text, setText] = useState(meal?.text ?? '');
@@ -18,8 +18,15 @@ export function MealEditor({ date, slot, meal, today, dishes, analyses, onClose,
   const [allSeasons, setAllSeasons] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(!meal?.text);
+  const [filling, setFilling] = useState<'ai' | 'random' | null>(null);
   const season = seasonForDate(date);
   const analysisMap = new Map(analyses.map(analysis => [analysis.dishId, analysis]));
+  const currentDish = dishes.find(dish => dish.id === meal?.dishId);
+  const currentAnalysis = currentDish ? analysisMap.get(currentDish.id) : undefined;
+  const currentDetails = currentDish ? dishDetails(currentDish, currentAnalysis) : undefined;
+  const analysisError = !currentDish?.details && currentAnalysis?.analysisKey === currentDish?.analysisKey
+    ? currentAnalysis?.error : null;
   const available = dishes.filter(dish => !dish.archived);
   const seasonal = seasonalDishes(available, analyses, date);
   const suggestions = (allSeasons ? available : seasonal)
@@ -57,8 +64,51 @@ export function MealEditor({ date, slot, meal, today, dishes, analyses, onClose,
     }
   }
 
-  return <Modal title="Qu’est-ce qu’on mange ?" onClose={onClose}>
+  async function replace(mode: 'ai' | 'random') {
+    if (busy) return;
+    setBusy(true);
+    setFilling(mode);
+    setError(null);
+    try {
+      await fillMeal(date, slot, start, mode, meal);
+      onSaved();
+      onClose();
+    } catch (cause) {
+      setError(errorMessage(cause));
+      setBusy(false);
+      setFilling(null);
+    }
+  }
+
+  return <Modal title={editing ? 'Qu’est-ce qu’on mange ?' : 'Votre repas'} onClose={onClose}>
     <p className="modal-subtitle">{formatDate(date, { weekday: 'long', day: 'numeric', month: 'long' })} · {slot === 'lunch' ? 'Midi' : 'Soir'}</p>
+    {!editing ? <>
+      <h3 className="meal-detail-name">{meal?.text}</h3>
+      <div className="meal-detail-actions" aria-busy={busy}>
+        <button className="secondary-button" disabled={busy} onClick={() => setEditing(true)}><Pencil size={17} />Modifier le repas</button>
+        <button className="text-button danger" disabled={busy} onClick={() => void commit('')}><Trash2 size={16} />Vider</button>
+        <button className="secondary-button" disabled={busy} onClick={() => void replace('random')}><Shuffle size={17} />{filling === 'random' ? 'Recherche…' : 'Choisir au hasard'}</button>
+        <button className="secondary-button" disabled={busy} onClick={() => void replace('ai')}><Sparkles size={17} />{filling === 'ai' ? 'Proposition en cours…' : 'Demander une proposition à l’IA'}</button>
+      </div>
+      <p className="field-hint">Le hasard pioche dans le carnet de saison. Remplacer ou vider ce créneau conserve la fiche dans le carnet.</p>
+      {error && <p className="inline-error" role="alert">{error}</p>}
+      <section className="meal-recipe" aria-label="Recette du repas">
+        <h3>La recette</h3>
+        {currentDetails && currentDetails.name !== meal?.text && <p className="field-hint">Fiche du carnet : {currentDetails.name}</p>}
+        {currentDetails && currentDetails.ingredients.length > 0 && <>
+          <h4>Ingrédients principaux</h4>
+          <ul>{currentDetails.ingredients.map((ingredient, index) => <li key={index}>{ingredient}</li>)}</ul>
+        </>}
+        {currentDetails?.recipe ? <p className="recipe-text">{currentDetails.recipe}</p>
+          : <p className="field-hint">{analysisError
+            ? 'La recette n’a pas pu être enrichie. Vous pouvez relancer l’IA depuis le carnet.'
+            : currentDish && !currentDish.details
+              ? 'La recette n’est pas encore disponible. L’enrichissement se fait en arrière-plan après synchronisation.'
+              : 'Aucune recette disponible pour ce repas.'}</p>}
+        {analysisError && <p className="inline-error" role="alert">{analysisError}</p>}
+        <p className="field-hint">Les ingrédients et la recette sont indicatifs. Vérifiez la composition réelle et la cuisson ; ils ne garantissent pas l’absence d’allergènes.</p>
+      </section>
+    </> : <>
     <form onSubmit={event => { event.preventDefault(); if (text.trim()) void commit(text); }}>
       <label className="field-label" htmlFor="meal-name">Votre idée du jour</label>
       <textarea id="meal-name" placeholder="Par exemple : poulet, frites et salade…" value={text} maxLength={240} rows={2}
@@ -67,9 +117,16 @@ export function MealEditor({ date, slot, meal, today, dishes, analyses, onClose,
       {error && <p className="inline-error" role="alert">{error}</p>}
       <div className="editor-actions">
         {meal?.text && <button className="text-button danger" type="button" disabled={busy} onClick={() => void commit('')}><Trash2 size={16} />Vider</button>}
-        <button className="primary-button" disabled={busy || !text.trim()}><Check size={17} />{busy ? 'Enregistrement…' : 'Garder ce repas'}</button>
+        <button className="primary-button" disabled={busy || !text.trim()}><Check size={17} />{busy && !filling ? 'Enregistrement…' : 'Garder ce repas'}</button>
       </div>
     </form>
+    {!meal?.text && <>
+      <div className="meal-detail-actions" aria-busy={Boolean(filling)}>
+        <button className="secondary-button" type="button" disabled={busy} onClick={() => void replace('ai')}><Sparkles size={17} />{filling === 'ai' ? 'Proposition en cours…' : 'Générer avec l’IA'}</button>
+        <button className="secondary-button" type="button" disabled={busy} onClick={() => void replace('random')}><Shuffle size={17} />{filling === 'random' ? 'Recherche…' : 'Choisir au hasard'}</button>
+      </div>
+      <p className="field-hint">L’IA propose un repas de saison ; le hasard pioche dans le carnet de saison.</p>
+    </>}
     <div className="section-divider"><span>ou piocher dans le carnet</span><Leaf size={15} /></div>
     <div className="filter-tabs" aria-label="Saison des suggestions">
       <button aria-pressed={!allSeasons} onClick={() => setAllSeasons(false)}>De saison <span>{seasonal.length}</span></button>
@@ -87,5 +144,6 @@ export function MealEditor({ date, slot, meal, today, dishes, analyses, onClose,
           : 'Ajoutez votre premier repas ci-dessus. Il vous attendra ici la prochaine fois.'}
       </EmptyState>}
     </div>
+    </>}
   </Modal>;
 }

@@ -20,8 +20,8 @@ export const details: DishDetails = {
 };
 export const capabilities: Capabilities = {
   aiConfigured: false, allowedModels: ['gpt-6-luna', 'gpt-6-sol', 'gpt-5.6-luna', 'gpt-5.6-terra'],
-  dailyLimit: 20, monthlyLimit: 200, callsToday: 0, callsThisMonth: 0, inputTokens: 0, outputTokens: 0,
+  callsToday: 0, callsThisMonth: 0, inputTokens: 0, outputTokens: 0,
 };
 export function snapshot(records: RecordData[] = []): SyncResponse {
-  return { records, analyses: [], serverTime: Date.now(), capabilities };
+  return { resetId: null, records, analyses: [], serverTime: Date.now(), capabilities };
 }

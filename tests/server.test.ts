@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { buildApp } from '../server/app';
 import { readConfig } from '../server/config';
 import { Store } from '../server/database';
-import { addDays, parisDate, seasonForDate, syncResponseSchema } from '../shared/model';
+import { addDays, defaultHousehold, parisDate, seasonForDate, syncResponseSchema } from '../shared/model';
 import { details, dish, meal } from './fixtures';
 
 const config = readConfig({ DATABASE_PATH: ':memory:', OPENAI_API_KEY: 'test-key-not-real' });
@@ -56,10 +56,26 @@ describe('API et stockage partagé', () => {
     expect(body.model).toBe('gpt-6-sol');
     expect(JSON.parse(body.input)).toEqual({
       saison: seasonForDate(date),
+      foyer: defaultHousehold,
       repasChoisis: ['Choix -15', recipe.name, recipe.details!.name, 'Choix 15'],
       platsDejaCrees: expect.arrayContaining([recipe.name, recipe.details!.name, archived.name]),
     });
     expect(JSON.parse(body.input).platsDejaCrees).toHaveLength(3);
+  });
+  it('partage la composition du foyer et la transmet à la génération', async () => {
+    await app.close();
+    const household = { adults: 1, teenagers: 3, children: 0 };
+    const aiRequest = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text',
+        text: JSON.stringify({ ...details, name: 'Nouvelle idée', seasons: ['autumn'] }),
+      }] }], usage: { input_tokens: 123, output_tokens: 45 },
+    })));
+    store.merge([{ ...store.settings(), household, modifiedAt: Date.now(), mutationId: randomUUID() }]);
+    app = await buildApp(store, config, { logger: false, aiRequest });
+    const response = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30' } });
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(String(aiRequest.mock.calls[0][1]?.body));
+    expect(JSON.parse(body.input).foyer).toEqual(household);
   });
   it('refuse un doublon proposé par l’IA sans sauvegarder ni relancer automatiquement', async () => {
     await app.close();
@@ -79,7 +95,7 @@ describe('API et stockage partagé', () => {
     expect(store.capabilities().callsToday).toBe(1);
     expect(aiRequest).toHaveBeenCalledOnce();
   });
-  it('génère un repas avec les quotas partagés et sans créer de seconde analyse', async () => {
+  it('génère un repas avec les compteurs partagés et sans créer de seconde analyse', async () => {
     await app.close();
     const aiRequest = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({
       status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ ...details, seasons: ['autumn'] }) }] }],
@@ -106,32 +122,54 @@ describe('API et stockage partagé', () => {
     }
     expect(store.capabilities().callsToday).toBe(0);
   });
-  it('compte les échecs de génération et empêche le worker de dépasser le quota commun', async () => {
+  it('génère au-delà des anciens plafonds sans limite par minute, même avec les anciennes variables', async () => {
     await app.close();
-    const limited = { ...config, AI_DAILY_LIMIT: 1 };
     store.close();
-    store = new Store(limited);
+    const legacyConfig = readConfig({
+      DATABASE_PATH: ':memory:', OPENAI_API_KEY: 'test-only',
+      AI_DAILY_LIMIT: '1', AI_MONTHLY_LIMIT: '1',
+    });
+    store = new Store(legacyConfig);
+    store.db.prepare('INSERT INTO ai_usage (day, calls) VALUES (?, 200)').run(parisDate());
+    const generated = { ...details, seasons: ['autumn'] };
+    const aiRequest = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({
+      status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(generated) }] }],
+      usage: { input_tokens: 123, output_tokens: 45 },
+    })));
+    app = await buildApp(store, legacyConfig, { logger: false, aiRequest });
+    for (let i = 0; i < 11; i++) {
+      const response = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30' } });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json().details).toEqual(generated);
+    }
+    expect(aiRequest).toHaveBeenCalledTimes(11);
+    const response = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [] } });
+    const { capabilities } = syncResponseSchema.parse(response.json());
+    expect(capabilities).toMatchObject({ callsToday: 211, callsThisMonth: 211, inputTokens: 1353, outputTokens: 495 });
+    expect(response.json().capabilities).not.toHaveProperty('dailyLimit');
+    expect(response.json().capabilities).not.toHaveProperty('monthlyLimit');
+  });
+  it('compte les échecs de génération sans bloquer les appels suivants ni le worker', async () => {
+    await app.close();
     const aiRequest = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 503 }));
-    app = await buildApp(store, limited, { logger: false, aiRequest });
+    app = await buildApp(store, config, { logger: false, aiRequest });
     const generate = () => app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30' } });
     const failed = await generate();
     expect(failed.statusCode).toBe(502);
     expect(failed.json().error).toContain('503');
-    expect((await generate()).json().error).toContain('Quota');
+    expect((await generate()).statusCode).toBe(502);
     store.merge([dish()]);
-    expect(store.claimAnalysis()).toBeUndefined();
-    expect(aiRequest).toHaveBeenCalledOnce();
-    expect(store.capabilities().callsToday).toBe(1);
+    expect(store.claimAnalysis()).toBeDefined();
+    expect(aiRequest).toHaveBeenCalledTimes(2);
+    expect(store.capabilities().callsToday).toBe(3);
   });
-  it('explique une clé absente, un modèle retiré ou un quota mensuel atteint', () => {
+  it('explique une clé absente ou un modèle retiré', () => {
     for (const [overrides, message] of [
       [{ OPENAI_API_KEY: '' }, 'clé OpenAI'],
       [{ allowedModels: [] }, 'modèle IA autorisé'],
-      [{ AI_MONTHLY_LIMIT: 1 }, 'Quota'],
     ] as const) {
       const isolated = new Store({ ...config, ...overrides, allowedModels: 'allowedModels' in overrides ? [] : config.allowedModels });
       try {
-        if ('AI_MONTHLY_LIMIT' in overrides) isolated.reserveGeneration();
         expect(() => isolated.reserveGeneration()).toThrow(message);
       } finally { isolated.close(); }
     }
@@ -207,6 +245,29 @@ describe('API et stockage partagé', () => {
       expect(store.records()).toHaveLength(1);
     }
   });
+  it('réinitialise les repas et ignore ceux des appareils qui ne l’ont pas encore appliquée, sans bloquer les paramètres', async () => {
+    const recipe = dish();
+    store.merge([recipe, meal({ dishId: recipe.id })]);
+    const model = store.settings().model;
+    const resetId = store.reset();
+    expect(store.records().map(record => record.type)).toEqual(['settings']);
+    expect(store.analyses()).toEqual([]);
+    expect(store.settings().model).toBe(model);
+    for (const payload of [{ mutations: [recipe] }, { mutations: [recipe], resetId: null }, { mutations: [recipe], resetId: randomUUID() }]) {
+      const response = await app.inject({ method: 'POST', url: '/api/sync', payload });
+      expect(response.statusCode).toBe(200);
+      expect(syncResponseSchema.parse(response.json()).resetId).toBe(resetId);
+      expect(store.records()).toHaveLength(1);
+    }
+    const household = { adults: 3, teenagers: 0, children: 1 };
+    await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [
+      meal({ text: 'Ancien' }), { ...store.settings(), household, modifiedAt: Date.now(), mutationId: randomUUID() },
+    ] } });
+    expect(store.records().map(record => record.type)).toEqual(['settings']);
+    expect(store.settings().household).toEqual(household);
+    const accepted = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [dish()], resetId } });
+    expect(accepted.json().records).toHaveLength(2);
+  });
   it('rejette les écritures depuis un site tiers', async () => {
     const response = await app.inject({
       method: 'POST', url: '/api/sync', payload: { mutations: [dish()] },
@@ -225,7 +286,7 @@ describe('API et stockage partagé', () => {
     expect(limited.json().error).toContain('Trop de requêtes');
     expect((await app.inject('/api/health')).statusCode).toBe(200);
   });
-  it('conserve les menus, les tâches et les quotas après un redémarrage', () => {
+  it('conserve les menus, les tâches et les compteurs après un redémarrage', () => {
     const folder = mkdtempSync(join(tmpdir(), 'a-table-database-'));
     const persistentConfig = { ...config, DATABASE_PATH: join(folder, 'planner.sqlite') };
     const recipe = dish();

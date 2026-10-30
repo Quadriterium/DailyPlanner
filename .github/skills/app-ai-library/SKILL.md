@@ -1,6 +1,6 @@
 ---
 name: app-ai-library
-description: "Comprendre le carnet de repas et l'enrichissement OpenAI de À table ! : génération de repas de saison, correction différée du nom, saisons, ingrédients, recette, worker asynchrone, analysisKey, corrections manuelles, archivage, erreurs, modèles autorisés, quotas et budget API."
+description: "Comprendre le carnet de repas et l'enrichissement OpenAI de À table ! : génération de repas de saison, correction différée du nom, saisons, ingrédients, recette, worker asynchrone, analysisKey, corrections manuelles, archivage, erreurs, modèles autorisés, compteurs et budget API."
 ---
 
 # Bibliothèque de repas et analyse IA
@@ -53,8 +53,8 @@ Une ancienne réponse ne doit jamais écraser cette nouvelle demande.
   une vraie variante d'un plat ancien non choisi reste possible.
 - Un doublon de nom (casse et espaces normalisés) est refusé explicitement,
   sans relance automatique. La proximité sémantique dépend du modèle.
-- `reserveGeneration()` vérifie clé, modèle autorisé et quotas partagés avec
-  le worker, puis comptabilise la tentative avant l'appel (échecs compris).
+- `reserveGeneration()` vérifie la clé et le modèle autorisé, puis comptabilise
+  la tentative avant l'appel (échecs compris), dans les mêmes compteurs que le worker.
 - Le client valide la réponse et enregistre localement le créneau et la nouvelle
   fiche complète dans une transaction. Les détails générés occupent
   `dish.details` : pas de deuxième enrichissement automatique.
@@ -74,7 +74,7 @@ Une ancienne réponse ne doit jamais écraser cette nouvelle demande.
 ## Exécution et budget
 
 - Worker déclenché au démarrage puis toutes les 5 secondes ; une analyse à la fois.
-- Sans clé, modèle autorisé, quota disponible ou fiche admissible, pas d'appel.
+- Sans clé, modèle autorisé ou fiche admissible, pas d'appel.
   Les fiches archivées et celles possédant des détails manuels sont ignorées.
 - API Responses : uniquement le nom pour l'analyse ; saison, noms du carnet et
   noms des repas choisis sur la période pour la génération,
@@ -82,9 +82,10 @@ Une ancienne réponse ne doit jamais écraser cette nouvelle demande.
   strict, validation Zod, 1 400 tokens de sortie maximum, timeout 45 secondes.
 - Ne jamais afficher/lire une clé dans les réponses, logs ou fichiers client.
   `store: false` ne garantit pas l'absence de toute conservation par le fournisseur.
-- Les quotas journaliers/mensuels utilisent `Europe/Paris` et persistent en SQLite.
-  Ils limitent les tentatives, pas un montant garanti en euros.
-- Un échec compte dans le quota et n'est pas relancé automatiquement.
+- Les compteurs journaliers/mensuels utilisent `Europe/Paris` et persistent en SQLite.
+  Aucun quota d'appels ni plafond de dépenses n'est imposé par l'application ;
+  la génération n'a pas de limite par minute. Les restrictions OpenAI restent applicables.
+- Un échec compte comme tentative et n'est pas relancé automatiquement.
   Une tâche interrompue au redémarrage devient une erreur à relancer explicitement.
 - Les tokens affichés concernent les réponses comptabilisées avec succès ; ce
   compteur n'est pas une facture exhaustive.
@@ -98,5 +99,5 @@ npm test -- tests/ai.test.ts tests/server.test.ts tests/model.test.ts
 ```
 
 Les [tests IA](../../../tests/ai.test.ts) simulent le fournisseur, sans clé ni coût.
-Vérifier succès, refus, JSON invalide, quota, modèle retiré et réponse obsolète.
+Vérifier succès, refus, JSON invalide, appels au-delà des anciens plafonds, modèle retiré et réponse obsolète.
 Ne pas déclencher un appel payant pour une simple explication ou un test unitaire.

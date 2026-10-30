@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import {
   dishDetails, generateMealResponseSchema, normalizedName, randomMealCandidates, seasonForDate, syncResponseSchema,
-  type DishDetails, type Slot,
+  type DishDetails, type Meal, type Slot,
 } from '../shared/model';
 import { createRepository, type Draft, type Snapshot } from './repository';
 import { newId } from './id';
@@ -70,11 +70,15 @@ export async function save(drafts: Draft[]) {
   synchronizeInBackground();
 }
 
-export async function fillMeal(date: string, slot: Slot, start: string, mode: 'ai' | 'random') {
+export async function fillMeal(date: string, slot: Slot, start: string, mode: 'ai' | 'random', replacing?: Meal) {
   await refresh();
   const id = `${date}:${slot}`;
   const previous = state.records.find(record => record.type === 'meal' && record.id === id);
-  if (previous?.type === 'meal' && previous.text.trim()) throw new Error('Ce créneau contient déjà un repas.');
+  if (replacing) {
+    if (replacing.id !== id || previous?.mutationId !== replacing.mutationId) {
+      throw new Error('Ce créneau a été modifié. Vérifiez le planning avant de remplacer le repas.');
+    }
+  } else if (previous?.type === 'meal' && previous.text.trim()) throw new Error('Ce créneau contient déjà un repas.');
   let generated: DishDetails | undefined;
   if (mode === 'ai') {
     await synchronize();
@@ -135,11 +139,12 @@ export function synchronize(): Promise<void> {
       await initialize();
       do {
         const mutations = await db().pending();
+        const resetId = await db().resetId();
         let response: Response;
         try {
           response = await fetch('/api/sync', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mutations }), cache: 'no-store', signal: AbortSignal.timeout(8000),
+            body: JSON.stringify({ mutations, resetId }), cache: 'no-store', signal: AbortSignal.timeout(8000),
           });
         } catch (error) {
           publish({ connection: 'offline' });

@@ -6,6 +6,15 @@ export const seasonLabels: Record<Season, string> = {
 };
 export const seasonSchema = z.enum(seasons);
 export type Season = z.infer<typeof seasonSchema>;
+export const defaultHousehold = { adults: 2, teenagers: 2, children: 2 };
+export const householdSchema = z.object({
+  adults: z.number().int().min(0).max(20),
+  teenagers: z.number().int().min(0).max(20),
+  children: z.number().int().min(0).max(20),
+}).strict().refine(household => household.adults + household.teenagers + household.children > 0, {
+  message: 'Le foyer doit contenir au moins une personne.',
+});
+export type Household = z.infer<typeof householdSchema>;
 const version = {
   modifiedAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   mutationId: z.string().uuid(),
@@ -44,6 +53,7 @@ export const settingsSchema = z.object({
   type: z.literal('settings'),
   id: z.literal('global'),
   model: z.string().trim().min(1).max(100),
+  household: householdSchema.default(defaultHousehold),
   ...version,
 }).strict();
 export const recordSchema = z.discriminatedUnion('type', [dishSchema, mealSchema, settingsSchema])
@@ -71,22 +81,30 @@ export type Analysis = z.infer<typeof analysisSchema>;
 export const capabilitiesSchema = z.object({
   aiConfigured: z.boolean(),
   allowedModels: z.array(z.string()),
-  dailyLimit: z.number(),
-  monthlyLimit: z.number(),
   callsToday: z.number(),
   callsThisMonth: z.number(),
   inputTokens: z.number(),
   outputTokens: z.number(),
 });
 export type Capabilities = z.infer<typeof capabilitiesSchema>;
-export const syncRequestSchema = z.object({ mutations: z.array(recordSchema).max(100) }).strict();
+export const syncRequestSchema = z.object({
+  mutations: z.array(recordSchema).max(100),
+  resetId: z.string().uuid().nullable().optional(),
+}).strict();
 export const syncResponseSchema = z.object({
+  // Changed by the server to force every client to discard its local copy.
+  resetId: z.string().uuid().nullable(),
   records: z.array(recordSchema),
   analyses: z.array(analysisSchema),
   serverTime: z.number(),
   capabilities: capabilitiesSchema,
 });
 export type SyncResponse = z.infer<typeof syncResponseSchema>;
+
+/** Records removed by a server-forced reset: planned meals and library dishes, never settings. */
+export function isResetScoped(record: Pick<RecordData, 'type'>): boolean {
+  return record.type === 'meal' || record.type === 'dish';
+}
 
 export function recordKey(record: Pick<RecordData, 'type' | 'id'>): string {
   return `${record.type}:${record.id}`;

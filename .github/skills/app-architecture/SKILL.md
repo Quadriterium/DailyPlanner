@@ -31,10 +31,10 @@ modifier la configuration ou appeler OpenAI sans nécessité.
 | [App](../../../src/App.tsx) | Navigation, synchronisations automatiques, quadruple tap, installation et notifications |
 | [Planner](../../../src/Planner.tsx) | Grille chronologique glissante, midi/soir, défilement vertical |
 | [Library](../../../src/Library.tsx) | Consultation, correction manuelle, archivage et relance IA |
-| [Settings](../../../src/Settings.tsx) | Modèle autorisé, quotas, connexion et état PWA |
+| [Settings](../../../src/Settings.tsx) | Modèle autorisé, compteurs IA, connexion et état PWA |
 | [styles](../../../src/styles.css) | Interface responsive crème, terracotta et sauge |
 | [service worker](../../../pwa/service-worker.js) | Cache de l'application, jamais de l'API |
-| [configuration serveur](../../../server/config.ts) | Réseau, origine autorisée, base, modèles et quotas |
+| [configuration serveur](../../../server/config.ts) | Réseau, origine autorisée, base, clé et modèles IA |
 
 ## Modèle mental
 

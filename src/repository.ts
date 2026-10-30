@@ -1,13 +1,13 @@
 import { openDB, type DBSchema } from 'idb';
 import { newId } from './id';
 import {
-  compareVersions, recordKey, recordSchema,
+  compareVersions, isResetScoped, recordKey, recordSchema,
   type Analysis, type Capabilities, type RecordData, type SyncResponse,
 } from '../shared/model';
 
 type DraftOf<T> = T extends RecordData ? Omit<T, 'modifiedAt' | 'mutationId'> : never;
 export type Draft = DraftOf<RecordData>;
-interface Metadata { lastSync: number | null; capabilities: Capabilities | null }
+interface Metadata { lastSync: number | null; capabilities: Capabilities | null; resetId?: string | null }
 interface PlannerDatabase extends DBSchema {
   records: { key: string; value: RecordData };
   outbox: { key: string; value: RecordData };
@@ -65,9 +65,22 @@ export function createRepository(name = 'a-table-v1') {
     async pending(): Promise<RecordData[]> {
       return (await database).getAll('outbox', undefined, 100);
     },
+    async resetId(): Promise<string | null> {
+      return (await (await database).get('meta', 'sync'))?.resetId ?? null;
+    },
     async merge(response: SyncResponse) {
       const db = await database;
       const tx = db.transaction(['records', 'outbox', 'analyses', 'meta'], 'readwrite');
+      const metadata = await tx.objectStore('meta').get('sync');
+      if ((metadata?.resetId ?? null) !== response.resetId) {
+        // Server-forced reset: local meals and dishes, including unsent ones, are discarded; settings are kept.
+        for (const store of ['records', 'outbox'] as const) {
+          for (const record of await tx.objectStore(store).getAll()) {
+            if (isResetScoped(record)) await tx.objectStore(store).delete(recordKey(record));
+          }
+        }
+        await tx.objectStore('analyses').clear();
+      }
       for (const remote of response.records) {
         const key = recordKey(remote);
         const current = await tx.objectStore('records').get(key);
@@ -86,7 +99,7 @@ export function createRepository(name = 'a-table-v1') {
           await tx.objectStore('analyses').put(analysis, analysis.dishId);
         }
       }
-      await tx.objectStore('meta').put({ lastSync: Date.now(), capabilities: response.capabilities }, 'sync');
+      await tx.objectStore('meta').put({ lastSync: Date.now(), capabilities: response.capabilities, resetId: response.resetId }, 'sync');
       await tx.done;
     },
     async close() { (await database).close(); },

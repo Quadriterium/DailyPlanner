@@ -19,7 +19,7 @@ export function App() {
   const state = usePlanner();
   const [tab, setTab] = useState<'planner' | 'library' | 'settings'>('planner');
   const [today, setToday] = useState(parisDate());
-  const [selected, setSelected] = useState<{ date: string; slot: Slot } | null>(null);
+  const [selected, setSelected] = useState<{ date: string; slot: Slot; start: string } | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [toast, setToast] = useState(false);
   const [, updatePwa] = useState(0);
@@ -126,7 +126,7 @@ export function App() {
         {state.error ? <><CircleAlert /><h2>Impossible d’ouvrir le stockage local</h2><p>{state.error}</p><p>Vérifiez les permissions de stockage et l’espace disponible. Aucune saisie ne sera acceptée tant qu’elle ne peut pas être sauvegardée.</p></> : <><Leaf className="spinning" /><p>On met la table…</p></>}
       </div> : <>
         {state.error && <div className="connection-banner" role="status"><CloudOff size={17} /><span>{state.error}</span></div>}
-        {tab === 'planner' && <Planner key={today} today={today} meals={meals} onSelect={(date, slot) => setSelected({ date, slot })} onSaved={() => setToast(true)} />}
+        {tab === 'planner' && <Planner key={today} today={today} meals={meals} onSelect={(date, slot, start) => setSelected({ date, slot, start })} onSaved={() => setToast(true)} />}
         {tab === 'library' && <Library dishes={dishes} analyses={state.analyses} online={state.connection === 'online' && Boolean(state.capabilities?.aiConfigured)} onSaved={() => setToast(true)} />}
         {tab === 'settings' && <Settings settings={settings} capabilities={state.capabilities} online={state.connection === 'online'}
           lastSync={state.lastSync} pending={state.pending} syncing={state.syncing} onSync={() => void forceSync()} onInstall={() => void install()} />}
