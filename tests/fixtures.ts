@@ -19,7 +19,7 @@ export const details: DishDetails = {
   recipe: '1. Préparez les ingrédients.\n2. Faites cuire complètement le poulet et les pommes de terre.',
 };
 export const capabilities: Capabilities = {
-  aiConfigured: false, allowedModels: ['gpt-6-luna', 'gpt-5.6-luna'],
+  aiConfigured: false, allowedModels: ['gpt-6-luna', 'gpt-6-sol', 'gpt-5.6-luna', 'gpt-5.6-terra'],
   dailyLimit: 20, monthlyLimit: 200, callsToday: 0, callsThisMonth: 0, inputTokens: 0, outputTokens: 0,
 };
 export function snapshot(records: RecordData[] = []): SyncResponse {

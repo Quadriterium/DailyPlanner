@@ -1,15 +1,13 @@
 import { useState } from 'react';
 import { ArrowUpRight, Check, Leaf, Search, Trash2 } from 'lucide-react';
 import {
-  dishDetails, formatDate, seasonForDate, seasonLabels,
+  dishDetails, formatDate, normalizedName, seasonalDishes, seasonForDate, seasonLabels,
   type Analysis, type Dish, type Meal, type Slot,
 } from '../shared/model';
 import { EmptyState, Modal } from './components';
 import { errorMessage, save } from './store';
 import type { Draft } from './repository';
 import { newId } from './id';
-
-function normalizedName(value: string) { return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('fr-FR'); }
 
 export function MealEditor({ date, slot, meal, today, dishes, analyses, onClose, onSaved }: {
   date: string; slot: Slot; meal?: Meal; today: string; dishes: Dish[]; analyses: Analysis[];
@@ -23,10 +21,7 @@ export function MealEditor({ date, slot, meal, today, dishes, analyses, onClose,
   const season = seasonForDate(date);
   const analysisMap = new Map(analyses.map(analysis => [analysis.dishId, analysis]));
   const available = dishes.filter(dish => !dish.archived);
-  const seasonal = available.filter(dish => {
-    const details = dishDetails(dish, analysisMap.get(dish.id));
-    return details.seasons.includes(season) || details.seasons.includes('all');
-  });
+  const seasonal = seasonalDishes(available, analyses, date);
   const suggestions = (allSeasons ? available : seasonal)
     .map(dish => ({ dish, details: dishDetails(dish, analysisMap.get(dish.id)) }))
     .filter(({ details }) => normalizedName(details.name).includes(normalizedName(query)))

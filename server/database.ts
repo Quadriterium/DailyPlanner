@@ -133,8 +133,21 @@ export class Store {
         this.db.exec('ROLLBACK');
         throw error;
       }
+
       return { dish, day };
     }
+  }
+
+  reserveGeneration(): string {
+    const limits = this.capabilities();
+    if (!limits.aiConfigured) throw new Error('La génération IA nécessite une clé OpenAI configurée sur le serveur.');
+    if (!this.config.allowedModels.includes(this.settings().model)) throw new Error('Choisissez un modèle IA autorisé dans les paramètres.');
+    if (limits.callsToday >= limits.dailyLimit || limits.callsThisMonth >= limits.monthlyLimit) {
+      throw new Error('Quota IA atteint. Réessayez après son renouvellement.');
+    }
+    const day = parisDate();
+    this.db.prepare('INSERT INTO ai_usage (day, calls) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET calls = calls + 1').run(day);
+    return day;
   }
 
   finishAnalysis(dish: Dish, details: DishDetails | null, error: string | null) {

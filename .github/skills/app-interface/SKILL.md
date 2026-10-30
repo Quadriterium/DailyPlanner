@@ -34,8 +34,13 @@ description: "Comprendre ou faire évoluer l'interface À table ! : planning mid
 
 - Une case ouvre un dialogue : texte libre en haut, liste de suggestions en bas,
   pas de combobox native.
-- Les suggestions viennent exclusivement des fiches non archivées créées par
-  les utilisateurs. Aucune génération de menus ni catalogue de démonstration.
+- Les suggestions viennent des fiches non archivées du carnet, sans catalogue
+  de démonstration. Une case vide propose aussi deux boutons à droite :
+  génération IA de saison et tirage au hasard dans le carnet de saison.
+- Ces boutons enregistrent directement via `fillMeal()` dans le store.
+  Le tirage évite si possible les noms et identifiants déjà prévus sur les
+  **sept jours affichés**, puis accepte une répétition faute d'alternative.
+  Le tirage reste local ; seule la génération nécessite le serveur.
 - Le filtre de saison correspond à la **date du créneau** ; `all` convient à
   toutes les saisons. « Tous les repas » ignore ce filtre.
 - Une nouvelle fiche reçoit provisoirement la saison de **création**.
@@ -61,6 +66,7 @@ description: "Comprendre ou faire évoluer l'interface À table ! : planning mid
 ## Vérification ciblée
 
 Lire les scénarios dans [les tests navigateur](../../../e2e/planner.spec.ts) et
+les [tests de choix rapide](../../../e2e/quick-meals.spec.ts), puis
 les formats dans [la configuration Playwright](../../../playwright.config.ts).
 Après une modification fonctionnelle :
 

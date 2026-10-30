@@ -1,6 +1,10 @@
 import { useSyncExternalStore } from 'react';
-import { syncResponseSchema } from '../shared/model';
+import {
+  dishDetails, generateMealResponseSchema, normalizedName, randomMealCandidates, seasonForDate, syncResponseSchema,
+  type DishDetails, type Slot,
+} from '../shared/model';
 import { createRepository, type Draft, type Snapshot } from './repository';
+import { newId } from './id';
 
 interface State extends Snapshot {
   loaded: boolean;
@@ -62,7 +66,61 @@ export async function save(drafts: Draft[]) {
     publish({ error: message });
     throw new Error(message, { cause: error });
   }
+
   synchronizeInBackground();
+}
+
+export async function fillMeal(date: string, slot: Slot, start: string, mode: 'ai' | 'random') {
+  await refresh();
+  const id = `${date}:${slot}`;
+  const previous = state.records.find(record => record.type === 'meal' && record.id === id);
+  if (previous?.type === 'meal' && previous.text.trim()) throw new Error('Ce créneau contient déjà un repas.');
+  let generated: DishDetails | undefined;
+  if (mode === 'ai') {
+    await synchronize();
+    const synced = state.records.find(record => record.type === 'meal' && record.id === id);
+    if (synced?.mutationId !== previous?.mutationId) {
+      throw new Error('Ce créneau a été modifié pendant la synchronisation. Vérifiez le planning avant de générer un repas.');
+    }
+    let response: Response;
+    try {
+      response = await fetch('/api/meals/generate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date }), cache: 'no-store', signal: AbortSignal.timeout(50_000),
+      });
+    } catch (error) {
+      throw new Error('Génération impossible : serveur inaccessible ou délai dépassé. Le créneau reste inchangé.', { cause: error });
+    }
+    const body: unknown = await response.json();
+    if (!response.ok) throw new Error(typeof body === 'object' && body !== null && 'error' in body && typeof body.error === 'string'
+      ? body.error : `Génération refusée (HTTP ${response.status}).`);
+    const result = generateMealResponseSchema.safeParse(body);
+    if (!result.success) throw new Error('Proposition IA invalide. Le créneau reste inchangé.');
+    generated = result.data.details;
+    await refresh();
+    const current = state.records.find(record => record.type === 'meal' && record.id === id);
+    if (current?.mutationId !== previous?.mutationId) {
+      throw new Error('Ce créneau a été modifié pendant la génération. Votre modification est conservée.');
+    }
+  }
+  const dishes = state.records.filter(record => record.type === 'dish');
+  const meals = state.records.filter(record => record.type === 'meal');
+  const candidates = randomMealCandidates(dishes, state.analyses, meals, date, start);
+  const selected = generated
+    ? dishes.find(dish => !dish.archived && (
+      normalizedName(dish.name) === normalizedName(generated.name) ||
+      normalizedName(dishDetails(dish, state.analyses.find(analysis => analysis.dishId === dish.id)).name) === normalizedName(generated.name)))
+    : candidates[Math.floor(Math.random() * candidates.length)];
+  const details = generated ?? (selected ? dishDetails(selected, state.analyses.find(analysis => analysis.dishId === selected.id)) : undefined);
+  if (!details) throw new Error('Aucun repas de saison dans le carnet. Ajoutez-en un ou utilisez la génération IA.');
+  const drafts: Draft[] = [];
+  const dishId = selected?.id ?? newId();
+  if (!selected && generated) drafts.push({
+    type: 'dish', id: dishId, name: generated.name, creationSeason: seasonForDate(date),
+    analysisKey: newId(), details: generated, archived: false,
+  });
+  drafts.push({ type: 'meal', id, date, slot, text: details.name, dishId });
+  await save(drafts);
 }
 
 export function synchronizeInBackground() {

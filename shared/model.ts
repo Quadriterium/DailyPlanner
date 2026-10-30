@@ -54,6 +54,8 @@ export const recordSchema = z.discriminatedUnion('type', [dishSchema, mealSchema
   });
 export type Dish = z.infer<typeof dishSchema>;
 export type Meal = z.infer<typeof mealSchema>;
+export const generateMealRequestSchema = z.object({ date: dateSchema }).strict();
+export const generateMealResponseSchema = z.object({ details: detailsSchema }).strict();
 export type Settings = z.infer<typeof settingsSchema>;
 export type RecordData = z.infer<typeof recordSchema>;
 export type Slot = Meal['slot'];
@@ -98,6 +100,30 @@ export function dishDetails(dish: Dish, analysis?: Analysis): DishDetails {
   if (dish.details) return dish.details;
   if (analysis?.analysisKey === dish.analysisKey && analysis.status === 'ready' && analysis.details) return analysis.details;
   return { name: dish.name, seasons: [dish.creationSeason], ingredients: [], recipe: '' };
+}
+
+export function normalizedName(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('fr-FR');
+}
+
+export function seasonalDishes(dishes: Dish[], analyses: Analysis[], date: string): Dish[] {
+  const analysisMap = new Map(analyses.map(analysis => [analysis.dishId, analysis]));
+  const season = seasonForDate(date);
+  return dishes.filter(dish => {
+    const details = dishDetails(dish, analysisMap.get(dish.id));
+    return !dish.archived && (details.seasons.includes(season) || details.seasons.includes('all'));
+  });
+}
+
+export function randomMealCandidates(dishes: Dish[], analyses: Analysis[], meals: Meal[], date: string, start: string): Dish[] {
+  const candidates = seasonalDishes(dishes, analyses, date);
+  const week = meals.filter(meal => meal.date >= start && meal.date <= addDays(start, 6) && meal.text.trim());
+  const ids = new Set(week.map(meal => meal.dishId));
+  const names = new Set(week.map(meal => normalizedName(meal.text)));
+  const analysisMap = new Map(analyses.map(analysis => [analysis.dishId, analysis]));
+  const unused = candidates.filter(dish => !ids.has(dish.id) && !names.has(normalizedName(dish.name)) &&
+    !names.has(normalizedName(dishDetails(dish, analysisMap.get(dish.id)).name)));
+  return unused.length ? unused : candidates;
 }
 
 export function parisDate(now = new Date()): string {

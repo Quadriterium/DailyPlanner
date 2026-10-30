@@ -6,7 +6,7 @@ const envSchema = z.object({
   DATABASE_PATH: z.string().default('./data/planner.sqlite'),
   OPENAI_API_KEY: z.string().default(''),
   OPENAI_MODEL: z.string().default('gpt-6-luna'),
-  OPENAI_ALLOWED_MODELS: z.string().default('gpt-6-luna,gpt-5.6-luna'),
+  OPENAI_ALLOWED_MODELS: z.string().default('gpt-6-luna,gpt-6-sol,gpt-5.6-luna,gpt-5.6-terra'),
   AI_DAILY_LIMIT: z.coerce.number().int().min(1).max(1000).default(20),
   AI_MONTHLY_LIMIT: z.coerce.number().int().min(1).max(10000).default(200),
   PUBLIC_ORIGIN: z.string().url().optional(),
