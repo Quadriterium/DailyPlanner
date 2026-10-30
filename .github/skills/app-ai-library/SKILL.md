@@ -76,8 +76,9 @@ Une ancienne réponse ne doit jamais écraser cette nouvelle demande.
 - Worker déclenché au démarrage puis toutes les 5 secondes ; une analyse à la fois.
 - Sans clé, modèle autorisé ou fiche admissible, pas d'appel.
   Les fiches archivées et celles possédant des détails manuels sont ignorées.
-- API Responses : uniquement le nom pour l'analyse ; saison, noms du carnet et
-  noms des repas choisis sur la période pour la génération,
+- API Responses : uniquement le nom, le foyer et le texte facultatif « à éviter »
+  (`settings.avoid`, clé `aEviter`, omise si vide) pour l'analyse ; en plus, saison,
+  noms du carnet et noms des repas choisis sur la période pour la génération,
   `store: false`, JSON structuré
   strict, validation Zod, 1 400 tokens de sortie maximum, timeout 45 secondes.
 - Ne jamais afficher/lire une clé dans les réponses, logs ou fichiers client.

@@ -13,14 +13,25 @@ export function Settings({ settings, capabilities, online, lastSync, pending, sy
   const [pendingHousehold, setPendingHousehold] = useState(false);
   const [modelSaved, setModelSaved] = useState(false);
   const [householdSaved, setHouseholdSaved] = useState(false);
+  const [avoidDraft, setAvoidDraft] = useState<string | null>(null);
+  const [pendingAvoid, setPendingAvoid] = useState(false);
+  const [avoidSaved, setAvoidSaved] = useState(false);
   const pwa = pwaStatus();
   const selectedModel = pendingModel ?? settings?.model;
+  const savedAvoid = settings?.avoid ?? '';
+  const avoidText = avoidDraft ?? savedAvoid;
+  function saveSettings(patch: Partial<Pick<AppSettings, 'model' | 'household' | 'avoid'>>) {
+    return save([{
+      type: 'settings', id: 'global', model: settings?.model ?? '', household: settings?.household ?? defaultHousehold,
+      avoid: savedAvoid, ...patch,
+    }]);
+  }
   async function changeModel(model: string) {
     setPendingModel(model);
     setError(null);
     setModelSaved(false);
     try {
-      await save([{ type: 'settings', id: 'global', model, household: settings?.household ?? defaultHousehold }]);
+      await saveSettings({ model });
       setModelSaved(true);
     } catch (cause) { setError(errorMessage(cause)); }
     finally { setPendingModel(null); }
@@ -36,10 +47,22 @@ export function Settings({ settings, capabilities, online, lastSync, pending, sy
     setError(null);
     setHouseholdSaved(false);
     try {
-      await save([{ type: 'settings', id: 'global', model: settings?.model ?? '', household: { ...household, [person]: count } }]);
+      await saveSettings({ household: { ...household, [person]: count } });
       setHouseholdSaved(true);
     } catch (cause) { setError(errorMessage(cause)); }
     finally { setPendingHousehold(false); }
+  }
+  async function saveAvoid() {
+    if (avoidDraft === null || avoidDraft.trim() === savedAvoid.trim()) { setAvoidDraft(null); return; }
+    setPendingAvoid(true);
+    setError(null);
+    setAvoidSaved(false);
+    try {
+      await saveSettings({ avoid: avoidDraft.trim() });
+      setAvoidDraft(null);
+      setAvoidSaved(true);
+    } catch (cause) { setError(errorMessage(cause)); }
+    finally { setPendingAvoid(false); }
   }
   return <section className="settings">
     <div className="section-heading"><div><p className="eyebrow">LES COULISSES DU CARNET</p><h2>À votre façon</h2></div><Sparkles size={23} strokeWidth={1.3} /></div>
@@ -74,6 +97,16 @@ export function Settings({ settings, capabilities, online, lastSync, pending, sy
         </div>
       </fieldset>
       {householdSaved && <p className="field-hint" role="status">Composition du foyer enregistrée ; elle sera utilisée pour les prochaines recettes IA.</p>}
+      <label className="field-label" htmlFor="avoid">Repas et ingrédients à éviter</label>
+      <textarea id="avoid" className="avoid-input" rows={3} maxLength={1000} disabled={!settings || pendingAvoid}
+        placeholder="Ex. : champignons, fruits de mer, coriandre, plats trop épicés…"
+        value={avoidText} onChange={event => { setAvoidDraft(event.target.value); setAvoidSaved(false); }} />
+      <div className="settings-actions">
+        <button className="secondary-button" disabled={!settings || pendingAvoid || avoidDraft === null || avoidDraft.trim() === savedAvoid.trim()}
+          onClick={() => void saveAvoid()}><Check size={16} />Enregistrer</button>
+      </div>
+      <p className="field-hint">L’IA évitera ces repas et ingrédients dans ses propositions et les retirera si possible des recettes. Ce n’est pas une garantie : vérifiez toujours en cas d’allergie.</p>
+      {avoidSaved && <p className="field-hint" role="status">Préférences enregistrées ; elles seront utilisées pour les prochaines propositions IA.</p>}
       {error && <p className="inline-error" role="alert">{error}</p>}
     </div>
     <div className="settings-card">
@@ -99,6 +132,6 @@ export function Settings({ settings, capabilities, online, lastSync, pending, sy
       </dl>}
       <p className="field-hint">L’application ne limite pas le nombre d’appels IA. Les échecs comptent comme des tentatives et ne sont pas relancés automatiquement. Les compteurs ne sont pas une facture. Les limites de votre projet OpenAI restent applicables.</p>
     </div>
-    <div className="privacy-note"><ShieldCheck size={22} strokeWidth={1.4} /><p>Un carnet partagé, sans compte utilisateur. Toute personne ayant accès à cette adresse peut lire et modifier les repas. La clé OpenAI ne quitte jamais le serveur. L’analyse transmet le nom du repas et la composition du foyer à OpenAI ; la génération transmet aussi la saison du créneau, les noms du carnet (archives comprises) et ceux des repas choisis de J−15 à J+15 autour d’aujourd’hui, sans leurs dates ni les recettes.</p></div>
+    <div className="privacy-note"><ShieldCheck size={22} strokeWidth={1.4} /><p>Un carnet partagé, sans compte utilisateur. Toute personne ayant accès à cette adresse peut lire et modifier les repas. La clé OpenAI ne quitte jamais le serveur. L’analyse transmet le nom du repas, la composition du foyer et les repas et ingrédients à éviter à OpenAI ; la génération transmet aussi la saison du créneau, les noms du carnet (archives comprises) et ceux des repas choisis de J−15 à J+15 autour d’aujourd’hui, sans leurs dates ni les recettes.</p></div>
   </section>;
 }

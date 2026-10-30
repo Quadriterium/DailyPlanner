@@ -83,9 +83,9 @@ test('repas choisi : proposition IA, attente et recette persistante', async ({ p
   let pending: Route | undefined;
   await page.route('**/api/meals/generate', route => { pending = route; });
   await slot(page).locator('.meal-cell').click();
-  await page.getByRole('button', { name: 'Demander une proposition à l’IA', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Générer avec l’IA', exact: true }).click();
   await expect.poll(() => Boolean(pending)).toBe(true);
-  await expect(page.getByRole('button', { name: 'Proposition en cours…', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Génération…', exact: true })).toBeDisabled();
   await expect(slot(page).locator('.meal-cell')).toHaveText(unused.name);
   await pending!.fulfill({ json: { details: { ...details, name: 'Nouvelle proposition' } } });
   await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -99,7 +99,7 @@ test('repas choisi : erreur IA sans perte du repas ni de la recette', async ({ p
   await slot(page).getByRole('button', { name: /piocher/ }).click();
   await page.route('**/api/meals/generate', route => route.fulfill({ status: 502, json: { error: 'Service IA indisponible.' } }));
   await slot(page).locator('.meal-cell').click();
-  await page.getByRole('button', { name: 'Demander une proposition à l’IA', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Générer avec l’IA', exact: true }).click();
   await expect(page.getByRole('dialog').getByRole('alert')).toHaveText('Service IA indisponible.');
   await expect(page.getByRole('region', { name: 'Recette du repas' })).toContainText(details.recipe);
   await expect(page.getByRole('button', { name: 'Choisir au hasard', exact: true })).toBeEnabled();
@@ -113,7 +113,7 @@ test('repas choisi : une proposition IA ne remplace pas une modification dans un
   let pending: Route | undefined;
   await page.route('**/api/meals/generate', route => { pending = route; });
   await slot(page).locator('.meal-cell').click();
-  await page.getByRole('button', { name: 'Demander une proposition à l’IA', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Générer avec l’IA', exact: true }).click();
   await expect.poll(() => Boolean(pending)).toBe(true);
   const other = await context.newPage();
   await other.route('**/api/sync', route => route.abort());
@@ -158,7 +158,7 @@ test('créneau vide : tirage et génération IA depuis le dialogue', async ({ pa
   await slot(page, today, 'dinner').locator('.meal-cell').click();
   await page.getByRole('dialog').getByRole('button', { name: 'Générer avec l’IA', exact: true }).click();
   await expect.poll(() => Boolean(pending)).toBe(true);
-  await expect(page.getByRole('button', { name: 'Proposition en cours…', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Génération…', exact: true })).toBeDisabled();
   await pending!.fulfill({ json: { details: generated } });
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(slot(page, today, 'dinner').locator('.meal-cell')).toHaveText(generated.name);

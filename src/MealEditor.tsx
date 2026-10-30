@@ -84,13 +84,13 @@ export function MealEditor({ date, slot, start, meal, today, dishes, analyses, o
     <p className="modal-subtitle">{formatDate(date, { weekday: 'long', day: 'numeric', month: 'long' })} · {slot === 'lunch' ? 'Midi' : 'Soir'}</p>
     {!editing ? <>
       <h3 className="meal-detail-name">{meal?.text}</h3>
-      <div className="meal-detail-actions" aria-busy={busy}>
+      <div className="action-grid" aria-busy={busy}>
         <button className="secondary-button" disabled={busy} onClick={() => setEditing(true)}><Pencil size={17} />Modifier le repas</button>
-        <button className="text-button danger" disabled={busy} onClick={() => void commit('')}><Trash2 size={16} />Vider</button>
+        <button className="secondary-button danger" disabled={busy} onClick={() => void commit('')}><Trash2 size={16} />Vider</button>
+        <button className="secondary-button" disabled={busy} onClick={() => void replace('ai')}><Sparkles size={17} />{filling === 'ai' ? 'Génération…' : 'Générer avec l’IA'}</button>
         <button className="secondary-button" disabled={busy} onClick={() => void replace('random')}><Shuffle size={17} />{filling === 'random' ? 'Recherche…' : 'Choisir au hasard'}</button>
-        <button className="secondary-button" disabled={busy} onClick={() => void replace('ai')}><Sparkles size={17} />{filling === 'ai' ? 'Proposition en cours…' : 'Demander une proposition à l’IA'}</button>
       </div>
-      <p className="field-hint">Le hasard pioche dans le carnet de saison. Remplacer ou vider ce créneau conserve la fiche dans le carnet.</p>
+      <p className="field-hint">Remplacer ou vider ce créneau conserve la fiche dans le carnet.</p>
       {error && <p className="inline-error" role="alert">{error}</p>}
       <section className="meal-recipe" aria-label="Recette du repas">
         <h3>La recette</h3>
@@ -113,22 +113,21 @@ export function MealEditor({ date, slot, start, meal, today, dishes, analyses, o
       <label className="field-label" htmlFor="meal-name">Votre idée du jour</label>
       <textarea id="meal-name" placeholder="Par exemple : poulet, frites et salade…" value={text} maxLength={240} rows={2}
         onChange={event => setText(event.target.value)} />
-      <p className="field-hint">Écrivez simplement. Votre recette sera classée en arrière-plan, sans changer ce texte dans le planning.</p>
       {error && <p className="inline-error" role="alert">{error}</p>}
-      <div className="editor-actions">
-        {meal?.text && <button className="text-button danger" type="button" disabled={busy} onClick={() => void commit('')}><Trash2 size={16} />Vider</button>}
-        <button className="primary-button" disabled={busy || !text.trim()}><Check size={17} />{busy && !filling ? 'Enregistrement…' : 'Garder ce repas'}</button>
+      <div className="action-grid">
+        {meal?.text && <button className="secondary-button danger" type="button" disabled={busy} onClick={() => void commit('')}><Trash2 size={16} />Vider</button>}
+        <button className={`primary-button ${meal?.text ? '' : 'wide'}`} disabled={busy || !text.trim()}><Check size={17} />{busy && !filling ? 'Enregistrement…' : 'Garder ce repas'}</button>
       </div>
     </form>
     {!meal?.text && <>
-      <div className="meal-detail-actions" aria-busy={Boolean(filling)}>
-        <button className="secondary-button" type="button" disabled={busy} onClick={() => void replace('ai')}><Sparkles size={17} />{filling === 'ai' ? 'Proposition en cours…' : 'Générer avec l’IA'}</button>
+      <div className="section-divider"><span>ou une idée de saison</span><Sparkles size={15} /></div>
+      <div className="action-grid flush" aria-busy={Boolean(filling)}>
+        <button className="secondary-button" type="button" disabled={busy} onClick={() => void replace('ai')}><Sparkles size={17} />{filling === 'ai' ? 'Génération…' : 'Générer avec l’IA'}</button>
         <button className="secondary-button" type="button" disabled={busy} onClick={() => void replace('random')}><Shuffle size={17} />{filling === 'random' ? 'Recherche…' : 'Choisir au hasard'}</button>
       </div>
-      <p className="field-hint">L’IA propose un repas de saison ; le hasard pioche dans le carnet de saison.</p>
     </>}
     <div className="section-divider"><span>ou piocher dans le carnet</span><Leaf size={15} /></div>
-    <div className="filter-tabs" aria-label="Saison des suggestions">
+    <div className="filter-tabs segmented" aria-label="Saison des suggestions">
       <button aria-pressed={!allSeasons} onClick={() => setAllSeasons(false)}>De saison <span>{seasonal.length}</span></button>
       <button aria-pressed={allSeasons} onClick={() => setAllSeasons(true)}>Tous les repas <span>{available.length}</span></button>
     </div>

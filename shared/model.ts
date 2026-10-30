@@ -54,6 +54,7 @@ export const settingsSchema = z.object({
   id: z.literal('global'),
   model: z.string().trim().min(1).max(100),
   household: householdSchema.default(defaultHousehold),
+  avoid: z.string().max(1000).default(''),
   ...version,
 }).strict();
 export const recordSchema = z.discriminatedUnion('type', [dishSchema, mealSchema, settingsSchema])
@@ -156,6 +157,11 @@ export function addDays(date: string, days: number): string {
   const result = new Date(`${date}T12:00:00Z`);
   result.setUTCDate(result.getUTCDate() + days);
   return result.toISOString().slice(0, 10);
+}
+
+/** Jour de la semaine ISO d'une date civile : 1 = lundi … 7 = dimanche. */
+export function isoWeekday(date: string): number {
+  return new Date(`${date}T12:00:00Z`).getUTCDay() || 7;
 }
 
 export function seasonForDate(date: string): Season {

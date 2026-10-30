@@ -59,7 +59,7 @@ describe('Sauvegarde locale et synchronisation', () => {
   });
   it('efface seulement les repas et fiches locaux, y compris non envoyés, et conserve les paramètres', async () => {
     const kept = meal({ id: '2026-10-31:lunch', date: '2026-10-31', text: 'Ancien' });
-    const settings = { type: 'settings' as const, id: 'global' as const, model: 'gpt-6-luna', household: { adults: 1, teenagers: 0, children: 1 } };
+    const settings = { type: 'settings' as const, id: 'global' as const, model: 'gpt-6-luna', household: { adults: 1, teenagers: 0, children: 1 }, avoid: '' };
     await repo.merge(snapshot([kept]));
     await repo.save([dish(), meal({ text: 'Non envoyé' }), settings]);
     const resetId = crypto.randomUUID();

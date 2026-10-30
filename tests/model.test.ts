@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addDays, compareVersions, defaultHousehold, dishDetails, parisDate, randomMealCandidates, recordSchema, seasonForDate } from '../shared/model';
+import { addDays, compareVersions, defaultHousehold, dishDetails, isoWeekday, parisDate, randomMealCandidates, recordSchema, seasonForDate } from '../shared/model';
 import { dish, details, meal } from './fixtures';
 
 describe('Dates et saisons françaises', () => {
@@ -9,6 +9,12 @@ describe('Dates et saisons françaises', () => {
     expect(addDays('2026-03-28', 2)).toBe('2026-03-30');
     expect(addDays('2026-10-24', 2)).toBe('2026-10-26');
     expect(addDays('2026-12-31', 1)).toBe('2027-01-01');
+  });
+  it('numérote les jours de la semaine du lundi (1) au dimanche (7)', () => {
+    expect(isoWeekday('2026-10-26')).toBe(1);
+    expect(isoWeekday('2026-10-31')).toBe(6);
+    expect(isoWeekday('2026-11-01')).toBe(7);
+    expect(isoWeekday('2026-03-29')).toBe(7);
   });
   it('emploie les quatre saisons météorologiques larges', () => {
     expect(seasonForDate('2026-02-28')).toBe('winter');
