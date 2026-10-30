@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type UIEvent } from 'react';
 import { ArrowDown, ArrowUp, CalendarDays, Leaf, LoaderCircle, Moon, Plus, Shuffle, Sparkles, Sun } from 'lucide-react';
-import { addDays, formatDate, seasonForDate, seasonLabels, type Meal, type Slot } from '../shared/model';
+import { addDays, formatDate, isoWeekday, seasonForDate, seasonLabels, type Meal, type Slot } from '../shared/model';
 import { Modal } from './components';
 import { errorMessage, fillMeal } from './store';
 
@@ -92,7 +92,7 @@ export function Planner({ today, meals, onSelect, onSaved }: {
     <div className="menu-grid">
       <div className="column-headings"><span>AU FIL DES JOURS</span><span><Sun size={18} />Midi</span><span><Moon size={17} />Soir</span></div>
       <div className="days-scroll" ref={scroll} onScroll={onScroll} aria-label="Jours du planning, défilement vertical" tabIndex={0}>
-        {dates.map(date => <div className={`day-row ${date === today ? 'is-today' : ''} ${date < today ? 'is-past' : ''}`} key={date} data-date={date}>
+        {dates.map(date => <div className={`day-row weekday-${isoWeekday(date)} ${date === today ? 'is-today' : ''} ${date < today ? 'is-past' : ''}`} key={date} data-date={date}>
           <div className="day-label"><span className="weekday">{formatDate(date, { weekday: 'long' })}</span>
             <span className="day-number">{formatDate(date, { day: '2-digit' })}<small>{formatDate(date, { month: 'short' })}</small></span>
             {date === today && <span className="today-label">Aujourd’hui</span>}

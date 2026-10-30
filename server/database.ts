@@ -29,7 +29,7 @@ export class Store {
     if (!this.get('settings:global')) {
       this.put({
         type: 'settings', id: 'global', model: config.OPENAI_MODEL,
-        household: { ...defaultHousehold },
+        household: { ...defaultHousehold }, avoid: '',
         modifiedAt: 0, mutationId: '00000000-0000-0000-0000-000000000000',
       });
     }

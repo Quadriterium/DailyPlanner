@@ -45,7 +45,7 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     }
     try {
       const settings = store.settings();
-      const result = await generateMeal(parsed.data.date, context, settings.household, config, settings.model, AbortSignal.timeout(45_000), options.aiRequest);
+      const result = await generateMeal(parsed.data.date, context, settings, config, settings.model, AbortSignal.timeout(45_000), options.aiRequest);
       store.recordTokens(day, result.inputTokens, result.outputTokens);
       return { details: result.details };
     } catch (error) {
