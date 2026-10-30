@@ -1,0 +1,193 @@
+import { test, expect, type Page } from '@playwright/test';
+import { addDays, formatDate, parisDate } from '../shared/model';
+
+const today = parisDate();
+function name(prefix: string) { return `${prefix} ${crypto.randomUUID().slice(0, 8)}`; }
+function cell(page: Page, date = today, slot: 'lunch' | 'dinner' = 'lunch') {
+  return page.locator(`[data-date="${date}"] .meal-cell`).nth(slot === 'lunch' ? 0 : 1);
+}
+async function writeMeal(page: Page, text: string, date = today, slot: 'lunch' | 'dinner' = 'lunch') {
+  await cell(page, date, slot).click();
+  const missingWidth = await page.getByRole('dialog').evaluate(element =>
+    innerWidth <= 520 ? document.documentElement.clientWidth - element.getBoundingClientRect().width : 0,
+  );
+  expect(Math.abs(missingWidth)).toBeLessThan(2);
+  await page.getByLabel('Votre idée du jour', { exact: true }).fill(text);
+  await page.getByRole('button', { name: 'Garder ce repas' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(cell(page, date, slot)).toHaveText(text);
+}
+async function forceSync(page: Page) {
+  for (let i = 0; i < 4; i++) {
+    const title = page.getByRole('button', { name: 'À table !', exact: true });
+    if (test.info().project.use.hasTouch) await title.tap();
+    else await title.click({ delay: 35 });
+  }
+}
+async function awaitSynced(page: Page) {
+  await expect(page.locator('.connection-indicator')).toHaveText('Carnet à jour');
+}
+test.beforeEach(async ({ page }) => {
+  await page.goto('/');
+  await awaitSynced(page);
+});
+
+test('grille responsive, saisie brute et navigation verticale', async ({ page }) => {
+  const text = name('poulet frite');
+  await expect(page.getByRole('heading', { name: 'À table !' })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const alignment = await page.locator('.days-scroll').evaluate(element => {
+    const todayRow = element.querySelector<HTMLElement>('.is-today')!;
+    return Math.abs(element.getBoundingClientRect().top - todayRow.getBoundingClientRect().top);
+  });
+  expect(alignment).toBeLessThan(2);
+  await writeMeal(page, text);
+  await awaitSynced(page);
+  await page.getByRole('button', { name: 'Voir les sept jours suivants' }).click();
+  await expect(page.locator('.section-heading h2')).toContainText(formatDate(addDays(today, 7), { day: 'numeric', month: 'long' }));
+  await page.getByRole('button', { name: 'Aujourd’hui', exact: true }).click();
+  await expect(cell(page)).toHaveText(text);
+  await page.setViewportSize({ width: 800, height: 1100 });
+  await expect.poll(() => page.locator('.days-scroll').evaluate(element =>
+    Math.abs(element.getBoundingClientRect().top - element.querySelector('.is-today')!.getBoundingClientRect().top),
+  )).toBeLessThan(2);
+});
+
+test('bibliothèque modifiable, suggestions et archivage sans effacer les menus', async ({ page }) => {
+  const text = name('soupe du jardin');
+  const corrected = `${text} maison`;
+  await writeMeal(page, text);
+  await awaitSynced(page);
+  await page.getByRole('button', { name: 'Mon carnet', exact: true }).click();
+  await page.getByRole('button', { name: new RegExp(text) }).click();
+  await page.getByLabel('Nom du repas', { exact: true }).fill(corrected);
+  await page.getByRole('button', { name: 'Toute l’année', exact: true }).click();
+  await page.getByLabel(/Ingrédients principaux/).fill('Carottes\nPommes de terre');
+  await page.getByLabel('Une petite recette', { exact: true }).fill('Cuire les légumes, puis mixer.');
+  await page.getByRole('button', { name: 'Enregistrer la fiche' }).click();
+  await page.getByRole('button', { name: 'Mon planning', exact: true }).click();
+  await expect(cell(page)).toHaveText(text);
+  await cell(page, today, 'dinner').click();
+  await page.getByLabel('Rechercher un repas', { exact: true }).fill(corrected);
+  await page.getByRole('button', { name: new RegExp(corrected) }).click();
+  await expect(cell(page, today, 'dinner')).toHaveText(corrected);
+  await page.getByRole('button', { name: 'Mon carnet', exact: true }).click();
+  await page.getByRole('button', { name: new RegExp(corrected) }).click();
+  await page.getByRole('button', { name: 'Archiver ce repas' }).click();
+  await expect(page.getByRole('button', { name: new RegExp(corrected) })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Mon planning', exact: true }).click();
+  await expect(cell(page)).toHaveText(text);
+  await expect(cell(page, today, 'dinner')).toHaveText(corrected);
+});
+
+test('rechargement hors ligne, quadruple clic en échec puis reconnexion sans perte', async ({ page, context }) => {
+  const text = name('repas hors ligne');
+  await page.evaluate(async () => { await navigator.serviceWorker.ready; });
+  await page.reload();
+  await awaitSynced(page);
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  await context.setOffline(true);
+  await writeMeal(page, text);
+  await page.reload();
+  await expect(cell(page)).toHaveText(text);
+  await forceSync(page);
+  await expect(page.getByRole('dialog', { name: 'Actualisation impossible' })).toBeVisible();
+  await expect(page.getByRole('dialog')).toContainText('Serveur inaccessible');
+  await page.getByRole('button', { name: 'Compris' }).click();
+  await expect(cell(page)).toHaveText(text);
+  await context.setOffline(false);
+  await forceSync(page);
+  await expect(page.getByRole('dialog', { name: 'Tout est à jour' })).toBeVisible();
+  await page.getByRole('button', { name: 'Compris' }).click();
+  await page.reload();
+  await expect(cell(page)).toHaveText(text);
+  await awaitSynced(page);
+});
+
+test('serveur indisponible malgré Internet, suppression hors ligne et réconciliation', async ({ page, context }) => {
+  const text = name('a effacer');
+  await writeMeal(page, text);
+  await awaitSynced(page);
+  await context.route('**/api/**', route => route.abort('connectionrefused'));
+  expect(await page.evaluate(() => navigator.onLine)).toBe(true);
+  await cell(page).click();
+  await page.getByRole('button', { name: 'Vider', exact: true }).click();
+  await expect(cell(page)).toContainText('À imaginer');
+  await forceSync(page);
+  await expect(page.getByRole('dialog', { name: 'Actualisation impossible' })).toBeVisible();
+  await page.getByRole('button', { name: 'Compris' }).click();
+  await context.unroute('**/api/**');
+  await forceSync(page);
+  await expect(page.getByRole('dialog', { name: 'Tout est à jour' })).toBeVisible();
+  await page.getByRole('button', { name: 'Compris' }).click();
+  await page.reload();
+  await awaitSynced(page);
+  await expect(cell(page)).toContainText('À imaginer');
+});
+
+test('deux appareils : le dernier changement gagne, les autres créneaux sont conservés', async ({ page, context, browser }) => {
+  const otherContext = await browser.newContext({ baseURL: new URL(page.url()).origin, viewport: { width: 1024, height: 1366 } });
+  const other = await otherContext.newPage();
+  try {
+    await other.goto('/');
+    await awaitSynced(other);
+    await context.setOffline(true);
+    await writeMeal(page, name('ancien choix local'));
+    const independent = name('diner local');
+    await writeMeal(page, independent, today, 'dinner');
+    const newest = name('dernier choix tablette');
+    await writeMeal(other, newest);
+    await awaitSynced(other);
+    await context.setOffline(false);
+    await forceSync(page);
+    await expect(page.getByRole('dialog', { name: 'Tout est à jour' })).toBeVisible();
+    await page.getByRole('button', { name: 'Compris' }).click();
+    await expect(cell(page)).toHaveText(newest);
+    await expect(cell(page, today, 'dinner')).toHaveText(independent);
+    await forceSync(other);
+    await expect(other.getByRole('dialog', { name: 'Tout est à jour' })).toBeVisible();
+    await other.getByRole('button', { name: 'Compris' }).click();
+    await expect(cell(other)).toHaveText(newest);
+    await expect(cell(other, today, 'dinner')).toHaveText(independent);
+  } finally { await otherContext.close(); }
+});
+
+test('paramètres : modèle partagé, conservé après rechargement et désactivé hors ligne', async ({ page, context }) => {
+  await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+  const firstModel = page.getByRole('radio', { name: 'gpt-6-luna', exact: true });
+  const alternative = await firstModel.isChecked() ? 'gpt-5.6-luna' : 'gpt-6-luna';
+  await page.getByRole('radio', { name: alternative, exact: true }).check();
+  await expect(page.getByText('Choix enregistré localement', { exact: false })).toBeVisible();
+  await awaitSynced(page);
+  await page.reload();
+  await awaitSynced(page);
+  await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+  await expect(page.getByRole('radio', { name: alternative, exact: true })).toBeChecked();
+  await expect(page.getByText('L’analyse attend la configuration de la clé OpenAI sur le serveur.', { exact: false })).toBeVisible();
+  await context.setOffline(true);
+  await page.getByRole('button', { name: 'Synchroniser', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Actualisation impossible' })).toBeVisible();
+  await page.getByRole('button', { name: 'Compris', exact: true }).click();
+  await expect(firstModel).toBeDisabled();
+});
+
+test('HTTP LAN : saisie, carnet et synchronisation sans contexte sécurisé', async ({ page }) => {
+  test.skip(!process.env.E2E_HOST, 'Nécessite E2E_HOST avec une IP LAN, pas localhost.');
+  expect(await page.evaluate(() => window.isSecureContext)).toBe(false);
+  expect(await page.evaluate(() => typeof crypto.randomUUID)).toBe('undefined');
+  const text = name('repas HTTP local');
+  await writeMeal(page, text);
+  await awaitSynced(page);
+  await page.reload();
+  await awaitSynced(page);
+  await expect(cell(page)).toHaveText(text);
+  await page.getByRole('button', { name: 'Mon carnet', exact: true }).click();
+  await page.getByRole('button', { name: new RegExp(text) }).click();
+  await page.getByLabel('Nom du repas', { exact: true }).fill(`${text} corrigé`);
+  await page.getByRole('button', { name: 'Enregistrer la fiche' }).click();
+  await awaitSynced(page);
+  await expect(page.getByRole('button', { name: new RegExp(`${text} corrigé`) })).toBeVisible();
+  await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+  await expect(page.getByText('Indisponible sur cet appareil', { exact: true })).toBeVisible();
+  await expect(page.getByText('Le mode hors ligne nécessite HTTPS (ou localhost).', { exact: true })).toBeVisible();
+});
