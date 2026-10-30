@@ -1,0 +1,73 @@
+---
+name: app-architecture
+description: "Comprendre l'application À table !, son architecture React/Fastify/SQLite, le modèle de données et le parcours d'un repas. À utiliser pour expliquer le fonctionnement du projet, commencer une intervention ou identifier les fichiers et skills pertinents."
+---
+
+# Comprendre À table !
+
+## Objectif
+
+Donner une carte du projet et suivre une action utilisateur de bout en bout.
+Pour une demande d'explication, rester en lecture seule : ne pas démarrer le serveur,
+modifier la configuration ou appeler OpenAI sans nécessité.
+
+## Parcours de lecture
+
+1. Lire le [guide utilisateur et déploiement](../../../README.md) et les
+   [commandes npm](../../../package.json).
+2. Examiner les [contrats partagés](../../../shared/model.ts) avant de raisonner
+   sur les données : ce code fait foi si une documentation devient obsolète.
+3. Suivre une saisie dans [MealEditor](../../../src/MealEditor.tsx), puis
+   [le store client](../../../src/store.ts) et [le repository IndexedDB](../../../src/repository.ts).
+4. Suivre son envoi dans [l'API Fastify](../../../server/app.ts), puis
+   [le stockage SQLite](../../../server/database.ts).
+5. Pour l'enrichissement différé, suivre [le worker IA](../../../server/ai.ts)
+   et son lancement dans [le point d'entrée serveur](../../../server/index.ts).
+
+## Carte des responsabilités
+
+| Surface | Rôle |
+|---|---|
+| [App](../../../src/App.tsx) | Navigation, synchronisations automatiques, quadruple tap, installation et notifications |
+| [Planner](../../../src/Planner.tsx) | Grille chronologique glissante, midi/soir, défilement vertical |
+| [Library](../../../src/Library.tsx) | Consultation, correction manuelle, archivage et relance IA |
+| [Settings](../../../src/Settings.tsx) | Modèle autorisé, quotas, connexion et état PWA |
+| [styles](../../../src/styles.css) | Interface responsive crème, terracotta et sauge |
+| [service worker](../../../pwa/service-worker.js) | Cache de l'application, jamais de l'API |
+| [configuration serveur](../../../server/config.ts) | Réseau, origine autorisée, base, modèles et quotas |
+
+## Modèle mental
+
+- `meal` : instantané du texte pour une date et un créneau `lunch` ou `dinner`.
+  Son identifiant est `date:slot`; `dishId` le relie éventuellement au carnet.
+- `dish` : fiche réutilisable avec nom, saison de création, archivage et
+  `analysisKey`. Des `details` non nuls représentent une correction manuelle.
+- `settings` : un record partagé `global`, contenant notamment le modèle IA choisi.
+- `Analysis` : résultat ou état de travail IA séparé des records utilisateur.
+- Chaque record utilisateur porte `modifiedAt` et `mutationId`.
+  Aucun menu ni plat n'est prérempli.
+
+Chemin principal :
+
+```text
+Saisie -> transaction IndexedDB (records + outbox) -> confirmation locale
+       -> POST /api/sync -> SQLite -> instantané partagé -> fusion IndexedDB
+                        -> file IA -> fiche enrichie, sans réécrire meal.text
+```
+
+Le fonctionnement hors ligne n'implique pas que le serveur soit toujours disponible :
+un client déjà mis en cache reste utilisable, mais le partage attend la reconnexion.
+Il n'y a pas d'authentification ; HTTPS ne restreint pas qui peut accéder aux données.
+
+## Approfondir uniquement le sujet nécessaire
+
+- [Interface et parcours](../app-interface/SKILL.md)
+- [Synchronisation et PWA](../app-sync-offline/SKILL.md)
+- [Bibliothèque et IA](../app-ai-library/SKILL.md)
+- [Déploiement et diagnostic réseau](../app-deployment/SKILL.md)
+
+## Restitution attendue
+
+Expliquer le parcours demandé avec les fichiers concernés et les invariants à
+préserver. Distinguer comportement vérifié, configuration par défaut et état réel
+de l'installation ; ne pas présenter un test simulé comme un appel OpenAI réel.

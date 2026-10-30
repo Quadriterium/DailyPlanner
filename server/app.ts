@@ -1,0 +1,73 @@
+import Fastify from 'fastify';
+import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
+import staticFiles from '@fastify/static';
+import { existsSync } from 'node:fs';
+import { resolve, sep } from 'node:path';
+import { syncRequestSchema } from '../shared/model.js';
+import type { Store } from './database.js';
+import type { Config } from './config.js';
+
+export async function buildApp(store: Store, config: Config, options: { logger?: boolean; staticRoot?: string } = {}) {
+  const app = Fastify({ logger: options.logger ?? true, bodyLimit: 2 * 1024 * 1024 });
+  await app.register(helmet, {
+    contentSecurityPolicy: { directives: {
+      defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:'], connectSrc: ["'self'"], workerSrc: ["'self'"],
+      objectSrc: ["'none'"], frameAncestors: ["'none'"], upgradeInsecureRequests: null,
+    } },
+    hsts: false,
+  });
+  await app.register(rateLimit, { global: false });
+  const origins = new Set(config.PUBLIC_ORIGIN ? [config.PUBLIC_ORIGIN] : [
+    `http://localhost:${config.PORT}`, `http://127.0.0.1:${config.PORT}`,
+    'http://localhost:5173', 'http://127.0.0.1:5173',
+  ]);
+  app.addHook('onRequest', async (request, reply) => {
+    if (!request.url.startsWith('/api/')) return;
+    reply.header('Cache-Control', 'no-store');
+    const origin = request.headers.origin;
+    if (request.method !== 'GET' && (
+      (origin && !origins.has(origin)) || request.headers['sec-fetch-site'] === 'cross-site'
+    )) return reply.code(403).send({ error: 'Origine non autorisée.' });
+  });
+  app.get('/api/health', async () => ({ status: 'ok' }));
+  app.post('/api/sync', { config: { rateLimit: { max: 180, timeWindow: '1 minute' } } }, async (request, reply) => {
+    const parsed = syncRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Données invalides. Aucune modification du lot n’a été appliquée.' });
+    const now = Date.now();
+    if (parsed.data.mutations.some(record => record.modifiedAt > now + 5 * 60_000)) {
+      return reply.code(400).send({ error: 'L’horloge de cet appareil est trop en avance. Corrigez sa date avant de synchroniser.' });
+    }
+    if (parsed.data.mutations.some(record => record.type === 'settings' && !config.allowedModels.includes(record.model))) {
+      return reply.code(400).send({ error: 'Ce modèle n’est pas autorisé dans la configuration du serveur.' });
+    }
+    store.merge(parsed.data.mutations);
+    return { records: store.records(), analyses: store.analyses(), serverTime: Date.now(), capabilities: store.capabilities() };
+  });
+  const staticRoot = options.staticRoot ?? resolve('dist/client');
+  if (existsSync(staticRoot)) {
+    await app.register(staticFiles, {
+      root: staticRoot,
+      setHeaders(reply, path) {
+        reply.header('Cache-Control', path.includes(`${sep}assets${sep}`)
+          ? 'public, max-age=31536000, immutable' : 'no-cache');
+      },
+    });
+    app.setNotFoundHandler((request, reply) => {
+      if (request.method === 'GET' && !request.url.startsWith('/api/') && request.headers.accept?.includes('text/html')) {
+        return reply.sendFile('index.html', { cacheControl: false });
+      }
+      return reply.code(404).send({ error: 'Ressource introuvable.' });
+    });
+  }
+  app.setErrorHandler((error, request, reply) => {
+    request.log.error(error);
+    const code = error instanceof Error && 'statusCode' in error ? error.statusCode : undefined;
+    const status = typeof code === 'number' && code >= 400 && code < 500 ? code : 500;
+    reply.code(status).send({ error: status === 429
+      ? 'Trop de requêtes. Réessayez dans une minute.'
+      : status === 500 ? 'Erreur du serveur. Les modifications locales sont conservées.' : 'Requête refusée par le serveur.' });
+  });
+  return app;
+}
