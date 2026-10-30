@@ -4,11 +4,12 @@ import rateLimit from '@fastify/rate-limit';
 import staticFiles from '@fastify/static';
 import { existsSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
-import { syncRequestSchema } from '../shared/model.js';
+import { generateMealRequestSchema, syncRequestSchema } from '../shared/model.js';
+import { generateMeal, mealGenerationContext } from './ai.js';
 import type { Store } from './database.js';
 import type { Config } from './config.js';
 
-export async function buildApp(store: Store, config: Config, options: { logger?: boolean; staticRoot?: string } = {}) {
+export async function buildApp(store: Store, config: Config, options: { logger?: boolean; staticRoot?: string; aiRequest?: typeof fetch } = {}) {
   const app = Fastify({ logger: options.logger ?? true, bodyLimit: 2 * 1024 * 1024 });
   await app.register(helmet, {
     contentSecurityPolicy: { directives: {
@@ -32,6 +33,25 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     )) return reply.code(403).send({ error: 'Origine non autorisée.' });
   });
   app.get('/api/health', async () => ({ status: 'ok' }));
+  app.post('/api/meals/generate', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+    const parsed = generateMealRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Date du repas invalide.' });
+    const context = mealGenerationContext(store.records(), store.analyses());
+    let day: string;
+    try { day = store.reserveGeneration(); }
+    catch (error) {
+      request.log.warn(error);
+      return reply.code(409).send({ error: error instanceof Error ? error.message : 'Génération IA indisponible.' });
+    }
+    try {
+      const result = await generateMeal(parsed.data.date, context, config, store.settings().model, AbortSignal.timeout(45_000), options.aiRequest);
+      store.recordTokens(day, result.inputTokens, result.outputTokens);
+      return { details: result.details };
+    } catch (error) {
+      request.log.error(error);
+      return reply.code(502).send({ error: error instanceof Error ? error.message : 'La génération IA a échoué.' });
+    }
+  });
   app.post('/api/sync', { config: { rateLimit: { max: 180, timeWindow: '1 minute' } } }, async (request, reply) => {
     const parsed = syncRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Données invalides. Aucune modification du lot n’a été appliquée.' });

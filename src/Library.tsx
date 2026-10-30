@@ -21,7 +21,7 @@ export function Library({ dishes, analyses, online, onSaved }: {
   const selectedDish = dishes.find(dish => dish.id === selected);
   return <section className="library">
     <div className="section-heading"><div><p className="eyebrow">LES IDÉES QUI RESTENT</p><h2>Mon carnet de recettes</h2></div><Leaf size={24} strokeWidth={1.3} /></div>
-    <p className="section-description">Vos repas préférés, à retrouver au bon moment. Rien d’autre que vos propres idées.</p>
+    <p className="section-description">Vos repas préférés et vos inspirations, à retrouver au bon moment.</p>
     <label className="search-field"><Search size={18} /><input type="search" aria-label="Rechercher dans le carnet" placeholder="Une recette, une envie…" value={query} onChange={event => setQuery(event.target.value)} /></label>
     <div className="season-filters" aria-label="Filtrer le carnet par saison">
       <button aria-pressed={filter === 'any'} onClick={() => setFilter('any')}>Tout le carnet</button>

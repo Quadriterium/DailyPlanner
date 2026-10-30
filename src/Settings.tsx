@@ -41,7 +41,7 @@ export function Settings({ settings, capabilities, online, lastSync, pending, sy
     </div>
     <div className="settings-card">
       <h3><Sparkles size={19} />Un petit coup de pouce de l’IA</h3>
-      <p>Uniquement pour corriger le nom dans le carnet, reconnaître les saisons et proposer une recette. Le texte de vos menus reste tel que vous l’avez écrit.</p>
+      <p>Pour enrichir vos fiches et générer de nouvelles idées de saison, en tenant compte du carnet et des repas choisis de J−15 à J+15 autour d’aujourd’hui. L’enrichissement ne change pas les textes déjà saisis dans le planning.</p>
       {!capabilities?.aiConfigured && <p className="info-box">L’analyse attend la configuration de la clé OpenAI sur le serveur. Vous pouvez déjà tout planifier.</p>}
       {settings && capabilities && !capabilities.allowedModels.includes(settings.model) &&
         <p className="inline-error" role="alert">Le modèle enregistré ({settings.model}) n’est plus autorisé par le serveur. Choisissez un modèle ci-dessous pour reprendre les analyses en attente.</p>}
@@ -53,15 +53,15 @@ export function Settings({ settings, capabilities, online, lastSync, pending, sy
           </label>)}</div>
       </fieldset>
       {!online && <p className="field-hint">Le choix du modèle et la relance de l’IA nécessitent le serveur.</p>}
-      {saved && <p className="field-hint" role="status">Choix enregistré localement ; il sera appliqué aux prochaines analyses après synchronisation.</p>}
+      {saved && <p className="field-hint" role="status">Choix enregistré localement ; il sera appliqué aux prochaines analyses et générations après synchronisation.</p>}
       {error && <p className="inline-error" role="alert">{error}</p>}
       {capabilities && <dl>
-        <div><dt>Analyses aujourd’hui</dt><dd>{capabilities.callsToday} / {capabilities.dailyLimit}</dd></div>
-        <div><dt>Analyses ce mois-ci</dt><dd>{capabilities.callsThisMonth} / {capabilities.monthlyLimit}</dd></div>
+        <div><dt>Appels IA aujourd’hui</dt><dd>{capabilities.callsToday} / {capabilities.dailyLimit}</dd></div>
+        <div><dt>Appels IA ce mois-ci</dt><dd>{capabilities.callsThisMonth} / {capabilities.monthlyLimit}</dd></div>
         <div><dt>Tokens comptabilisés ce mois-ci</dt><dd>{(capabilities.inputTokens + capabilities.outputTokens).toLocaleString('fr-FR')}</dd></div>
       </dl>}
       <p className="field-hint">Les plafonds sont fixés côté serveur. Les échecs comptent comme des tentatives et ne sont pas relancés automatiquement. Ce sont des limites d’usage, pas une garantie de coût en euros. Vérifiez également les limites de votre projet OpenAI.</p>
     </div>
-    <div className="privacy-note"><ShieldCheck size={22} strokeWidth={1.4} /><p>Un carnet partagé, sans compte utilisateur. Toute personne ayant accès à cette adresse peut lire et modifier les repas. La clé OpenAI ne quitte jamais le serveur ; seuls les noms des repas sont envoyés à OpenAI pour l’analyse.</p></div>
+    <div className="privacy-note"><ShieldCheck size={22} strokeWidth={1.4} /><p>Un carnet partagé, sans compte utilisateur. Toute personne ayant accès à cette adresse peut lire et modifier les repas. La clé OpenAI ne quitte jamais le serveur. L’analyse transmet le nom du repas à OpenAI ; la génération transmet la saison du créneau, les noms du carnet (archives comprises) et ceux des repas choisis de J−15 à J+15 autour d’aujourd’hui, sans leurs dates ni les recettes.</p></div>
   </section>;
 }

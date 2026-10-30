@@ -70,9 +70,12 @@ Client : http://localhost:5173 ; API : http://127.0.0.1:3000. Le proxy Vite est 
 
 ## Utilisation
 
-- À l’ouverture : **aujourd’hui et les six jours suivants**, selon `Europe/Paris`. Une ligne par jour, deux colonnes midi/soir.
+- À l’ouverture : **aujourd’hui et les six jours suivants**, selon `Europe/Paris`. Une ligne par jour, deux colonnes midi/soir. Le titre et la navigation forment une bannière compacte ; les sept lignes se partagent la hauteur disponible et le planning occupe toute la largeur de la page. Sur les écrans très courts, la page reste défilable pour préserver la lisibilité et les cibles tactiles.
 - Faire défiler **verticalement la grille** : passé au-dessus, futur en dessous. Les flèches déplacent de sept jours ; « Aujourd’hui » recentre le planning. L’historique reste conservé.
 - Toucher un créneau pour saisir un repas ou choisir dans une **liste de cartes**, sans combobox. Les suggestions sont exclusivement vos créations, classées selon la saison de la date sélectionnée. « Tous les repas » ignore la saison.
+- Chaque case vide propose deux boutons à droite : **étincelles** pour générer un repas de saison avec l’IA, **flèches croisées** pour piocher au hasard dans le carnet de saison (y compris les plats « toute l’année », hors archives). Le choix est enregistré directement. Le tirage privilégie les repas absents des **sept jours affichés**, puis accepte une répétition si aucun autre choix n’existe. Il fonctionne aussi hors ligne ; un carnet sans repas de saison affiche une explication.
+- La génération IA exige le serveur et une clé OpenAI. Elle utilise la saison de la date du créneau et les mêmes modèles et quotas que l’analyse ; les erreurs laissent la case vide. Le repas et sa fiche complète rejoignent le carnet sans second appel d’enrichissement.
+- Avant une génération, l’application synchronise les dernières saisies et le modèle choisi. L’IA reçoit les noms de tous les plats créés (archives comprises) et des repas choisis **de J−15 à J+15 autour d’aujourd’hui à Paris**, bornes incluses (31 dates), indépendamment du créneau à remplir. Elle doit proposer un plat différent, éviter les repas récents et leurs variantes proches ; une vraie variante d’un plat ancien est possible si celui-ci n’a pas été choisi dans cette période. Un nom déjà présent est refusé avec une erreur, sans nouvel appel automatique.
 - Une saisie nouvelle est sauvegardée immédiatement. Sa fiche reçoit provisoirement la saison de création. L’IA corrige ensuite le nom dans le carnet, propose une ou plusieurs saisons, des ingrédients et une recette courte. **Le texte déjà saisi dans le planning ne change jamais à cause de cette analyse.**
 - Les saisons sont larges : mars–mai, juin–août, septembre–novembre, décembre–février, ou toute l’année.
 - Le carnet permet de corriger les fiches, de les archiver et de les restaurer. Les anciens menus conservent leur texte. Une correction manuelle a priorité sur une analyse en cours ; « Relancer l’IA » remplace les informations de la fiche par une nouvelle analyse.
@@ -107,9 +110,9 @@ Une application **déjà chargée et mise en cache** reste utilisable si le PC o
 
 ## OpenAI et budget
 
-API Responses, sorties JSON structurées, un appel asynchrone par création ou relance, sans outil externe. Seul le **nom du repas** est envoyé à OpenAI, pas le planning, les dates ni la base complète. `store: false` désactive le stockage de la réponse par l’API ; les politiques de conservation du fournisseur restent applicables.
+API Responses, sorties JSON structurées, un appel asynchrone par création ou relance, sans outil externe. Pour l’analyse, seul le **nom du repas** est envoyé à OpenAI. Pour la génération d’une idée, sont envoyés la **saison du créneau**, les **noms du carnet complet** et ceux des **repas choisis de J−15 à J+15 autour d’aujourd’hui à Paris**, avec les noms bruts et affichés des fiches liées. Les listes sont dédupliquées, sans troncature ; les dates, identifiants, ingrédients et recettes existantes ne sont pas transmis. Ce contexte augmente les tokens d’entrée. `store: false` désactive le stockage de la réponse par l’API ; les politiques de conservation du fournisseur restent applicables.
 
-Le modèle par défaut est **`gpt-6-luna`**, configurable dans les paramètres parmi les modèles autorisés côté serveur. Les identifiants sont vérifiés dans la documentation OpenAI : [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna), [GPT-5.6 Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna).
+Le modèle par défaut est **`gpt-6-luna`**. Les paramètres proposent par défaut **`gpt-6-luna`**, **`gpt-6-sol`**, **`gpt-5.6-luna`** et **`gpt-5.6-terra`**. Leur disponibilité effective dépend du compte et de l’API OpenAI ; la liste autorisée se configure côté serveur. Si `.env` définit déjà `OPENAI_ALLOWED_MODELS`, mettre aussi cette liste à jour : elle remplace les valeurs par défaut. Redémarrer le serveur puis synchroniser pour actualiser les paramètres.
 
 Si un modèle déjà sélectionné est retiré de la liste autorisée, les analyses se mettent en attente sans consommer d’appel. Les paramètres demandent de choisir un modèle autorisé pour les reprendre.
 
@@ -117,7 +120,7 @@ Si un modèle déjà sélectionné est retiré de la liste autorisée, les analy
 |---|---|---|
 | `OPENAI_API_KEY` | vide | Clé serveur ; jamais renvoyée au navigateur |
 | `OPENAI_MODEL` | `gpt-6-luna` | Modèle initial d’une nouvelle base |
-| `OPENAI_ALLOWED_MODELS` | `gpt-6-luna,gpt-5.6-luna` | Liste autorisée dans les paramètres |
+| `OPENAI_ALLOWED_MODELS` | `gpt-6-luna,gpt-6-sol,gpt-5.6-luna,gpt-5.6-terra` | Liste autorisée dans les paramètres |
 | `AI_DAILY_LIMIT` | `20` | Nombre maximal de tentatives par jour français |
 | `AI_MONTHLY_LIMIT` | `200` | Nombre maximal de tentatives par mois français |
 

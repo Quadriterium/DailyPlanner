@@ -32,6 +32,58 @@ test.beforeEach(async ({ page }) => {
   await awaitSynced(page);
 });
 
+test('bannière compacte et sept jours occupant la page', async ({ page }) => {
+  async function expectFullWeek() {
+    const layout = await page.locator('.days-scroll').evaluate((element, lastDate) => {
+      const bounds = element.getBoundingClientRect();
+      const first = element.querySelector('.is-today')!.getBoundingClientRect();
+      const last = element.querySelector(`[data-date="${lastDate}"]`)!.getBoundingClientRect();
+      return {
+        height: bounds.height,
+        weekHeight: first.height * 7,
+        firstTop: first.top - bounds.top,
+        lastBottom: last.bottom,
+        viewportHeight: innerHeight,
+        width: bounds.width,
+        viewportWidth: innerWidth,
+        pageHeight: document.documentElement.scrollHeight,
+        pageWidth: document.documentElement.scrollWidth,
+        headerHeight: document.querySelector('.masthead')!.getBoundingClientRect().height,
+      };
+    }, addDays(today, 6));
+    expect(layout.headerHeight).toBeLessThanOrEqual(layout.viewportWidth <= 520 ? 112 : 64);
+    expect(layout.height).toBeGreaterThan(layout.viewportHeight * .65);
+    expect(Math.abs(layout.height - layout.weekHeight)).toBeLessThan(1);
+    expect(Math.abs(layout.firstTop)).toBeLessThan(2);
+    expect(layout.lastBottom).toBeLessThanOrEqual(layout.viewportHeight);
+    expect(layout.width).toBeGreaterThan(layout.viewportWidth * .9);
+    expect(layout.pageHeight).toBeLessThanOrEqual(layout.viewportHeight + 1);
+    expect(layout.pageWidth).toBeLessThanOrEqual(layout.viewportWidth);
+  }
+
+  await expectFullWeek();
+  await page.setViewportSize({ width: 800, height: 1100 });
+  await expect(async () => { await expectFullWeek(); }).toPass();
+  await page.setViewportSize({ width: 800, height: 900 });
+  await expect(async () => { await expectFullWeek(); }).toPass();
+  await page.setViewportSize({ width: 320, height: 568 });
+  const shortLayout = await page.locator('.menu-grid').evaluate(element => {
+    const grid = element.getBoundingClientRect();
+    const arrows = element.querySelector('.scroll-footer')!.getBoundingClientRect();
+    return {
+      gridBottom: grid.bottom,
+      arrowsBottom: arrows.bottom,
+      footerTop: document.querySelector('.app-footer')!.getBoundingClientRect().top,
+      pageWidth: document.documentElement.scrollWidth,
+    };
+  });
+  expect(shortLayout.arrowsBottom).toBeLessThanOrEqual(shortLayout.gridBottom);
+  expect(shortLayout.footerTop).toBeGreaterThanOrEqual(shortLayout.arrowsBottom);
+  expect(shortLayout.pageWidth).toBeLessThanOrEqual(320);
+  await page.getByRole('button', { name: 'Voir les sept jours suivants' }).click();
+  await expect(page.locator('.section-heading h2')).toContainText(formatDate(addDays(today, 7), { day: 'numeric', month: 'long' }));
+});
+
 test('grille responsive, saisie brute et navigation verticale', async ({ page }) => {
   const text = name('poulet frite');
   await expect(page.getByRole('heading', { name: 'À table !' })).toBeVisible();
@@ -154,6 +206,11 @@ test('deux appareils : le dernier changement gagne, les autres créneaux sont co
 
 test('paramètres : modèle partagé, conservé après rechargement et désactivé hors ligne', async ({ page, context }) => {
   await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+  for (const model of ['gpt-6-sol', 'gpt-5.6-terra']) {
+    await page.getByRole('radio', { name: model, exact: true }).check();
+    await awaitSynced(page);
+    await expect(page.getByRole('radio', { name: model, exact: true })).toBeChecked();
+  }
   const firstModel = page.getByRole('radio', { name: 'gpt-6-luna', exact: true });
   const alternative = await firstModel.isChecked() ? 'gpt-5.6-luna' : 'gpt-6-luna';
   await page.getByRole('radio', { name: alternative, exact: true }).check();

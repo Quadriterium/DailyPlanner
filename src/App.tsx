@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { BookOpen, CalendarDays, Check, CircleAlert, CloudOff, Download, Leaf, RefreshCw, Settings2 } from 'lucide-react';
 import { parisDate, type Slot } from '../shared/model';
-import { Botanical, Modal } from './components';
+import { Modal } from './components';
 import { Planner } from './Planner';
 import { MealEditor } from './MealEditor';
 import { Library } from './Library';
@@ -109,27 +109,24 @@ export function App() {
         : state.pending ? `${state.pending} modification${state.pending > 1 ? 's' : ''} en attente`
           : state.connection === 'online' ? 'Carnet à jour' : 'Ouverture du carnet…';
 
-  return <div className="app-shell">
+  return <div className={`app-shell ${tab === 'planner' ? 'planner-view' : ''}`}>
     <header className="masthead">
-      <Botanical className="branch-left" /><Botanical className="branch-right" />
-      <div className="masthead-content"><p className="eyebrow">VOS REPAS, AU FIL DES SAISONS</p>
+      <div className="masthead-content">
         <h1><button onClick={titleTap} title="Quatre taps rapides pour actualiser et synchroniser">À table <span>!</span></button></h1>
-        <p className="tagline">Une semaine à savourer.</p>
-        <div className="header-ornament" aria-hidden="true"><span /><Leaf size={16} strokeWidth={1.2} /><span /></div>
       </div>
+      <nav className="main-nav" aria-label="Navigation principale">
+        <button className={tab === 'planner' ? 'active' : ''} aria-current={tab === 'planner' ? 'page' : undefined} onClick={() => setTab('planner')}><CalendarDays size={17} />Mon planning</button>
+        <button className={tab === 'library' ? 'active' : ''} aria-current={tab === 'library' ? 'page' : undefined} onClick={() => setTab('library')}><BookOpen size={17} />Mon carnet</button>
+        <button className={`settings-nav ${tab === 'settings' ? 'active' : ''}`} aria-label="Paramètres" aria-current={tab === 'settings' ? 'page' : undefined} onClick={() => setTab('settings')}><Settings2 size={18} /><span>Paramètres</span></button>
+      </nav>
       {installEvent && <button className="install-shortcut icon-button" onClick={() => void install()} aria-label="Installer À table"><Download size={19} /></button>}
     </header>
-    <nav className="main-nav" aria-label="Navigation principale">
-      <button className={tab === 'planner' ? 'active' : ''} aria-current={tab === 'planner' ? 'page' : undefined} onClick={() => setTab('planner')}><CalendarDays size={17} />Mon planning</button>
-      <button className={tab === 'library' ? 'active' : ''} aria-current={tab === 'library' ? 'page' : undefined} onClick={() => setTab('library')}><BookOpen size={17} />Mon carnet</button>
-      <button className={`settings-nav ${tab === 'settings' ? 'active' : ''}`} aria-label="Paramètres" aria-current={tab === 'settings' ? 'page' : undefined} onClick={() => setTab('settings')}><Settings2 size={18} /><span>Paramètres</span></button>
-    </nav>
     <main>
       {!state.loaded ? <div className="loading-state" role="status">
         {state.error ? <><CircleAlert /><h2>Impossible d’ouvrir le stockage local</h2><p>{state.error}</p><p>Vérifiez les permissions de stockage et l’espace disponible. Aucune saisie ne sera acceptée tant qu’elle ne peut pas être sauvegardée.</p></> : <><Leaf className="spinning" /><p>On met la table…</p></>}
       </div> : <>
         {state.error && <div className="connection-banner" role="status"><CloudOff size={17} /><span>{state.error}</span></div>}
-        {tab === 'planner' && <Planner key={today} today={today} meals={meals} onSelect={(date, slot) => setSelected({ date, slot })} />}
+        {tab === 'planner' && <Planner key={today} today={today} meals={meals} onSelect={(date, slot) => setSelected({ date, slot })} onSaved={() => setToast(true)} />}
         {tab === 'library' && <Library dishes={dishes} analyses={state.analyses} online={state.connection === 'online' && Boolean(state.capabilities?.aiConfigured)} onSaved={() => setToast(true)} />}
         {tab === 'settings' && <Settings settings={settings} capabilities={state.capabilities} online={state.connection === 'online'}
           lastSync={state.lastSync} pending={state.pending} syncing={state.syncing} onSync={() => void forceSync()} onInstall={() => void install()} />}
