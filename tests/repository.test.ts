@@ -57,6 +57,23 @@ describe('Sauvegarde locale et synchronisation', () => {
     await expect(repo.save([dish(), meal({ text: 'a'.repeat(241) })])).rejects.toThrow();
     expect((await repo.snapshot()).records).toEqual([]);
   });
+  it('efface seulement les repas et fiches locaux, y compris non envoyés, et conserve les paramètres', async () => {
+    const kept = meal({ id: '2026-10-31:lunch', date: '2026-10-31', text: 'Ancien' });
+    const settings = { type: 'settings' as const, id: 'global' as const, model: 'gpt-6-luna', household: { adults: 1, teenagers: 0, children: 1 } };
+    await repo.merge(snapshot([kept]));
+    await repo.save([dish(), meal({ text: 'Non envoyé' }), settings]);
+    const resetId = crypto.randomUUID();
+    const remote = meal({ id: '2026-11-01:lunch', date: '2026-11-01', text: 'Nouveau départ' });
+    await repo.merge({ ...snapshot([remote]), resetId });
+    expect(await repo.resetId()).toBe(resetId);
+    const after = await repo.snapshot();
+    expect(after.records.filter(record => record.type !== 'settings')).toEqual([remote]);
+    expect(after.records.find(record => record.type === 'settings')).toMatchObject(settings);
+    expect(await repo.pending()).toEqual([expect.objectContaining(settings)]);
+    await repo.save([meal({ text: 'Après réinitialisation' })]);
+    await repo.merge({ ...snapshot([]), resetId });
+    expect((await repo.pending()).map(record => record.type).sort()).toEqual(['meal', 'settings']);
+  });
   it('sérialise les écritures de plusieurs onglets et conserve une version monotone', async () => {
     const name = crypto.randomUUID();
     const a = createRepository(name);

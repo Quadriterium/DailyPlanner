@@ -5,7 +5,7 @@ import { Modal } from './components';
 import { errorMessage, fillMeal } from './store';
 
 export function Planner({ today, meals, onSelect, onSaved }: {
-  today: string; meals: Meal[]; onSelect: (date: string, slot: Slot) => void; onSaved: () => void;
+  today: string; meals: Meal[]; onSelect: (date: string, slot: Slot, start: string) => void; onSaved: () => void;
 }) {
   const [range, setRange] = useState({ start: -7, end: 20 });
   const [visibleDay, setVisibleDay] = useState(today);
@@ -104,7 +104,7 @@ export function Planner({ today, meals, onSelect, onSaved }: {
             return <div key={slot} className={`meal-slot ${meal?.text ? 'filled' : 'empty'}`} aria-busy={pending}>
               <button className={`meal-cell ${meal?.text ? 'filled' : ''}`} disabled={pending}
               aria-label={`${label}${meal?.text ? ` : ${meal.text}` : ' : choisir un repas'}`}
-              onClick={() => onSelect(date, slot)}>
+              onClick={() => onSelect(date, slot, visibleDay)}>
               {meal?.text ? <span>{meal.text}</span> : pending ? <LoaderCircle size={16} className="spinning" aria-label="Recherche d’un repas en cours" />
                 : <><Plus size={16} strokeWidth={1.4} /><span className="placeholder">À imaginer</span></>}
               </button>

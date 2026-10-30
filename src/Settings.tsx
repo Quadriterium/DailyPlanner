@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Check, Cloud, Download, RefreshCw, ShieldCheck, Sparkles } from 'lucide-react';
-import type { Capabilities, Settings as AppSettings } from '../shared/model';
+import { defaultHousehold, type Capabilities, type Household, type Settings as AppSettings } from '../shared/model';
 import { errorMessage, save } from './store';
 import { pwaStatus } from './pwa';
 
@@ -10,18 +10,36 @@ export function Settings({ settings, capabilities, online, lastSync, pending, sy
 }) {
   const [error, setError] = useState<string | null>(null);
   const [pendingModel, setPendingModel] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [pendingHousehold, setPendingHousehold] = useState(false);
+  const [modelSaved, setModelSaved] = useState(false);
+  const [householdSaved, setHouseholdSaved] = useState(false);
   const pwa = pwaStatus();
   const selectedModel = pendingModel ?? settings?.model;
   async function changeModel(model: string) {
     setPendingModel(model);
     setError(null);
-    setSaved(false);
+    setModelSaved(false);
     try {
-      await save([{ type: 'settings', id: 'global', model }]);
-      setSaved(true);
+      await save([{ type: 'settings', id: 'global', model, household: settings?.household ?? defaultHousehold }]);
+      setModelSaved(true);
     } catch (cause) { setError(errorMessage(cause)); }
     finally { setPendingModel(null); }
+  }
+  async function changeHousehold(person: keyof Household, value: string) {
+    const count = Number(value);
+    const household = settings?.household ?? defaultHousehold;
+    if (!Number.isInteger(count) || count < 0 || count > 20 || household.adults + household.teenagers + household.children - household[person] + count < 1) {
+      setError('Indiquez entre 0 et 20 personnes par catégorie, avec au moins une personne au total.');
+      return;
+    }
+    setPendingHousehold(true);
+    setError(null);
+    setHouseholdSaved(false);
+    try {
+      await save([{ type: 'settings', id: 'global', model: settings?.model ?? '', household: { ...household, [person]: count } }]);
+      setHouseholdSaved(true);
+    } catch (cause) { setError(errorMessage(cause)); }
+    finally { setPendingHousehold(false); }
   }
   return <section className="settings">
     <div className="section-heading"><div><p className="eyebrow">LES COULISSES DU CARNET</p><h2>À votre façon</h2></div><Sparkles size={23} strokeWidth={1.3} /></div>
@@ -40,6 +58,25 @@ export function Settings({ settings, capabilities, online, lastSync, pending, sy
       <p className="field-hint">Astuce : quatre taps rapides sur « À table ! » actualisent aussi les données, sans effacer le carnet.</p>
     </div>
     <div className="settings-card">
+      <h3><Sparkles size={19} />Votre foyer</h3>
+      <p>Les prochaines recettes générées par l’IA indiqueront des quantités adaptées à votre foyer.</p>
+      <fieldset disabled={!settings || pendingHousehold}><legend className="field-label">Personnes à table</legend>
+        <div className="household-options">
+          {([
+            ['adults', 'Adultes'],
+            ['teenagers', 'Adolescents'],
+            ['children', 'Enfants'],
+          ] as const).map(([person, label]) => <label key={person}>
+            <span>{label}</span>
+            <input type="number" min="0" max="20" step="1" value={settings?.household[person] ?? defaultHousehold[person]}
+              onChange={event => void changeHousehold(person, event.target.value)} />
+          </label>)}
+        </div>
+      </fieldset>
+      {householdSaved && <p className="field-hint" role="status">Composition du foyer enregistrée ; elle sera utilisée pour les prochaines recettes IA.</p>}
+      {error && <p className="inline-error" role="alert">{error}</p>}
+    </div>
+    <div className="settings-card">
       <h3><Sparkles size={19} />Un petit coup de pouce de l’IA</h3>
       <p>Pour enrichir vos fiches et générer de nouvelles idées de saison, en tenant compte du carnet et des repas choisis de J−15 à J+15 autour d’aujourd’hui. L’enrichissement ne change pas les textes déjà saisis dans le planning.</p>
       {!capabilities?.aiConfigured && <p className="info-box">L’analyse attend la configuration de la clé OpenAI sur le serveur. Vous pouvez déjà tout planifier.</p>}
@@ -53,15 +90,15 @@ export function Settings({ settings, capabilities, online, lastSync, pending, sy
           </label>)}</div>
       </fieldset>
       {!online && <p className="field-hint">Le choix du modèle et la relance de l’IA nécessitent le serveur.</p>}
-      {saved && <p className="field-hint" role="status">Choix enregistré localement ; il sera appliqué aux prochaines analyses et générations après synchronisation.</p>}
+      {modelSaved && <p className="field-hint" role="status">Choix enregistré localement ; il sera appliqué aux prochaines analyses et générations après synchronisation.</p>}
       {error && <p className="inline-error" role="alert">{error}</p>}
       {capabilities && <dl>
-        <div><dt>Appels IA aujourd’hui</dt><dd>{capabilities.callsToday} / {capabilities.dailyLimit}</dd></div>
-        <div><dt>Appels IA ce mois-ci</dt><dd>{capabilities.callsThisMonth} / {capabilities.monthlyLimit}</dd></div>
+        <div><dt>Appels IA aujourd’hui</dt><dd>{capabilities.callsToday}</dd></div>
+        <div><dt>Appels IA ce mois-ci</dt><dd>{capabilities.callsThisMonth}</dd></div>
         <div><dt>Tokens comptabilisés ce mois-ci</dt><dd>{(capabilities.inputTokens + capabilities.outputTokens).toLocaleString('fr-FR')}</dd></div>
       </dl>}
-      <p className="field-hint">Les plafonds sont fixés côté serveur. Les échecs comptent comme des tentatives et ne sont pas relancés automatiquement. Ce sont des limites d’usage, pas une garantie de coût en euros. Vérifiez également les limites de votre projet OpenAI.</p>
+      <p className="field-hint">L’application ne limite pas le nombre d’appels IA. Les échecs comptent comme des tentatives et ne sont pas relancés automatiquement. Les compteurs ne sont pas une facture. Les limites de votre projet OpenAI restent applicables.</p>
     </div>
-    <div className="privacy-note"><ShieldCheck size={22} strokeWidth={1.4} /><p>Un carnet partagé, sans compte utilisateur. Toute personne ayant accès à cette adresse peut lire et modifier les repas. La clé OpenAI ne quitte jamais le serveur. L’analyse transmet le nom du repas à OpenAI ; la génération transmet la saison du créneau, les noms du carnet (archives comprises) et ceux des repas choisis de J−15 à J+15 autour d’aujourd’hui, sans leurs dates ni les recettes.</p></div>
+    <div className="privacy-note"><ShieldCheck size={22} strokeWidth={1.4} /><p>Un carnet partagé, sans compte utilisateur. Toute personne ayant accès à cette adresse peut lire et modifier les repas. La clé OpenAI ne quitte jamais le serveur. L’analyse transmet le nom du repas et la composition du foyer à OpenAI ; la génération transmet aussi la saison du créneau, les noms du carnet (archives comprises) et ceux des repas choisis de J−15 à J+15 autour d’aujourd’hui, sans leurs dates ni les recettes.</p></div>
   </section>;
 }

@@ -10,7 +10,7 @@ invocables depuis le menu `/` de Copilot :
 - [app-architecture](.github/skills/app-architecture/SKILL.md) : carte du projet, modèle et parcours des données.
 - [app-interface](.github/skills/app-interface/SKILL.md) : planning, saisie, carnet et interface responsive.
 - [app-sync-offline](.github/skills/app-sync-offline/SKILL.md) : IndexedDB, conflits, synchronisation et cache PWA.
-- [app-ai-library](.github/skills/app-ai-library/SKILL.md) : enrichissement OpenAI, saisons, corrections et quotas.
+- [app-ai-library](.github/skills/app-ai-library/SKILL.md) : enrichissement OpenAI, saisons, corrections et suivi d’utilisation.
 - [app-deployment](.github/skills/app-deployment/SKILL.md) : installation Windows, Wi-Fi, HTTP/HTTPS, sauvegarde et diagnostic.
 
 Commencer par `app-architecture` pour une vue d'ensemble ; chaque skill renvoie aux
@@ -66,17 +66,19 @@ Sur HTTP LAN, les données restent sauvegardées dans IndexedDB et la saisie/syn
 npm run dev
 ```
 
-Client : http://localhost:5173 ; API : http://127.0.0.1:3000. Le proxy Vite est configuré pour le port 3000. Le service worker est volontairement absent en développement ; tester le mode hors ligne avec le **build de production**.
+Client : http://localhost:5173 ; API : `PORT` de `.env` (3000 par défaut), via le proxy Vite. Les modifications sont rechargées automatiquement : remplacement à chaud pour l’interface (Vite), redémarrage de l’API (`tsx watch`). Arrêter d’abord `npm start` s’il occupe déjà ce port. Si `HOST=0.0.0.0`, le client de développement est aussi accessible sur le réseau local (http://192.168.1.22:5173, ouvrir le port 5173 dans le pare-feu). Le service worker est volontairement absent en développement ; tester le mode hors ligne avec le **build de production**.
 
 ## Utilisation
 
 - À l’ouverture : **aujourd’hui et les six jours suivants**, selon `Europe/Paris`. Une ligne par jour, deux colonnes midi/soir. Le titre et la navigation forment une bannière compacte ; les sept lignes se partagent la hauteur disponible et le planning occupe toute la largeur de la page. Sur les écrans très courts, la page reste défilable pour préserver la lisibilité et les cibles tactiles.
 - Faire défiler **verticalement la grille** : passé au-dessus, futur en dessous. Les flèches déplacent de sept jours ; « Aujourd’hui » recentre le planning. L’historique reste conservé.
-- Toucher un créneau pour saisir un repas ou choisir dans une **liste de cartes**, sans combobox. Les suggestions sont exclusivement vos créations, classées selon la saison de la date sélectionnée. « Tous les repas » ignore la saison.
+- Toucher un créneau pour saisir un repas ou choisir dans une **liste de cartes**, sans combobox. Les suggestions sont exclusivement vos créations, classées selon la saison de la date sélectionnée. « Tous les repas » ignore la saison. Sur un créneau vide, le dialogue propose aussi **Générer avec l’IA** et **Choisir au hasard**.
+- Toucher un repas déjà choisi ouvre sa recette et ses ingrédients, lorsqu’ils sont disponibles. « Modifier le repas » permet de changer le nom ou de choisir une autre fiche ; « Vider » supprime uniquement ce choix du planning. On peut aussi le remplacer au hasard dans le carnet de saison ou demander une proposition à l’IA. En cas d’échec, le repas initial reste conservé.
 - Chaque case vide propose deux boutons à droite : **étincelles** pour générer un repas de saison avec l’IA, **flèches croisées** pour piocher au hasard dans le carnet de saison (y compris les plats « toute l’année », hors archives). Le choix est enregistré directement. Le tirage privilégie les repas absents des **sept jours affichés**, puis accepte une répétition si aucun autre choix n’existe. Il fonctionne aussi hors ligne ; un carnet sans repas de saison affiche une explication.
-- La génération IA exige le serveur et une clé OpenAI. Elle utilise la saison de la date du créneau et les mêmes modèles et quotas que l’analyse ; les erreurs laissent la case vide. Le repas et sa fiche complète rejoignent le carnet sans second appel d’enrichissement.
+- La génération IA exige le serveur et une clé OpenAI. Elle utilise la saison de la date du créneau, la composition du foyer définie dans les paramètres et les mêmes modèles que l’analyse ; les erreurs laissent la case vide. Le repas et sa fiche complète rejoignent le carnet sans second appel d’enrichissement.
 - Avant une génération, l’application synchronise les dernières saisies et le modèle choisi. L’IA reçoit les noms de tous les plats créés (archives comprises) et des repas choisis **de J−15 à J+15 autour d’aujourd’hui à Paris**, bornes incluses (31 dates), indépendamment du créneau à remplir. Elle doit proposer un plat différent, éviter les repas récents et leurs variantes proches ; une vraie variante d’un plat ancien est possible si celui-ci n’a pas été choisi dans cette période. Un nom déjà présent est refusé avec une erreur, sans nouvel appel automatique.
-- Une saisie nouvelle est sauvegardée immédiatement. Sa fiche reçoit provisoirement la saison de création. L’IA corrige ensuite le nom dans le carnet, propose une ou plusieurs saisons, des ingrédients et une recette courte. **Le texte déjà saisi dans le planning ne change jamais à cause de cette analyse.**
+- Une saisie nouvelle est sauvegardée immédiatement. Sa fiche reçoit provisoirement la saison de création. L’IA corrige ensuite le nom dans le carnet, propose une ou plusieurs saisons, des ingrédients avec quantités adaptées au foyer et une recette courte. **Le texte déjà saisi dans le planning ne change jamais à cause de cette analyse.**
+- Les paramètres du foyer commencent à **2 adultes, 2 adolescents et 2 enfants**. Ils sont partagés entre les appareils et s’appliquent aux prochaines analyses et générations ; relancer l’IA sur une fiche existante recalcule ses quantités.
 - Les saisons sont larges : mars–mai, juin–août, septembre–novembre, décembre–février, ou toute l’année.
 - Le carnet permet de corriger les fiches, de les archiver et de les restaurer. Les anciens menus conservent leur texte. Une correction manuelle a priorité sur une analyse en cours ; « Relancer l’IA » remplace les informations de la fiche par une nouvelle analyse.
 - **Quatre taps/clics rapides sur le titre** (moins de 650 ms entre chaque) forcent la synchronisation et la vérification des mises à jour. Une fenêtre confirme le succès ou explique l’erreur. Le bouton « Synchroniser » des paramètres offre une alternative accessible.
@@ -121,12 +123,12 @@ Si un modèle déjà sélectionné est retiré de la liste autorisée, les analy
 | `OPENAI_API_KEY` | vide | Clé serveur ; jamais renvoyée au navigateur |
 | `OPENAI_MODEL` | `gpt-6-luna` | Modèle initial d’une nouvelle base |
 | `OPENAI_ALLOWED_MODELS` | `gpt-6-luna,gpt-6-sol,gpt-5.6-luna,gpt-5.6-terra` | Liste autorisée dans les paramètres |
-| `AI_DAILY_LIMIT` | `20` | Nombre maximal de tentatives par jour français |
-| `AI_MONTHLY_LIMIT` | `200` | Nombre maximal de tentatives par mois français |
 
-Une seule analyse à la fois, délai de 45 secondes, sortie plafonnée à 1 400 tokens. Les tentatives sont comptabilisées **avant** l’appel, y compris les échecs. Les quotas persistent après redémarrage. Les erreurs ne sont pas relancées automatiquement ; elles sont visibles dans le carnet. Une analyse interrompue au redémarrage doit également être relancée explicitement. Les tâches en attente de quota reprennent après son renouvellement.
+L’application n’impose aucun quota journalier ou mensuel d’appels IA, ni de limite de génération par minute. Les anciennes variables `AI_DAILY_LIMIT` et `AI_MONTHLY_LIMIT` sont ignorées et peuvent être supprimées de `.env`.
 
-Les paramètres montrent les appels et les tokens des réponses traitées avec succès. Ce compteur de tokens n’est pas une facture : une réponse interrompue/invalide peut aussi avoir été facturée. Les plafonds d’appels limitent l’usage, mais **ne garantissent pas un plafond en euros** (prix du modèle, taux de change, autres usages de la clé). Configurer également les alertes et limites disponibles sur le projet OpenAI. Il est possible de réduire les plafonds dans `.env`.
+Une seule analyse à la fois, délai de 45 secondes, sortie plafonnée à 1 400 tokens. Les tentatives sont comptabilisées **avant** l’appel, y compris les échecs. Les compteurs journaliers et mensuels utilisent `Europe/Paris` et persistent après redémarrage. Les erreurs ne sont pas relancées automatiquement ; elles sont visibles dans le carnet. Une analyse interrompue au redémarrage doit également être relancée explicitement.
+
+Les paramètres montrent les tentatives d’appel et les tokens des réponses traitées avec succès. Ce compteur de tokens n’est pas une facture : une réponse interrompue/invalide peut aussi avoir été facturée. **L’application ne plafonne pas les dépenses OpenAI.** Configurer les alertes et limites disponibles sur le projet OpenAI ; les restrictions du fournisseur restent applicables.
 
 Les recettes/ingrédients IA sont des suggestions, pas une composition garantie, une certification allergène ou un conseil médical. Ils sont modifiables.
 
@@ -134,7 +136,7 @@ Les recettes/ingrédients IA sont des suggestions, pas une composition garantie,
 
 ### Important : pas d’authentification
 
-**Toute personne qui connaît ou trouve l’adresse peut lire et modifier les menus et déclencher des appels OpenAI. HTTPS chiffre les échanges mais ne restreint pas l’accès.** Le serveur vérifie les origines des requêtes navigateur, limite leur débit et impose les modèles/quotas côté serveur. Cela ne remplace pas un contrôle d’accès contre une personne déterminée. Ne pas y stocker d’informations sensibles.
+**Toute personne qui connaît ou trouve l’adresse peut lire et modifier les menus et déclencher des appels OpenAI. HTTPS chiffre les échanges mais ne restreint pas l’accès.** Le serveur vérifie les origines des requêtes navigateur, limite le débit de synchronisation et impose les modèles autorisés côté serveur, mais ne plafonne pas les appels IA. Cela ne remplace pas un contrôle d’accès contre une personne déterminée. Ne pas y stocker d’informations sensibles.
 
 Seul Caddy doit être exposé. Ne jamais ouvrir directement le port Node 3000 ni publier le dossier de données. Le serveur statique ne sert que `dist/client`.
 
@@ -189,6 +191,16 @@ npm run backup -- C:\Sauvegardes\a-table-2026-10-30.sqlite
 
 La commande utilise `VACUUM INTO` et refuse d’écraser une destination existante. Pour restaurer, arrêter Node, conserver l’ancienne base et ses éventuels fichiers WAL/SHM à part, puis placer la sauvegarde à l’emplacement `DATABASE_PATH` avant de redémarrer. Les changements jamais synchronisés n’existent que sur les appareils concernés ; les synchroniser avant toute migration/restauration si possible.
 
+### Repartir de zéro
+
+```powershell
+npm run reset -- --confirm
+```
+
+Supprime les repas du planning et les fiches du carnet, avec leurs analyses IA ; les paramètres (modèle, foyer) et les compteurs IA sont conservés. Une sauvegarde est d’abord créée dans `data/backups/`. Fonctionne serveur démarré.
+
+Le serveur change alors son identifiant de réinitialisation : à leur prochaine synchronisation, toutes les applications (PWA, navigateurs) **effacent leurs repas et fiches locaux, y compris ceux pas encore envoyés**. Les paramètres locaux et leurs modifications en attente sont conservés. Tant qu’un appareil n’a pas appliqué la réinitialisation, ses envois de repas et de fiches sont ignorés (ses paramètres restent acceptés), pour qu’il ne fasse pas réapparaître les données supprimées. Une PWA installée doit d’abord avoir reçu la version de l’application qui gère ce mécanisme.
+
 ## Vérification
 
 ```powershell
@@ -204,6 +216,6 @@ npm run test:e2e -- --project=pixel-chrome --grep='HTTP LAN'
 Remove-Item Env:E2E_HOST
 ```
 
-Les tests unitaires couvrent dates françaises/DST, contrats, conflits, effacements persistants, synchronisation en vol, concurrence des onglets, redémarrage SQLite, quotas et erreurs OpenAI. Les tests navigateur couvrent les formats téléphone/tablette/desktop, Chrome et Firefox, le rechargement réellement hors ligne, le serveur inaccessible malgré Internet, le quadruple clic, l’archivage et les conflits entre deux appareils.
+Les tests unitaires couvrent dates françaises/DST, contrats, conflits, effacements persistants, synchronisation en vol, concurrence des onglets, redémarrage SQLite, comptabilisation des appels sans plafond et erreurs OpenAI. Les tests navigateur couvrent les formats téléphone/tablette/desktop, Chrome et Firefox, le rechargement réellement hors ligne, le serveur inaccessible malgré Internet, le quadruple clic, l’archivage et les conflits entre deux appareils.
 
 Les appels OpenAI sont **simulés dans les tests** : aucune clé ni dépense n’est nécessaire. Un essai réel avec votre clé et une vérification sur les appareils physiques restent nécessaires après le déploiement.

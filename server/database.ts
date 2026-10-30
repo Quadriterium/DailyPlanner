@@ -1,8 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import {
-  analysisSchema, compareVersions, parisDate, recordKey, recordSchema,
+  analysisSchema, compareVersions, defaultHousehold, parisDate, recordKey, recordSchema,
   type Analysis, type Capabilities, type Dish, type DishDetails, type RecordData, type Settings,
 } from '../shared/model.js';
 import type { Config } from './config.js';
@@ -18,6 +19,7 @@ export class Store {
       PRAGMA busy_timeout = 5000;
       CREATE TABLE IF NOT EXISTS records (key TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS analyses (dish_id TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS ai_usage (
         day TEXT PRIMARY KEY, calls INTEGER NOT NULL DEFAULT 0,
         input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0
@@ -27,6 +29,7 @@ export class Store {
     if (!this.get('settings:global')) {
       this.put({
         type: 'settings', id: 'global', model: config.OPENAI_MODEL,
+        household: { ...defaultHousehold },
         modifiedAt: 0, mutationId: '00000000-0000-0000-0000-000000000000',
       });
     }
@@ -56,6 +59,28 @@ export class Store {
   analysis(id: string): Analysis | undefined {
     const row = this.db.prepare('SELECT data FROM analyses WHERE dish_id = ?').get(id);
     return row ? analysisSchema.parse(JSON.parse(String(row.data))) : undefined;
+  }
+
+  resetId(): string | null {
+    const row = this.db.prepare("SELECT value FROM meta WHERE key = 'resetId'").get();
+    return row ? String(row.value) : null;
+  }
+
+  /** Deletes planned meals and library dishes (with their analyses) and forces clients to drop their copies. */
+  reset(): string {
+    const resetId = randomUUID();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare("DELETE FROM records WHERE key LIKE 'meal:%' OR key LIKE 'dish:%'").run();
+      this.db.prepare('DELETE FROM analyses').run();
+      this.db.prepare("INSERT INTO meta (key, value) VALUES ('resetId', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .run(resetId);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return resetId;
   }
 
   settings(): Settings {
@@ -106,8 +131,6 @@ export class Store {
     return {
       aiConfigured: Boolean(this.config.OPENAI_API_KEY),
       allowedModels: this.config.allowedModels,
-      dailyLimit: this.config.AI_DAILY_LIMIT,
-      monthlyLimit: this.config.AI_MONTHLY_LIMIT,
       callsToday: Number(daily?.calls ?? 0),
       callsThisMonth: Number(monthly.calls),
       inputTokens: Number(monthly.input_tokens),
@@ -116,9 +139,7 @@ export class Store {
   }
 
   claimAnalysis(): { dish: Dish; day: string } | undefined {
-    const limits = this.capabilities();
-    if (!limits.aiConfigured || !this.config.allowedModels.includes(this.settings().model) ||
-      limits.callsToday >= limits.dailyLimit || limits.callsThisMonth >= limits.monthlyLimit) return;
+    if (!this.config.OPENAI_API_KEY || !this.config.allowedModels.includes(this.settings().model)) return;
     for (const analysis of this.analyses()) {
       if (analysis.status !== 'pending') continue;
       const dish = this.get(`dish:${analysis.dishId}`);
@@ -139,12 +160,8 @@ export class Store {
   }
 
   reserveGeneration(): string {
-    const limits = this.capabilities();
-    if (!limits.aiConfigured) throw new Error('La génération IA nécessite une clé OpenAI configurée sur le serveur.');
+    if (!this.config.OPENAI_API_KEY) throw new Error('La génération IA nécessite une clé OpenAI configurée sur le serveur.');
     if (!this.config.allowedModels.includes(this.settings().model)) throw new Error('Choisissez un modèle IA autorisé dans les paramètres.');
-    if (limits.callsToday >= limits.dailyLimit || limits.callsThisMonth >= limits.monthlyLimit) {
-      throw new Error('Quota IA atteint. Réessayez après son renouvellement.');
-    }
     const day = parisDate();
     this.db.prepare('INSERT INTO ai_usage (day, calls) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET calls = calls + 1').run(day);
     return day;

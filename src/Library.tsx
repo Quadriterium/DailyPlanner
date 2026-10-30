@@ -90,11 +90,11 @@ function DishEditor({ dish, analysis, online, onClose, onSaved }: {
       <fieldset><legend className="field-label">Les bonnes saisons</legend><div className="season-filters">
         {seasons.map(season => <button type="button" key={season} aria-pressed={selectedSeasons.includes(season)} onClick={() => toggleSeason(season)}>{seasonLabels[season]}</button>)}
       </div></fieldset>
-      <label className="field-label" htmlFor="ingredients">Ingrédients principaux <small>(un par ligne, 30 maximum)</small></label>
+      <label className="field-label" htmlFor="ingredients">Ingrédients et quantités <small>(un par ligne, 30 maximum)</small></label>
       <textarea id="ingredients" value={ingredients} onChange={event => setIngredients(event.target.value)} maxLength={3600} rows={4} />
       <label className="field-label" htmlFor="recipe">Une petite recette</label>
       <textarea id="recipe" value={recipe} onChange={event => setRecipe(event.target.value)} maxLength={4000} rows={5} />
-      <p className="field-hint">Les ingrédients et la recette proposés par l’IA sont indicatifs. Vérifiez la composition réelle et la cuisson ; ils ne garantissent pas l’absence d’allergènes.</p>
+      <p className="field-hint">Les ingrédients, quantités et recette proposés par l’IA sont indicatifs. Vérifiez la composition réelle et la cuisson ; ils ne garantissent pas l’absence d’allergènes.</p>
       {error && <p className="inline-error" role="alert">{error}</p>}
       <div className="editor-actions"><button className="primary-button" disabled={busy || !name.trim() || !selectedSeasons.length}><Check size={17} />Enregistrer la fiche</button></div>
     </form>

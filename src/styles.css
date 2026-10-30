@@ -116,6 +116,14 @@ textarea { resize: vertical; min-height: 60px; max-height: 300px; }
 input:focus, textarea:focus { border-color: #b19266; }
 .field-hint { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 8px 0 0; }
 .editor-actions { display: flex; justify-content: flex-end; align-items: center; gap: 18px; margin-top: 18px; }
+.meal-detail-name { font-size: 24px; overflow-wrap: anywhere; }
+.meal-detail-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 18px; }
+.meal-detail-actions .secondary-button { text-align: left; }
+.meal-recipe { border-top: 1px solid var(--line); margin-top: 22px; padding-top: 18px; overflow-wrap: anywhere; }
+.meal-recipe h3 { font-size: 22px; }
+.meal-recipe h4 { font-size: 13px; margin: 18px 0 8px; }
+.meal-recipe ul { padding-left: 22px; font-size: 14px; }
+.recipe-text { white-space: pre-wrap; font-size: 14px; line-height: 1.7; margin-top: 18px; }
 .primary-button, .secondary-button { display: inline-flex; align-items: center; justify-content: center; gap: 9px; padding: 12px 20px; min-height: 44px; border-radius: 10px; background: #9b6248; color: #fffaf1; font-size: 13px; font-weight: 500; }
 .primary-button:hover:not(:disabled) { background: #824d36; }
 .secondary-button { color: #746047; background: #eee5d5; border: 1px solid #ded0b6; }
@@ -165,6 +173,9 @@ fieldset .season-filters { margin: 0; }
 .model-options { display: flex; flex-wrap: wrap; gap: 10px; }
 .model-options label { display: flex; align-items: center; gap: 9px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 9px; font-size: 12px; cursor: pointer; }
 .model-options .selected { border-color: #b7c09a; background: #eef0e5; color: #656f4f; }
+.household-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.household-options label { display: flex; flex-direction: column; gap: 6px; color: #71634e; font-size: 12px; }
+.household-options input { width: 100%; min-height: 42px; border: 1px solid var(--line); padding: 8px 10px; background: var(--paper); color: var(--ink); }
 .info-box { background: #f0eadc; padding: 12px 14px; border-radius: 10px; margin: 16px 0; }
 .privacy-note { display: flex; gap: 14px; padding: 24px 12px; align-items: flex-start; color: #8d9073; }
 .privacy-note p { font-size: 11px; color: var(--muted); }
@@ -233,6 +244,7 @@ fieldset .season-filters { margin: 0; }
   .settings-card { padding: 18px; }
   .settings-card h3 { font-size: 20px; }
   .settings-card dl { font-size: 11px; }
+  .household-options { grid-template-columns: 1fr; }
   .settings-actions { gap: 6px 15px; }
   .connection-banner { font-size: 11px; padding: 10px; }
 }

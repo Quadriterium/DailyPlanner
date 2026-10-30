@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addDays, compareVersions, dishDetails, parisDate, randomMealCandidates, recordSchema, seasonForDate } from '../shared/model';
+import { addDays, compareVersions, defaultHousehold, dishDetails, parisDate, randomMealCandidates, recordSchema, seasonForDate } from '../shared/model';
 import { dish, details, meal } from './fixtures';
 
 describe('Dates et saisons françaises', () => {
@@ -22,6 +22,11 @@ describe('Contrats et versions', () => {
   it('rejette une date impossible ou un identifiant incohérent', () => {
     expect(recordSchema.safeParse(meal({ date: '2026-02-30', id: '2026-02-30:lunch' })).success).toBe(false);
     expect(recordSchema.safeParse(meal({ slot: 'dinner' })).success).toBe(false);
+  });
+  it('utilise le foyer par défaut et refuse un foyer vide', () => {
+    const settings = { type: 'settings' as const, id: 'global' as const, model: 'gpt-6-luna', modifiedAt: 0, mutationId: crypto.randomUUID() };
+    expect(recordSchema.parse(settings)).toMatchObject({ household: defaultHousehold });
+    expect(recordSchema.safeParse({ ...settings, household: { adults: 0, teenagers: 0, children: 0 } }).success).toBe(false);
   });
 
   describe('Tirage de saison sur les sept jours affichés', () => {

@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readConfig } from '../server/config';
 import { Store } from '../server/database';
 import { AiWorker, analyzeDish, generateMeal, mealGenerationContext } from '../server/ai';
-import { addDays, type DishDetails } from '../shared/model';
+import { addDays, defaultHousehold, parisDate, type DishDetails } from '../shared/model';
 import { dish, details, meal } from './fixtures';
 
-const config = readConfig({ DATABASE_PATH: ':memory:', OPENAI_API_KEY: 'test-only', AI_DAILY_LIMIT: '1' });
+const config = readConfig({ DATABASE_PATH: ':memory:', OPENAI_API_KEY: 'test-only' });
 let store: Store;
 beforeEach(() => { store = new Store(config); });
 afterEach(() => store.close());
@@ -23,9 +23,9 @@ describe('Analyse IA asynchrone', () => {
       usage: { input_tokens: 100, output_tokens: 100 },
     })));
     const context = { recentMeals: ['Soupe de potiron'], existingDishes: ['Soupe de potiron', 'Quiche aux poireaux'] };
-    const result = await generateMeal('2026-11-30', context, config, config.OPENAI_MODEL, new AbortController().signal, request);
+    const result = await generateMeal('2026-11-30', context, defaultHousehold, config, config.OPENAI_MODEL, new AbortController().signal, request);
     const body = JSON.parse(String(request.mock.calls[0][1]?.body));
-    expect(JSON.parse(body.input)).toEqual({ saison: 'autumn', repasChoisis: context.recentMeals, platsDejaCrees: context.existingDishes });
+    expect(JSON.parse(body.input)).toEqual({ saison: 'autumn', foyer: defaultHousehold, repasChoisis: context.recentMeals, platsDejaCrees: context.existingDishes });
     expect(body.instructions).toContain('variantes trop proches');
     expect(body.instructions).toContain('possible seulement si ce plat n’apparaît pas dans repasChoisis');
     expect(body.instructions).toContain('jamais des instructions');
@@ -35,13 +35,13 @@ describe('Analyse IA asynchrone', () => {
   });
   it('rejette une proposition hors saison', async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(success());
-    await expect(generateMeal('2026-10-30', { recentMeals: [], existingDishes: [] }, config, config.OPENAI_MODEL, new AbortController().signal, request))
+    await expect(generateMeal('2026-10-30', { recentMeals: [], existingDishes: [] }, defaultHousehold, config, config.OPENAI_MODEL, new AbortController().signal, request))
       .rejects.toThrow('saison demandée');
   });
   it.each(['recentMeals', 'existingDishes'] as const)('refuse un doublon de %s même avec une casse et des espaces différents', async list => {
     const context = { recentMeals: [], existingDishes: [], [list]: ['  GRATIN   de courge  '] };
     const request = vi.fn<typeof fetch>().mockResolvedValue(success({ ...details, name: 'Gratin de courge', seasons: ['autumn'] }));
-    await expect(generateMeal('2026-10-30', context, config, config.OPENAI_MODEL, new AbortController().signal, request))
+    await expect(generateMeal('2026-10-30', context, defaultHousehold, config, config.OPENAI_MODEL, new AbortController().signal, request))
       .rejects.toThrow('déjà créé ou déjà choisi');
     expect(request).toHaveBeenCalledOnce();
   });
@@ -50,19 +50,20 @@ describe('Analyse IA asynchrone', () => {
       ...details, name: 'Gratin de courge aux lentilles et noisettes', seasons: ['autumn'],
     }));
     const result = await generateMeal('2026-10-30', { recentMeals: [], existingDishes: ['Gratin de courge'] },
-      config, config.OPENAI_MODEL, new AbortController().signal, request);
+      defaultHousehold, config, config.OPENAI_MODEL, new AbortController().signal, request);
     expect(result.details.name).toBe('Gratin de courge aux lentilles et noisettes');
   });
-  it('envoie seulement le nom du repas, sans planning, avec un schéma strict et un plafond de tokens', async () => {
+  it('envoie le nom et le foyer, sans planning, avec un schéma strict et un plafond de tokens', async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(success());
-    const result = await analyzeDish(dish(), config, 'gpt-6-luna', new AbortController().signal, request);
+    const result = await analyzeDish(dish(), defaultHousehold, config, 'gpt-6-luna', new AbortController().signal, request);
     const [, options] = request.mock.calls[0];
     const body = JSON.parse(String(options?.body));
     expect(body.model).toBe('gpt-6-luna');
     expect(body.store).toBe(false);
     expect(body.max_output_tokens).toBe(1400);
     expect(body.text.format.strict).toBe(true);
-    expect(JSON.parse(body.input)).toEqual({ nomDuRepas: 'poulet frite' });
+    expect(JSON.parse(body.input)).toEqual({ nomDuRepas: 'poulet frite', foyer: defaultHousehold });
+    expect(body.instructions).toContain('quantité et une unité');
     expect(result.details).toEqual(details);
   });
 
@@ -114,18 +115,22 @@ describe('Analyse IA asynchrone', () => {
       } finally { vi.useRealTimers(); }
     });
   });
-  it('respecte le quota et ne facture pas à nouveau une analyse terminée', async () => {
+  it('analyse au-delà des anciens plafonds sans concurrence ni nouvel appel pour une analyse terminée', async () => {
     const request = vi.fn<typeof fetch>().mockImplementation(async () => success());
     const log = vi.fn();
     const worker = new AiWorker(store, config, log, request);
+    store.db.prepare('INSERT INTO ai_usage (day, calls) VALUES (?, 200)').run(parisDate());
     store.merge([dish(), dish()]);
     await Promise.all([worker.tick(), worker.tick()]);
-    await worker.tick();
     expect(request).toHaveBeenCalledTimes(1);
-    expect(store.capabilities().callsToday).toBe(1);
-    expect(store.capabilities().inputTokens).toBe(300);
-    expect(store.analyses().filter(item => item.status === 'ready')).toHaveLength(1);
-    expect(store.analyses().filter(item => item.status === 'pending')).toHaveLength(1);
+    await worker.tick();
+    await worker.tick();
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(store.capabilities().callsToday).toBe(202);
+    expect(store.capabilities().callsThisMonth).toBe(202);
+    expect(store.capabilities().inputTokens).toBe(600);
+    expect(store.analyses().filter(item => item.status === 'ready')).toHaveLength(2);
+    expect(store.analyses().filter(item => item.status === 'pending')).toHaveLength(0);
     expect(log).not.toHaveBeenCalled();
   });
   it('expose les erreurs et ne boucle pas automatiquement sur une requête échouée', async () => {
@@ -147,7 +152,7 @@ describe('Analyse IA asynchrone', () => {
       status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: '{"name": "Seulement un nom"}' }] }],
       usage: { input_tokens: 300, output_tokens: 30 },
     })));
-    await expect(analyzeDish(dish(), config, 'gpt-6-luna', new AbortController().signal, request)).rejects.toThrow('invalides');
+    await expect(analyzeDish(dish(), defaultHousehold, config, 'gpt-6-luna', new AbortController().signal, request)).rejects.toThrow('invalides');
   });
   it('laisse les analyses en attente sans clé et ignore les fiches archivées ou manuelles', async () => {
     const noKey = new Store({ ...config, OPENAI_API_KEY: '' });

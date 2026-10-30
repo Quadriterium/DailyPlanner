@@ -6,8 +6,13 @@ function name(prefix: string) { return `${prefix} ${crypto.randomUUID().slice(0,
 function cell(page: Page, date = today, slot: 'lunch' | 'dinner' = 'lunch') {
   return page.locator(`[data-date="${date}"] .meal-cell`).nth(slot === 'lunch' ? 0 : 1);
 }
-async function writeMeal(page: Page, text: string, date = today, slot: 'lunch' | 'dinner' = 'lunch') {
+async function openMealEditor(page: Page, date = today, slot: 'lunch' | 'dinner' = 'lunch') {
   await cell(page, date, slot).click();
+  const modify = page.getByRole('button', { name: 'Modifier le repas', exact: true });
+  if (await modify.isVisible()) await modify.click();
+}
+async function writeMeal(page: Page, text: string, date = today, slot: 'lunch' | 'dinner' = 'lunch') {
+  await openMealEditor(page, date, slot);
   const missingWidth = await page.getByRole('dialog').evaluate(element =>
     innerWidth <= 520 ? document.documentElement.clientWidth - element.getBoundingClientRect().width : 0,
   );
@@ -119,7 +124,7 @@ test('bibliothèque modifiable, suggestions et archivage sans effacer les menus'
   await page.getByRole('button', { name: 'Enregistrer la fiche' }).click();
   await page.getByRole('button', { name: 'Mon planning', exact: true }).click();
   await expect(cell(page)).toHaveText(text);
-  await cell(page, today, 'dinner').click();
+  await openMealEditor(page, today, 'dinner');
   await page.getByLabel('Rechercher un repas', { exact: true }).fill(corrected);
   await page.getByRole('button', { name: new RegExp(corrected) }).click();
   await expect(cell(page, today, 'dinner')).toHaveText(corrected);

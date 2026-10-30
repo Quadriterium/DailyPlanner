@@ -4,7 +4,7 @@ import rateLimit from '@fastify/rate-limit';
 import staticFiles from '@fastify/static';
 import { existsSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
-import { generateMealRequestSchema, syncRequestSchema } from '../shared/model.js';
+import { generateMealRequestSchema, isResetScoped, syncRequestSchema } from '../shared/model.js';
 import { generateMeal, mealGenerationContext } from './ai.js';
 import type { Store } from './database.js';
 import type { Config } from './config.js';
@@ -33,7 +33,7 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     )) return reply.code(403).send({ error: 'Origine non autorisée.' });
   });
   app.get('/api/health', async () => ({ status: 'ok' }));
-  app.post('/api/meals/generate', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+  app.post('/api/meals/generate', async (request, reply) => {
     const parsed = generateMealRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Date du repas invalide.' });
     const context = mealGenerationContext(store.records(), store.analyses());
@@ -44,7 +44,8 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
       return reply.code(409).send({ error: error instanceof Error ? error.message : 'Génération IA indisponible.' });
     }
     try {
-      const result = await generateMeal(parsed.data.date, context, config, store.settings().model, AbortSignal.timeout(45_000), options.aiRequest);
+      const settings = store.settings();
+      const result = await generateMeal(parsed.data.date, context, settings.household, config, settings.model, AbortSignal.timeout(45_000), options.aiRequest);
       store.recordTokens(day, result.inputTokens, result.outputTokens);
       return { details: result.details };
     } catch (error) {
@@ -62,8 +63,11 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     if (parsed.data.mutations.some(record => record.type === 'settings' && !config.allowedModels.includes(record.model))) {
       return reply.code(400).send({ error: 'Ce modèle n’est pas autorisé dans la configuration du serveur.' });
     }
-    store.merge(parsed.data.mutations);
-    return { records: store.records(), analyses: store.analyses(), serverTime: Date.now(), capabilities: store.capabilities() };
+    const resetId = store.resetId();
+    // A client that has not yet applied the latest reset must not resurrect deleted meals or dishes.
+    const stale = (parsed.data.resetId ?? null) !== resetId;
+    store.merge(stale ? parsed.data.mutations.filter(record => !isResetScoped(record)) : parsed.data.mutations);
+    return { resetId, records: store.records(), analyses: store.analyses(), serverTime: Date.now(), capabilities: store.capabilities() };
   });
   const staticRoot = options.staticRoot ?? resolve('dist/client');
   if (existsSync(staticRoot)) {

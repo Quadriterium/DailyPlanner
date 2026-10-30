@@ -36,7 +36,8 @@ description: "Comprendre ou faire évoluer l'interface À table ! : planning mid
   pas de combobox native.
 - Les suggestions viennent des fiches non archivées du carnet, sans catalogue
   de démonstration. Une case vide propose aussi deux boutons à droite :
-  génération IA de saison et tirage au hasard dans le carnet de saison.
+  génération IA de saison et tirage au hasard dans le carnet de saison. Le
+  dialogue d'une case vide reprend ces deux actions sous la saisie.
 - Ces boutons enregistrent directement via `fillMeal()` dans le store.
   Le tirage évite si possible les noms et identifiants déjà prévus sur les
   **sept jours affichés**, puis accepte une répétition faute d'alternative.

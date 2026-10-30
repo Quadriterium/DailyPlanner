@@ -85,7 +85,7 @@ de certificat de confiance ni modifier DNS/routeur sans accord.
 - Conserver si possible la même origine HTTPS : IndexedDB et le cache sont liés
   à l'origine. Un changement d'adresse ne transporte pas les données locales.
 - Sans authentification, toute personne ayant accès peut consulter/modifier et
-  consommer le quota IA. HTTPS chiffre les échanges sans contrôler l'accès.
+  déclencher des appels IA sans plafond applicatif. HTTPS chiffre les échanges sans contrôler l'accès.
 - Ne promettre ni disponibilité serveur permanente ni mode hors ligne avant sa
   mise en cache effective ; vérifier la santé d'un service réellement démarré.
 
