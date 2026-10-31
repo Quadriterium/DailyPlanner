@@ -15,6 +15,14 @@ export const householdSchema = z.object({
   message: 'Le foyer doit contenir au moins une personne.',
 });
 export type Household = z.infer<typeof householdSchema>;
+export const householdCategories = [
+  ['adults', 'Adultes'], ['teenagers', 'Adolescents'], ['children', 'Enfants'],
+] as const;
+export function householdSummary(household: Household): string {
+  return householdCategories.filter(([key]) => household[key] > 0)
+    .map(([key, label]) => `${household[key]} ${label.toLocaleLowerCase('fr-FR').replace(/s$/, household[key] === 1 ? '' : 's')}`)
+    .join(' · ');
+}
 export const recipeUrlSchema = z.string().trim().max(2048).url().refine(value => {
   if (!/^https?:\/\//i.test(value) || !URL.canParse(value)) return false;
   const url = new URL(value);
@@ -29,11 +37,25 @@ const version = {
   modifiedAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   mutationId: z.string().uuid(),
 };
+export const cookingLevels = [1, 2, 3, 4] as const;
+export const cookingLevelSchema = z.literal(cookingLevels);
+export type CookingLevel = z.infer<typeof cookingLevelSchema>;
+export const defaultCookingLevel: CookingLevel = 2;
+export const cookingLevelLabels: Record<CookingLevel, string> = {
+  1: 'Tablier tout neuf', 2: 'Popote du quotidien', 3: 'Toque affûtée', 4: 'Haute voltige étoilée',
+};
+export const cookingLevelHints: Record<CookingLevel, string> = {
+  1: 'Express et sans technique : peu d’ingrédients, une cuisson simple.',
+  2: 'Les classiques familiaux faciles : quelques étapes, gestes de base.',
+  3: 'Plusieurs préparations à mener de front et un vrai coup de main.',
+  4: 'Techniques fines, temps long et dressage soigné : le grand jeu.',
+};
 export const detailsSchema = z.object({
   name: z.string().trim().min(1).max(240),
   seasons: z.array(seasonSchema).min(1).max(5),
   ingredients: z.array(z.string().trim().min(1).max(120)).max(30),
   recipe: z.string().max(4000),
+  level: cookingLevelSchema.optional(),
 }).strict();
 export type DishDetails = z.infer<typeof detailsSchema>;
 export const dishSchema = z.object({
@@ -56,8 +78,10 @@ export const mealSchema = z.object({
   id: z.string(),
   date: dateSchema,
   slot: z.enum(['lunch', 'dinner']),
+  index: z.literal(1).optional(),
   text: mealInputSchema,
   dishId: z.string().uuid().nullable(),
+  household: householdSchema.nullable().optional(),
   ...version,
 }).strict();
 export const settingsSchema = z.object({
@@ -66,17 +90,24 @@ export const settingsSchema = z.object({
   model: z.string().trim().min(1).max(100),
   household: householdSchema.default(defaultHousehold),
   avoid: z.string().max(1000).default(''),
+  cookingLevel: cookingLevelSchema.default(defaultCookingLevel),
   ...version,
 }).strict();
 export const recordSchema = z.discriminatedUnion('type', [dishSchema, mealSchema, settingsSchema])
   .superRefine((record, context) => {
     if (record.type === 'meal' && (
-      record.id !== `${record.date}:${record.slot}` || (!record.text.trim() && record.dishId !== null)
+      record.id !== mealId(record.date, record.slot, record.index) || (!record.text.trim() && (record.dishId !== null || record.household != null))
     )) context.addIssue({ code: 'custom', message: 'Créneau invalide' });
   });
 export type Dish = z.infer<typeof dishSchema>;
 export type Meal = z.infer<typeof mealSchema>;
-export const generateMealRequestSchema = z.object({ date: dateSchema }).strict();
+export function mealId(date: string, slot: Slot, index?: 1): string {
+  return `${date}:${slot}${index === 1 ? ':2' : ''}`;
+}
+export function mealHousehold(meal: Meal | undefined, household: Household = defaultHousehold): Household {
+  return meal?.household ?? household;
+}
+export const generateMealRequestSchema = z.object({ date: dateSchema, level: cookingLevelSchema.optional() }).strict();
 export const generateMealResponseSchema = z.object({ details: detailsSchema }).strict();
 export type Settings = z.infer<typeof settingsSchema>;
 export type RecordData = z.infer<typeof recordSchema>;
@@ -172,12 +203,15 @@ export function seasonalDishes(dishes: Dish[], analyses: Analysis[], date: strin
   });
 }
 
-export function randomMealCandidates(dishes: Dish[], analyses: Analysis[], meals: Meal[], date: string, start: string): Dish[] {
-  const candidates = seasonalDishes(dishes, analyses, date);
+export function randomMealCandidates(
+  dishes: Dish[], analyses: Analysis[], meals: Meal[], date: string, start: string, level?: CookingLevel,
+): Dish[] {
+  const analysisMap = new Map(analyses.map(analysis => [analysis.dishId, analysis]));
+  const candidates = seasonalDishes(dishes, analyses, date)
+    .filter(dish => level === undefined || dishDetails(dish, analysisMap.get(dish.id)).level === level);
   const week = meals.filter(meal => meal.date >= start && meal.date <= addDays(start, 6) && meal.text.trim());
   const ids = new Set(week.map(meal => meal.dishId));
   const names = new Set(week.map(meal => normalizedName(meal.text)));
-  const analysisMap = new Map(analyses.map(analysis => [analysis.dishId, analysis]));
   const unused = candidates.filter(dish => !ids.has(dish.id) && !names.has(normalizedName(dish.name)) &&
     !names.has(normalizedName(dishDetails(dish, analysisMap.get(dish.id)).name)));
   return unused.length ? unused : candidates;

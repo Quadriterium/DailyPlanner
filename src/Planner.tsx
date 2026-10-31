@@ -1,12 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState, type UIEvent } from 'react';
-import { ArrowDown, ArrowUp, CalendarDays, Leaf, LoaderCircle, Moon, Plus, Shuffle, Sparkles, Sun } from 'lucide-react';
-import { addDays, formatDate, isoWeekday, mealDisplayName, seasonForDate, seasonLabels, type Analysis, type Dish, type Meal, type Slot } from '../shared/model';
+import { ArrowDown, ArrowUp, CalendarDays, Leaf, LoaderCircle, Moon, Plus, Shuffle, Sparkles, Sun, Users } from 'lucide-react';
+import { addDays, formatDate, householdSummary, isoWeekday, mealDisplayName, mealId, seasonForDate, seasonLabels, type Analysis, type CookingLevel, type Dish, type Meal, type Slot } from '../shared/model';
 import { Modal } from './components';
+import { LevelButton, seasonalLevelCounts } from './CookingLevel';
 import { errorMessage, fillMeal } from './store';
 
-export function Planner({ today, meals, dishes, analyses, onSelect, onSaved }: {
-  today: string; meals: Meal[]; dishes: Dish[]; analyses: Analysis[];
-  onSelect: (date: string, slot: Slot, start: string) => void; onSaved: () => void;
+export function Planner({ today, meals, dishes, analyses, cookingLevel, onSelect, onSaved }: {
+  today: string; meals: Meal[]; dishes: Dish[]; analyses: Analysis[]; cookingLevel?: CookingLevel;
+  onSelect: (date: string, slot: Slot, start: string, index?: 1) => void; onSaved: () => void;
 }) {
   const [range, setRange] = useState({ start: -7, end: 20 });
   const [visibleDay, setVisibleDay] = useState(today);
@@ -66,12 +67,12 @@ export function Planner({ today, meals, dishes, analyses, onSelect, onSaved }: {
     setVisibleDay(today);
   }
 
-  async function fill(date: string, slot: Slot, mode: 'ai' | 'random') {
+  async function fill(date: string, slot: Slot, mode: 'ai' | 'random', level?: CookingLevel) {
     if (filling.current) return;
     filling.current = true;
     setBusy(`${date}:${slot}`);
     try {
-      await fillMeal(date, slot, visibleDay, mode);
+      await fillMeal(date, slot, visibleDay, mode, undefined, undefined, level);
       onSaved();
     } catch (cause) {
       setError(errorMessage(cause));
@@ -101,23 +102,42 @@ export function Planner({ today, meals, dishes, analyses, onSelect, onSaved }: {
             {date === today && <span className="today-label">Aujourd’hui</span>}
           </div>
           {(['lunch', 'dinner'] as const).map(slot => {
-            const meal = mealMap.get(`${date}:${slot}`);
-            const dish = meal?.dishId ? dishMap.get(meal.dishId) : undefined;
-            const name = meal ? mealDisplayName(meal, dish, dish ? analysisMap.get(dish.id) : undefined) : '';
+            const first = mealMap.get(mealId(date, slot));
+            const second = mealMap.get(mealId(date, slot, 1));
+            const choices = [first, second].filter((meal): meal is Meal => Boolean(meal?.text.trim()));
             const label = `${formatDate(date, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}, ${slot === 'lunch' ? 'midi' : 'soir'}`;
             const pending = busy === `${date}:${slot}`;
-            return <div key={slot} className={`meal-slot ${meal?.text ? 'filled' : 'empty'}`} aria-busy={pending}>
-              <button className={`meal-cell ${meal?.text ? 'filled' : ''}`} disabled={pending}
-              aria-label={`${label}${meal?.text ? ` : ${name}` : ' : choisir un repas'}`}
-              onClick={() => onSelect(date, slot, visibleDay)}>
-              {meal?.text ? <span>{name}</span> : pending ? <LoaderCircle size={16} className="spinning" aria-label="Recherche d’un repas en cours" />
-                : <><Plus size={16} strokeWidth={1.4} /><span className="placeholder">À imaginer</span></>}
-              </button>
-              {!meal?.text && <div className="meal-quick-actions">
-                <button className="meal-quick-button" disabled={Boolean(busy)} title="Générer un repas de saison avec l’IA"
-                  aria-label={`${label} : générer un repas de saison avec l’IA`} onClick={() => void fill(date, slot, 'ai')}><Sparkles size={16} /></button>
-                <button className="meal-quick-button" disabled={Boolean(busy)} title="Piocher un repas de saison dans le carnet"
-                  aria-label={`${label} : piocher un repas de saison dans le carnet`} onClick={() => void fill(date, slot, 'random')}><Shuffle size={16} /></button>
+            return <div key={slot} className={`meal-slot ${choices.length ? 'filled' : 'empty'} ${choices.length === 2 ? 'multiple' : ''}`} aria-busy={pending}>
+              {choices.length ? choices.map(meal => {
+                const dish = meal.dishId ? dishMap.get(meal.dishId) : undefined;
+                const name = mealDisplayName(meal, dish, dish ? analysisMap.get(dish.id) : undefined);
+                return <div className={`meal-choice ${choices.length === 1 ? 'single' : ''}`} key={meal.id}>
+                  <button className="meal-cell filled" data-meal-id={meal.id} disabled={pending} title={name}
+                    aria-label={`${label} : ${name}${meal.household ? ` ; convives personnalisés : ${householdSummary(meal.household)}` : ''}`}
+                    onClick={() => onSelect(date, slot, visibleDay, meal.index)}>
+                    <span className="meal-name">{name}</span>
+                    {choices.length === 1 && meal.household && <Users className="meal-guests-marker" size={14} aria-hidden="true" />}
+                  </button>
+                  {choices.length === 1 && <button className="meal-add-second" aria-label={`${label} : ajouter un deuxième plat`}
+                    title="Ajouter un deuxième plat" onClick={() => onSelect(date, slot, visibleDay, first?.text.trim() ? 1 : undefined)}><Plus size={16} /></button>}
+                </div>;
+              }) : <button className="meal-cell" disabled={pending} aria-label={`${label} : choisir un repas`}
+                onClick={() => onSelect(date, slot, visibleDay)}>
+                {pending ? <LoaderCircle size={16} className="spinning" aria-label="Recherche d’un repas en cours" />
+                  : <><Plus size={16} strokeWidth={1.4} /><span className="placeholder">À imaginer</span></>}
+              </button>}
+              {!choices.length && <div className="meal-quick-actions">
+                <LevelButton className="meal-quick-button" disabled={Boolean(busy)} preferred={cookingLevel}
+                  title="Générer un repas de saison avec l’IA (appui long : choisir le niveau)"
+                  aria-label={`${label} : générer un repas de saison avec l’IA`}
+                  menuTitle="Générer avec l’IA" menuSubtitle={`Pour le ${label} : choisissez le niveau de cuisine de ce repas. Celui des paramètres ne change pas.`}
+                  onPress={() => void fill(date, slot, 'ai')} onLevel={level => void fill(date, slot, 'ai', level)}><Sparkles size={16} /></LevelButton>
+                <LevelButton className="meal-quick-button" disabled={Boolean(busy)} preferred={cookingLevel}
+                  title="Piocher un repas de saison dans le carnet (appui long : choisir le niveau)"
+                  aria-label={`${label} : piocher un repas de saison dans le carnet`}
+                  menuTitle="Piocher au hasard" menuSubtitle={`Pour le ${label} : tirage parmi les plats de saison du carnet au niveau choisi.`}
+                  levelCounts={() => seasonalLevelCounts(dishes, analyses, date)}
+                  onPress={() => void fill(date, slot, 'random')} onLevel={level => void fill(date, slot, 'random', level)}><Shuffle size={16} /></LevelButton>
               </div>}
             </div>;
           })}

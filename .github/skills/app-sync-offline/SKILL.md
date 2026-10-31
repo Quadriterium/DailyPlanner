@@ -28,10 +28,13 @@ description: "Comprendre et diagnostiquer la synchronisation À table ! : Indexe
   `mutationId` en cas d'égalité. Le même comparateur s'applique des deux côtés.
 - L'arbitrage est **par record**, pas par semaine ni par champ d'une fiche.
   Le timestamp local reste monotone par record.
+  Les deux plats d'un créneau utilisent `mealId()` : `date:slot` et
+  `date:slot:2` (`index: 1`), avec leurs propres versions et convives.
 - Une réponse distante ne supprime une entrée d'outbox que si sa version est au
   moins aussi récente. Ne jamais acquitter tout le lot envoyé sans comparer :
   une saisie a pu survenir pendant la requête.
-- Vider un créneau crée un record vide daté, avec `dishId: null`.
+- Vider un plat crée un record vide daté, avec `dishId: null` et `household: null`,
+  sans toucher à l'autre plat du créneau.
   Ne pas le supprimer physiquement : un appareil hors ligne pourrait restaurer
   l'ancienne valeur.
 - Les analyses IA ne participent pas aux versions utilisateur ; voir
@@ -58,10 +61,14 @@ description: "Comprendre et diagnostiquer la synchronisation À table ! : Indexe
   L'installation doit télécharger tous ces fichiers pour réussir.
 - `/api/` n'est pas intercepté. Le shell est servi depuis le cache ; les données
   restent dans IndexedDB.
-- Pas de `skipWaiting` ni de prise de contrôle forcée : une mise à jour attend la
-  fermeture des anciens clients. Une installation échouée ne remplace pas l'ancienne.
+- Par défaut, une mise à jour attend la fermeture des anciens clients.
+  Le bouton « Forcer la mise à jour » retélécharge le shell avec `cache: 'reload'`,
+  puis demande explicitement `skipWaiting` et la prise de contrôle si une version
+  attend. Le rechargement suit uniquement un succès ; IndexedDB reste intact.
+  Une installation échouée ne remplace pas l'ancienne.
 - Le quadruple tap et le bouton de synchronisation ne suppriment aucun cache et ne
-  rechargent pas la page. Fermer tous les onglets pour activer une nouvelle version.
+  rechargent pas la page. Fermer tous les onglets ou utiliser le bouton distinct
+  de mise à jour pour activer une nouvelle version.
 - HTTPS ou localhost est nécessaire au service worker. En développement Vite, il
   est désactivé ; en HTTP LAN, la saisie fonctionne mais pas le rechargement hors ligne.
 - La première visite doit être en ligne ; éviction du stockage et navigation

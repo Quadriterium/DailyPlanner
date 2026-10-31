@@ -1,7 +1,8 @@
 import { useSyncExternalStore } from 'react';
 import {
-  dishDetails, featureRequestListSchema, featureRequestSchema, generateMealResponseSchema, normalizedName, randomMealCandidates,
-  seasonForDate, syncResponseSchema, type DishDetails, type FeatureRequest, type Meal, type Slot,
+  cookingLevelLabels, defaultCookingLevel, dishDetails, featureRequestListSchema, featureRequestSchema, generateMealResponseSchema, mealId,
+  normalizedName, randomMealCandidates, seasonForDate, syncResponseSchema,
+  type CookingLevel, type DishDetails, type FeatureRequest, type Household, type Meal, type Slot,
 } from '../shared/model';
 import { createRepository, type Draft, type Snapshot } from './repository';
 import { newId } from './id';
@@ -70,9 +71,18 @@ export async function save(drafts: Draft[]) {
   synchronizeInBackground();
 }
 
-export async function fillMeal(date: string, slot: Slot, start: string, mode: 'ai' | 'random', replacing?: Meal) {
+/** Niveau de cuisine des paramètres, utilisé quand aucun niveau n'est choisi par appui long. */
+export function preferredCookingLevel(records: State['records']): CookingLevel {
+  const settings = records.find(record => record.type === 'settings');
+  return settings?.cookingLevel ?? defaultCookingLevel;
+}
+
+export async function fillMeal(
+  date: string, slot: Slot, start: string, mode: 'ai' | 'random', replacing?: Meal, index?: 1, level?: CookingLevel,
+) {
   await refresh();
-  const id = `${date}:${slot}`;
+  index = replacing?.index ?? index;
+  const id = mealId(date, slot, index);
   const previous = state.records.find(record => record.type === 'meal' && record.id === id);
   if (replacing) {
     if (replacing.id !== id || previous?.mutationId !== replacing.mutationId) {
@@ -90,7 +100,8 @@ export async function fillMeal(date: string, slot: Slot, start: string, mode: 'a
     try {
       response = await fetch('/api/meals/generate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date }), cache: 'no-store', signal: AbortSignal.timeout(50_000),
+        body: JSON.stringify({ date, level: level ?? preferredCookingLevel(state.records) }),
+        cache: 'no-store', signal: AbortSignal.timeout(50_000),
       });
     } catch (error) {
       throw new Error('Génération impossible : serveur inaccessible ou délai dépassé. Le créneau reste inchangé.', { cause: error });
@@ -109,22 +120,35 @@ export async function fillMeal(date: string, slot: Slot, start: string, mode: 'a
   }
   const dishes = state.records.filter(record => record.type === 'dish');
   const meals = state.records.filter(record => record.type === 'meal');
-  const candidates = randomMealCandidates(dishes, state.analyses, meals, date, start);
+  const randomLevel = level ?? preferredCookingLevel(state.records);
+  const candidates = generated ? [] : randomMealCandidates(dishes, state.analyses, meals, date, start, randomLevel);
   const selected = generated
     ? dishes.find(dish => !dish.archived && (
       normalizedName(dish.name) === normalizedName(generated.name) ||
       normalizedName(dishDetails(dish, state.analyses.find(analysis => analysis.dishId === dish.id)).name) === normalizedName(generated.name)))
     : candidates[Math.floor(Math.random() * candidates.length)];
   const details = generated ?? (selected ? dishDetails(selected, state.analyses.find(analysis => analysis.dishId === selected.id)) : undefined);
-  if (!details) throw new Error('Aucun repas de saison dans le carnet. Ajoutez-en un ou utilisez la génération IA.');
+  if (!details) throw new Error(randomMealCandidates(dishes, state.analyses, meals, date, start).length
+    ? `Aucun repas de saison de niveau « ${cookingLevelLabels[randomLevel]} » dans le carnet. Appuyez longuement sur le bouton pour choisir un autre niveau, ou utilisez la génération IA.`
+    : 'Aucun repas de saison dans le carnet. Ajoutez-en un ou utilisez la génération IA.');
   const drafts: Draft[] = [];
   const dishId = selected?.id ?? newId();
   if (!selected && generated) drafts.push({
     type: 'dish', id: dishId, name: generated.name, creationSeason: seasonForDate(date),
     analysisKey: newId(), details: generated, archived: false,
   });
-  drafts.push({ type: 'meal', id, date, slot, text: details.name, dishId });
+  drafts.push({ type: 'meal', id, date, slot, ...(index === 1 ? { index } : {}),
+    text: details.name, dishId, household: replacing?.household ?? null });
   await save(drafts);
+}
+
+export async function saveMealHousehold(meal: Meal, household: Household | null) {
+  await refresh();
+  const current = state.records.find(record => record.type === 'meal' && record.id === meal.id);
+  if (current?.mutationId !== meal.mutationId || !meal.text.trim()) {
+    throw new Error('Ce créneau a été modifié. Fermez puis rouvrez le repas avant de changer les convives.');
+  }
+  await save([{ ...meal, household }]);
 }
 
 export function synchronizeInBackground() {

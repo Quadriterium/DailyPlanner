@@ -35,7 +35,7 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
   app.get('/api/health', async () => ({ status: 'ok' }));
   app.post('/api/meals/generate', async (request, reply) => {
     const parsed = generateMealRequestSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: 'Date du repas invalide.' });
+    if (!parsed.success) return reply.code(400).send({ error: 'Date du repas ou niveau de cuisine invalide.' });
     const context = mealGenerationContext(store.records(), store.analyses());
     let day: string;
     try { day = store.reserveGeneration(); }
@@ -45,7 +45,10 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     }
     try {
       const settings = store.settings();
-      const result = await generateMeal(parsed.data.date, context, settings, config, settings.model, AbortSignal.timeout(45_000), options.aiRequest);
+      const result = await generateMeal(
+        parsed.data.date, parsed.data.level ?? settings.cookingLevel, context, settings, config, settings.model,
+        AbortSignal.timeout(45_000), options.aiRequest,
+      );
       store.recordTokens(day, result.inputTokens, result.outputTokens);
       return { details: result.details };
     } catch (error) {

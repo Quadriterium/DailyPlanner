@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Archive, ArrowUpRight, Check, Leaf, RotateCcw, Search, Sparkles } from 'lucide-react';
-import { dishDetails, recipeUrl, seasonLabels, seasons, type Analysis, type Dish, type Season } from '../shared/model';
+import {
+  cookingLevelHints, cookingLevelLabels, cookingLevels, dishDetails, recipeUrl, seasonLabels, seasons,
+  type Analysis, type CookingLevel, type Dish, type Season,
+} from '../shared/model';
 import { EmptyState, Modal } from './components';
+import { LevelGauge, LevelTag } from './CookingLevel';
 import { errorMessage, save } from './store';
 import { newId } from './id';
 
@@ -37,6 +41,7 @@ export function Library({ dishes, analyses, online, onSaved }: {
           <div className="recipe-card-top"><span className="recipe-leaf"><Leaf size={24} strokeWidth={1.2} /></span><ArrowUpRight size={17} /></div>
           <h3>{details.name}</h3>
           <p>{details.seasons.map(season => seasonLabels[season]).join(' · ')}</p>
+          {details.level && <LevelTag level={details.level} />}
           <small className={analysis?.status === 'error' && !dish.details ? 'danger' : ''}><Sparkles size={12} />{status}</small>
         </button>;
       })}
@@ -57,6 +62,7 @@ function DishEditor({ dish, analysis, online, onClose, onSaved }: {
   const [selectedSeasons, setSelectedSeasons] = useState(initial.seasons);
   const [ingredients, setIngredients] = useState(initial.ingredients.join('\n'));
   const [recipe, setRecipe] = useState(initial.recipe);
+  const [level, setLevel] = useState<CookingLevel | undefined>(initial.level);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -68,6 +74,7 @@ function DishEditor({ dish, analysis, online, onClose, onSaved }: {
     setSelectedSeasons(updated.seasons);
     setIngredients(updated.ingredients.join('\n'));
     setRecipe(updated.recipe);
+    setLevel(updated.level);
   }, [dish, analysis, dirty]);
 
   async function persist(action: 'edit' | 'archive' | 'analyze') {
@@ -80,6 +87,7 @@ function DishEditor({ dish, analysis, online, onClose, onSaved }: {
           : { ...dish, name: name.trim(), details: {
             name: name.trim(), seasons: selectedSeasons,
             ingredients: ingredients.split('\n').map(item => item.trim()).filter(Boolean), recipe,
+            ...(level ? { level } : {}),
           } }]);
       onSaved();
       onClose();
@@ -103,6 +111,13 @@ function DishEditor({ dish, analysis, online, onClose, onSaved }: {
       <fieldset><legend className="field-label">Les bonnes saisons</legend><div className="season-filters">
         {seasons.map(season => <button type="button" key={season} aria-pressed={selectedSeasons.includes(season)} onClick={() => toggleSeason(season)}>{seasonLabels[season]}</button>)}
       </div></fieldset>
+      <fieldset><legend className="field-label">Niveau de cuisine</legend><div className="season-filters level-filters">
+        {cookingLevels.map(value => <button type="button" key={value} aria-pressed={level === value} title={cookingLevelHints[value]}
+          onClick={() => { setDirty(true); setLevel(current => current === value ? undefined : value); }}>
+          <LevelGauge level={value} />{cookingLevelLabels[value]}</button>)}
+      </div>
+      {!level && <p className="field-hint">Sans niveau, ce repas n’est pas proposé par le choix au hasard. Choisissez-en un, ou relancez l’IA pour l’évaluer.</p>}
+      </fieldset>
       <label className="field-label" htmlFor="ingredients">Ingrédients et quantités <small>(un par ligne, 30 maximum)</small></label>
       <textarea id="ingredients" value={ingredients} onChange={event => setIngredients(event.target.value)} maxLength={3600} rows={4} />
       <label className="field-label" htmlFor="recipe">Une petite recette</label>

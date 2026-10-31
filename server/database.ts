@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
-  analysisSchema, compareVersions, defaultHousehold, featureRequestSchema, parisDate, recordKey, recordSchema,
+  analysisSchema, compareVersions, defaultCookingLevel, defaultHousehold, featureRequestSchema, parisDate, recordKey, recordSchema,
   type Analysis, type Capabilities, type Dish, type DishDetails, type FeatureRequest, type FeatureRequestStatus,
   type RecordData, type Settings,
 } from '../shared/model.js';
@@ -34,7 +34,7 @@ export class Store {
     if (!this.get('settings:global')) {
       this.put({
         type: 'settings', id: 'global', model: config.OPENAI_MODEL,
-        household: { ...defaultHousehold }, avoid: '',
+        household: { ...defaultHousehold }, avoid: '', cookingLevel: defaultCookingLevel,
         modifiedAt: 0, mutationId: '00000000-0000-0000-0000-000000000000',
       });
     }

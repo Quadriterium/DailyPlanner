@@ -110,6 +110,13 @@ test('grille responsive, saisie brute et navigation verticale', async ({ page })
   )).toBeLessThan(2);
 });
 
+test('le titre À table ramène au planning', async ({ page }) => {
+  await page.getByRole('button', { name: 'Mon carnet', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Mon carnet', exact: true })).toHaveAttribute('aria-current', 'page');
+  await page.getByRole('button', { name: 'À table !', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Mon planning', exact: true })).toHaveAttribute('aria-current', 'page');
+});
+
 test('bibliothèque modifiable, suggestions et archivage sans effacer les menus', async ({ page }) => {
   const text = name('soupe du jardin');
   const corrected = `${text} maison`;
@@ -159,6 +166,68 @@ test('rechargement hors ligne, quadruple clic en échec puis reconnexion sans pe
   await page.reload();
   await expect(cell(page)).toHaveText(text);
   await awaitSynced(page);
+});
+
+test('paramètres : mise à jour forcée du CSS et activation sans perte des saisies locales', async ({ page, context }) => {
+  await page.evaluate(async () => { await navigator.serviceWorker.ready; });
+  await page.reload();
+  await awaitSynced(page);
+  await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+  await page.getByRole('radio', { name: 'Sombre', exact: true }).check();
+  await page.getByRole('button', { name: 'Mon planning', exact: true }).click();
+  await context.setOffline(true);
+  const text = name('mise à jour CSS');
+  await writeMeal(page, text);
+  await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+  await page.getByRole('button', { name: 'Forcer la mise à jour', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'Mise à jour impossible' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Forcer la mise à jour', exact: true })).toBeEnabled();
+
+  await context.setOffline(false);
+  await awaitSynced(page);
+  await page.evaluate(async () => {
+    await navigator.serviceWorker.register('/sw.js?forced-update-test', { updateViaCache: 'none' });
+  });
+  await expect.poll(() => page.evaluate(async () => Boolean((await navigator.serviceWorker.getRegistration())?.waiting))).toBe(true);
+  const expectedCss = await page.evaluate(async () => {
+    const stylesheet = document.querySelector<HTMLLinkElement>('link[rel="stylesheet"]')!;
+    const css = new URL(stylesheet.href).pathname;
+    const keys = (await caches.keys()).filter(key => key.startsWith('a-table-shell-'));
+    const cache = await caches.open(keys[0]);
+    const original = await (await cache.match(css))!.text();
+    await cache.put(css, new Response(`${original}\nbody { --forced-update-test: obsolete; }`, { headers: { 'Content-Type': 'text/css' } }));
+    stylesheet.href = `${css}?stale-css-test`;
+    return { css, original };
+  });
+  await expect.poll(() => page.evaluate(() => getComputedStyle(document.body).getPropertyValue('--forced-update-test').trim())).toBe('obsolete');
+  await page.getByRole('button', { name: 'Forcer la mise à jour', exact: true }).click();
+  await expect(cell(page)).toHaveText(text);
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect.poll(() => page.evaluate(() => navigator.serviceWorker.controller?.scriptURL)).toContain('forced-update-test');
+  expect(await page.evaluate(() => getComputedStyle(document.body).getPropertyValue('--forced-update-test').trim())).toBe('');
+  expect(await page.evaluate(async css => {
+    const keys = (await caches.keys()).filter(key => key.startsWith('a-table-shell-'));
+    return (await (await caches.open(keys[0])).match(css))?.text();
+  }, expectedCss.css)).toBe(expectedCss.original);
+  await context.setOffline(true);
+  await page.reload();
+  await expect(cell(page)).toHaveText(text);
+});
+
+test('paramètres : mise à jour forcée sans service worker', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL, serviceWorkers: 'block' });
+  try {
+    const page = await context.newPage();
+    await page.goto('/');
+    await awaitSynced(page);
+    const text = name('mise à jour sans PWA');
+    await writeMeal(page, text);
+    await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+    await page.getByRole('button', { name: 'Forcer la mise à jour', exact: true }).click();
+    await expect(cell(page)).toHaveText(text);
+    await awaitSynced(page);
+    expect(await page.evaluate(() => navigator.serviceWorker.controller)).toBeNull();
+  } finally { await context.close(); }
 });
 
 test('serveur indisponible malgré Internet, suppression hors ligne et réconciliation', async ({ page, context }) => {
@@ -305,4 +374,28 @@ test('HTTP LAN : saisie, carnet et synchronisation sans contexte sécurisé', as
   await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
   await expect(page.getByText('Indisponible sur cet appareil', { exact: true })).toBeVisible();
   await expect(page.getByText('Le mode hors ligne nécessite HTTPS (ou localhost).', { exact: true })).toBeVisible();
+});
+
+test('champs de saisie à 16 px pour éviter le zoom tactile', async ({ page }) => {
+  await writeMeal(page, name('Zoom'));
+  await openMealEditor(page, addDays(today, 1));
+  const small = async () => page.locator('input:not([type=checkbox],[type=radio]), textarea').evaluateAll(fields =>
+    fields.filter(field => (field as HTMLElement).offsetParent && parseFloat(getComputedStyle(field).fontSize) < 16).map(field => field.outerHTML.slice(0, 80)));
+  await expect(page.getByRole('searchbox', { name: 'Rechercher un repas' })).toBeVisible();
+  expect(await small()).toEqual([]);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: /Paramètres/ }).first().click();
+  expect(await small()).toEqual([]);
+});
+
+test('mode ordinateur sur tablette : champs agrandis selon la réduction de la page', async ({ browser }, testInfo) => {
+  test.skip(testInfo.project.name !== 'tablette-chrome', 'Émulation Chrome Android en mode ordinateur');
+  const context = await browser.newContext({ viewport: { width: 980, height: 1400 }, screen: { width: 700, height: 1000 }, hasTouch: true, baseURL: testInfo.project.use.baseURL });
+  const page = await context.newPage();
+  await page.goto('/');
+  await awaitSynced(page);
+  await openMealEditor(page, addDays(today, 2));
+  const field = page.getByLabel('Votre idée du jour', { exact: true });
+  expect(await field.evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBe(23);
+  await context.close();
 });

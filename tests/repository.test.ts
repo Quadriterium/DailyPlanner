@@ -9,6 +9,36 @@ beforeEach(() => { repo = createRepository(crypto.randomUUID()); });
 afterEach(async () => { await repo.close(); });
 
 describe('Sauvegarde locale et synchronisation', () => {
+  it('fusionne indépendamment les deux plats et ne ressuscite pas le deuxième plat vidé', async () => {
+    const first = meal({ household: { adults: 2, teenagers: 0, children: 0 } });
+    const second = meal({ id: `${first.id}:2`, index: 1, text: 'Soupe', household: { adults: 0, teenagers: 0, children: 2 } });
+    await repo.save([first, second]);
+    const sent = await repo.pending();
+    await repo.save([{ ...second, text: '', dishId: null, household: null }]);
+    const latestFirst = { ...first, text: 'Filet mignon', modifiedAt: Date.now() + 100, mutationId: crypto.randomUUID() };
+    await repo.merge(snapshot([...sent.filter(record => record.id !== first.id), latestFirst]));
+    expect((await repo.snapshot()).records).toEqual(expect.arrayContaining([
+      latestFirst, expect.objectContaining({ id: second.id, text: '', household: null }),
+    ]));
+    expect(await repo.pending()).toEqual([expect.objectContaining({ id: second.id, text: '' })]);
+  });
+  it('conserve les convives hors ligne, ne les écrase pas par une réponse obsolète et synchronise le retour aux paramètres', async () => {
+    const household = { adults: 2, teenagers: 0, children: 0 };
+    await repo.save([meal()]);
+    const original = await repo.pending();
+    await repo.save([meal({ household })]);
+    await repo.merge(snapshot(original));
+    const custom = await repo.pending();
+    expect(custom).toEqual([expect.objectContaining({ household })]);
+    await repo.merge(snapshot(custom));
+    expect((await repo.snapshot()).pending).toBe(0);
+    await repo.save([meal({ household: null })]);
+    await repo.merge(snapshot(custom));
+    expect(await repo.pending()).toEqual([expect.objectContaining({ household: null })]);
+    await repo.merge(snapshot(await repo.pending()));
+    expect((await repo.snapshot()).records).toEqual([expect.objectContaining({ household: null })]);
+    expect((await repo.snapshot()).pending).toBe(0);
+  });
   it('conserve le lien et le nom provisoire hors ligne sans laisser une ancienne analyse écraser une correction', async () => {
     const url = `https://example.org/recipe?tracking=${'a'.repeat(500)}`;
     await repo.save([dish({ name: url, sourceUrl: url })]);

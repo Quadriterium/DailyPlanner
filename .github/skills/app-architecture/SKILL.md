@@ -39,11 +39,16 @@ modifier la configuration ou appeler OpenAI sans nécessité.
 
 ## Modèle mental
 
-- `meal` : instantané du texte pour une date et un créneau `lunch` ou `dinner`.
-  Son identifiant est `date:slot`; `dishId` le relie éventuellement au carnet.
+- `meal` : instantané d'un plat pour une date et un créneau `lunch` ou `dinner`.
+  Deux plats maximum : `mealId()` conserve `date:slot` pour le premier et utilise
+  `date:slot:2` avec `index: 1` pour le second. Chaque plat est un record indépendant.
+  `dishId` le relie éventuellement au carnet. `household` nul ou absent suit les
+  paramètres actuels ; une composition explicite personnalise ce plat uniquement.
+  Les quantités de la fiche du carnet ne sont pas recalculées par ce réglage.
 - `dish` : fiche réutilisable avec nom, saison de création, archivage et
   `analysisKey`. Des `details` non nuls représentent une correction manuelle.
-- `settings` : un record partagé `global`, contenant notamment le modèle IA choisi.
+- `settings` : un record partagé `global`, contenant notamment le modèle IA choisi
+  et le niveau de cuisine (`cookingLevel`, 1 à 4) ; `details.level` porte celui d'une fiche.
 - `Analysis` : résultat ou état de travail IA séparé des records utilisateur.
   Pour un import URL, `dish.sourceUrl` conserve le lien et `Analysis.name` peut
   publier le nom avant la recette. `mealDisplayName` affiche ce nom à la place

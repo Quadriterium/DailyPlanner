@@ -133,7 +133,7 @@ test('repas choisi : une proposition IA ne remplace pas une modification dans un
 test('génération rapide IA avec attente, sauvegarde de la fiche et rechargement', async ({ page }) => {
   const generated = { ...details, name: 'Poêlée surprise', seasons: [seasonForDate(today)] };
   await page.route('**/api/meals/generate', async route => {
-    expect(route.request().postDataJSON()).toEqual({ date: today });
+    expect(route.request().postDataJSON()).toEqual({ date: today, level: 2 });
     await new Promise(resolve => setTimeout(resolve, 300));
     await route.fulfill({ json: { details: generated } });
   });

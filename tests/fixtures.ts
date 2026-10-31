@@ -16,7 +16,7 @@ export function meal(overrides: Partial<Meal> = {}): Meal {
 }
 export const details: DishDetails = {
   name: 'Poulet-frites', seasons: ['all'], ingredients: ['Poulet', 'Pommes de terre'],
-  recipe: '1. Préparez les ingrédients.\n2. Faites cuire complètement le poulet et les pommes de terre.',
+  recipe: '1. Préparez les ingrédients.\n2. Faites cuire complètement le poulet et les pommes de terre.', level: 2,
 };
 export const capabilities: Capabilities = {
   aiConfigured: false, allowedModels: ['gpt-6-luna', 'gpt-6-sol', 'gpt-5.6-luna', 'gpt-5.6-terra'],

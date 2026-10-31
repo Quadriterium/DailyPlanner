@@ -1,5 +1,6 @@
 const CACHE = 'a-table-shell-__VERSION__';
 const FILES = __PRECACHE__;
+let forcedActivation = false;
 
 self.addEventListener('install', event => {
   // Installation is atomic; a failed refresh leaves the previous app available.
@@ -7,9 +8,36 @@ self.addEventListener('install', event => {
 });
 
 self.addEventListener('activate', event => {
-  event.waitUntil(caches.keys().then(keys => Promise.all(
-    keys.filter(key => key.startsWith('a-table-shell-') && key !== CACHE).map(key => caches.delete(key)),
-  )));
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.filter(key => key.startsWith('a-table-shell-') && key !== CACHE).map(key => caches.delete(key)));
+    if (forcedActivation) await self.clients.claim();
+  })());
+});
+
+self.addEventListener('message', event => {
+  if (event.data?.type === 'ACTIVATE_UPDATE') {
+    forcedActivation = true;
+    event.waitUntil(self.skipWaiting());
+  } else if (event.data?.type === 'REFRESH_SHELL' && event.ports[0]) {
+    event.waitUntil((async () => {
+      try {
+        // Download everything before touching the working offline cache.
+        const responses = await Promise.all(FILES.map(async file => {
+          const response = await fetch(file, { cache: 'reload', signal: AbortSignal.timeout(30_000) });
+          if (!response.ok) throw new Error(`Download failed: ${file} (${response.status})`);
+          await response.clone().arrayBuffer();
+          return response;
+        }));
+        const cache = await caches.open(CACHE);
+        await Promise.all(FILES.map((file, index) => cache.put(file, responses[index])));
+        event.ports[0].postMessage({ ok: true });
+      } catch (error) {
+        console.error('App shell refresh:', error);
+        event.ports[0].postMessage({ ok: false });
+      }
+    })());
+  }
 });
 
 self.addEventListener('fetch', event => {
