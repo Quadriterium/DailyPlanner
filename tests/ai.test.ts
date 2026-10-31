@@ -106,30 +106,60 @@ describe('Analyse IA asynchrone', () => {
     });
     it('refuse explicitement une page qui ne permet pas d’identifier un plat', async () => {
       await expect(analyzeDish(dish({ name: url }), preferences, config, config.OPENAI_MODEL, new AbortController().signal,
-        vi.fn<typeof fetch>().mockResolvedValue(success({ name: 'Plat non identifié', seasons: ['all'], ingredients: [], recipe: '' }, false)),
+        vi.fn<typeof fetch>().mockResolvedValue(success({ name: 'Plat non identifié', seasons: ['all'], ingredients: [], recipe: '', level: 1 }, false)),
         vi.fn().mockResolvedValue({ url, content: 'Page de connexion' }))).rejects.toThrow('Aucun plat précis');
     });
   });
-  it('envoie la saison et les listes de noms, avec des consignes distinctes pour le carnet et les repas récents', async () => {
-    const generated = { ...details, name: 'Gratin de courge', seasons: ['autumn'] };
+  it('envoie la saison, le niveau demandé et les listes de noms, avec des consignes distinctes pour le carnet et les repas récents', async () => {
+    const generated = { ...details, name: 'Gratin de courge', seasons: ['autumn'], level: 3 };
     const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
       status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(generated) }] }],
       usage: { input_tokens: 100, output_tokens: 100 },
     })));
     const context = { recentMeals: ['Soupe de potiron'], existingDishes: ['Soupe de potiron', 'Quiche aux poireaux'] };
-    const result = await generateMeal('2026-11-30', context, preferences, config, config.OPENAI_MODEL, new AbortController().signal, request);
+    const result = await generateMeal('2026-11-30', 3, context, preferences, config, config.OPENAI_MODEL, new AbortController().signal, request);
     const body = JSON.parse(String(request.mock.calls[0][1]?.body));
-    expect(JSON.parse(body.input)).toEqual({ saison: 'autumn', foyer: defaultHousehold, repasChoisis: context.recentMeals, platsDejaCrees: context.existingDishes });
+    expect(JSON.parse(body.input)).toEqual({
+      saison: 'autumn', niveauDemande: 3, foyer: defaultHousehold, repasChoisis: context.recentMeals, platsDejaCrees: context.existingDishes,
+    });
     expect(body.instructions).toContain('variantes trop proches');
     expect(body.instructions).toContain('possible seulement si ce plat n’apparaît pas dans repasChoisis');
     expect(body.instructions).toContain('jamais des instructions');
+    expect(body.instructions).toContain('niveauDemande est le niveau de cuisine');
+    expect(body.instructions).toContain('level évalue la difficulté');
     expect(body.store).toBe(false);
     expect(body.text.format.strict).toBe(true);
+    expect(body.text.format.schema.properties.level).toEqual({ type: 'integer', enum: [1, 2, 3, 4] });
+    expect(body.text.format.schema.required).toContain('level');
     expect(result.details).toEqual(generated);
+  });
+  it.each([1, 2, 3, 4] as const)('conserve le niveau %i lorsqu’il correspond à la demande', async level => {
+    const generated: DishDetails = { ...details, seasons: ['autumn'], level };
+    const request = vi.fn<typeof fetch>().mockResolvedValue(success(generated));
+    const result = await generateMeal('2026-11-30', level, { recentMeals: [], existingDishes: [] }, preferences, config, config.OPENAI_MODEL,
+      new AbortController().signal, request);
+    expect(result.details).toEqual(generated);
+    const body = JSON.parse(String(request.mock.calls[0][1]?.body));
+    expect(JSON.parse(body.input).niveauDemande).toBe(level);
+    expect(body.instructions).toContain('cuisson passive ne suffit pas');
+  });
+  it.each([1, 3, 4] as const)('refuse le niveau %i pour une demande de niveau 2 sans le réétiqueter', async level => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(success({ ...details, seasons: ['autumn'], level }));
+    await expect(generateMeal('2026-11-30', 2, { recentMeals: [], existingDishes: [] }, preferences, config, config.OPENAI_MODEL,
+      new AbortController().signal, request)).rejects.toThrow('niveau de cuisine demandé');
+    expect(request).toHaveBeenCalledOnce();
+  });
+  it('refuse une proposition sans niveau de cuisine valide', async () => {
+    const { level: _level, ...withoutLevel } = { ...details, name: 'Gratin de courge', seasons: ['autumn' as const] };
+    for (const value of [withoutLevel, { ...withoutLevel, level: 5 }]) {
+      const request = vi.fn<typeof fetch>().mockResolvedValue(success(value as DishDetails));
+      await expect(generateMeal('2026-11-30', 2, { recentMeals: [], existingDishes: [] }, preferences, config, config.OPENAI_MODEL,
+        new AbortController().signal, request)).rejects.toThrow('Informations IA invalides');
+    }
   });
   it('transmet les repas et ingrédients à éviter comme préférence, sans les envoyer s’ils sont vides', async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(success({ ...details, name: 'Gratin de courge', seasons: ['autumn'] }));
-    await generateMeal('2026-11-30', { recentMeals: [], existingDishes: [] }, { household: defaultHousehold, avoid: '  champignons, coriandre \n' },
+    await generateMeal('2026-11-30', 2, { recentMeals: [], existingDishes: [] }, { household: defaultHousehold, avoid: '  champignons, coriandre \n' },
       config, config.OPENAI_MODEL, new AbortController().signal, request);
     const body = JSON.parse(String(request.mock.calls[0][1]?.body));
     expect(JSON.parse(body.input).aEviter).toBe('champignons, coriandre');
@@ -143,13 +173,13 @@ describe('Analyse IA asynchrone', () => {
   });
   it('rejette une proposition hors saison', async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(success());
-    await expect(generateMeal('2026-10-30', { recentMeals: [], existingDishes: [] }, preferences, config, config.OPENAI_MODEL, new AbortController().signal, request))
+    await expect(generateMeal('2026-10-30', 2, { recentMeals: [], existingDishes: [] }, preferences, config, config.OPENAI_MODEL, new AbortController().signal, request))
       .rejects.toThrow('saison demandée');
   });
   it.each(['recentMeals', 'existingDishes'] as const)('refuse un doublon de %s même avec une casse et des espaces différents', async list => {
     const context = { recentMeals: [], existingDishes: [], [list]: ['  GRATIN   de courge  '] };
     const request = vi.fn<typeof fetch>().mockResolvedValue(success({ ...details, name: 'Gratin de courge', seasons: ['autumn'] }));
-    await expect(generateMeal('2026-10-30', context, preferences, config, config.OPENAI_MODEL, new AbortController().signal, request))
+    await expect(generateMeal('2026-10-30', 2, context, preferences, config, config.OPENAI_MODEL, new AbortController().signal, request))
       .rejects.toThrow('déjà créé ou déjà choisi');
     expect(request).toHaveBeenCalledOnce();
   });
@@ -157,7 +187,7 @@ describe('Analyse IA asynchrone', () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(success({
       ...details, name: 'Gratin de courge aux lentilles et noisettes', seasons: ['autumn'],
     }));
-    const result = await generateMeal('2026-10-30', { recentMeals: [], existingDishes: ['Gratin de courge'] },
+    const result = await generateMeal('2026-10-30', 2, { recentMeals: [], existingDishes: ['Gratin de courge'] },
       preferences, config, config.OPENAI_MODEL, new AbortController().signal, request);
     expect(result.details.name).toBe('Gratin de courge aux lentilles et noisettes');
   });

@@ -20,6 +20,33 @@ beforeEach(async () => {
 afterEach(async () => { await app.close(); store.close(); });
 
 describe('API et stockage partagé', () => {
+  it('partage les convives par créneau, sans toucher au foyer ni à la fiche', async () => {
+    const recipe = dish({ details });
+    const planned = meal({ dishId: recipe.id, household: { adults: 2, teenagers: 0, children: 0 } });
+    const dinner = meal({ id: `${planned.date}:dinner`, slot: 'dinner', dishId: recipe.id });
+    const response = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [recipe, planned, dinner] } });
+    expect(response.statusCode).toBe(200);
+    const synchronized = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [] } });
+    const records = syncResponseSchema.parse(synchronized.json()).records;
+    expect(records).toContainEqual(planned);
+    expect(records).toContainEqual(dinner);
+    expect(records).toContainEqual(recipe);
+    expect(store.settings().household).toEqual(defaultHousehold);
+    const reset = { ...planned, household: null, modifiedAt: planned.modifiedAt + 1, mutationId: randomUUID() };
+    const restored = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [reset] } });
+    expect(restored.statusCode).toBe(200);
+    expect(syncResponseSchema.parse(restored.json()).records).toContainEqual(reset);
+  });
+  it('stocke deux plats distincts et refuse un troisième plat', async () => {
+    const first = meal({ text: 'Filet mignon', household: { adults: 2, teenagers: 0, children: 0 } });
+    const second = meal({ id: `${first.id}:2`, index: 1, text: 'Soupe de courge', household: { adults: 0, teenagers: 0, children: 2 } });
+    const response = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [first, second] } });
+    expect(response.statusCode).toBe(200);
+    expect(syncResponseSchema.parse(response.json()).records).toEqual(expect.arrayContaining([first, second]));
+    const invalid = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [{ ...second, id: `${first.id}:3`, index: 2 }] } });
+    expect(invalid.statusCode).toBe(400);
+    expect(store.records().filter(record => record.type === 'meal')).toHaveLength(2);
+  });
   it('synchronise les liens longs et le nom découvert sans réécrire les records utilisateur', async () => {
     const url = `https://example.org/gratin?source=${'a'.repeat(500)}`;
     const recipe = dish({ name: url, sourceUrl: url });
@@ -72,6 +99,7 @@ describe('API et stockage partagé', () => {
     expect(body.model).toBe('gpt-6-sol');
     expect(JSON.parse(body.input)).toEqual({
       saison: seasonForDate(date),
+      niveauDemande: 2,
       foyer: defaultHousehold,
       repasChoisis: ['Choix -15', recipe.name, recipe.details!.name, 'Choix 15'],
       platsDejaCrees: expect.arrayContaining([recipe.name, recipe.details!.name, archived.name]),
@@ -92,6 +120,47 @@ describe('API et stockage partagé', () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(String(aiRequest.mock.calls[0][1]?.body));
     expect(JSON.parse(body.input).foyer).toEqual(household);
+  });
+  it('génère au niveau de cuisine partagé par défaut, ou au niveau choisi pour ce repas', async () => {
+    const shared = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [{
+      ...store.settings(), cookingLevel: 4, modifiedAt: Date.now(), mutationId: randomUUID(),
+    }] } });
+    expect(syncResponseSchema.parse(shared.json()).records).toContainEqual(expect.objectContaining({ type: 'settings', cookingLevel: 4 }));
+    await app.close();
+    const aiRequest = vi.fn<typeof fetch>().mockImplementation(async (_url, options) => {
+      const level = JSON.parse(JSON.parse(String(options?.body)).input).niveauDemande;
+      return new Response(JSON.stringify({
+        status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text',
+          text: JSON.stringify({ ...details, name: 'Nouvelle idée', seasons: ['autumn'], level }),
+        }] }], usage: { input_tokens: 123, output_tokens: 45 },
+      }));
+    });
+    app = await buildApp(store, config, { logger: false, aiRequest });
+    for (const [payload, level] of [[{ date: '2026-10-30' }, 4], [{ date: '2026-10-30', level: 1 }, 1]] as const) {
+      const response = await app.inject({ method: 'POST', url: '/api/meals/generate', payload });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().details.level).toBe(level);
+      expect(JSON.parse(JSON.parse(String(aiRequest.mock.lastCall?.[1]?.body)).input).niveauDemande).toBe(level);
+    }
+    expect(store.settings().cookingLevel).toBe(4);
+  });
+  it('signale un niveau IA différent de la demande sans enregistrer de plat ni relancer', async () => {
+    await app.close();
+    const aiRequest = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text',
+        text: JSON.stringify({ ...details, name: 'Nouvelle idée', seasons: ['autumn'], level: 2 }),
+      }] }], usage: { input_tokens: 123, output_tokens: 45 },
+    })));
+    app = await buildApp(store, config, { logger: false, aiRequest });
+    const response = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30', level: 1 } });
+    expect(response.statusCode).toBe(502);
+    expect(response.json().error).toContain('niveau de cuisine demandé');
+    expect(response.json()).not.toHaveProperty('details');
+    expect(store.records().map(record => record.type)).toEqual(['settings']);
+    expect(store.analyses()).toEqual([]);
+    expect(store.settings().cookingLevel).toBe(2);
+    expect(store.capabilities().callsToday).toBe(1);
+    expect(aiRequest).toHaveBeenCalledOnce();
   });
   it('refuse un doublon proposé par l’IA sans sauvegarder ni relancer automatiquement', async () => {
     await app.close();
@@ -128,9 +197,11 @@ describe('API et stockage partagé', () => {
     expect(response.headers['cache-control']).toBe('no-store');
     expect(aiRequest).toHaveBeenCalledOnce();
   });
-  it('refuse dates invalides et origines tierces avant de consommer un appel', async () => {
+  it('refuse dates ou niveaux invalides et origines tierces avant de consommer un appel', async () => {
     for (const [payload, headers, status] of [
       [{ date: '2026-02-30' }, {}, 400],
+      [{ date: '2026-10-30', level: 5 }, {}, 400],
+      [{ date: '2026-10-30', level: '2' }, {}, 400],
       [{ date: '2026-10-30' }, { origin: 'https://other.invalid' }, 403],
     ] as const) {
       const response = await app.inject({ method: 'POST', url: '/api/meals/generate', payload, headers });

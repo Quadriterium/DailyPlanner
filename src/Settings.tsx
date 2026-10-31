@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Check, Clock3, Cloud, Download, Lightbulb, MonitorSmartphone, Moon, RefreshCw, Send, ShieldCheck, Sparkles, Sun, SunMoon } from 'lucide-react';
+import { Check, ChefHat, Clock3, Cloud, Download, Lightbulb, MonitorSmartphone, Moon, RefreshCw, Send, ShieldCheck, Sparkles, Sun, SunMoon } from 'lucide-react';
 import {
-  defaultHousehold, featureRequestStatusLabels,
-  type Capabilities, type FeatureRequest, type Household, type Settings as AppSettings,
+  cookingLevelHints, cookingLevelLabels, cookingLevels, defaultCookingLevel, defaultHousehold, featureRequestStatusLabels, householdCategories,
+  type Capabilities, type CookingLevel, type FeatureRequest, type Household, type Settings as AppSettings,
 } from '../shared/model';
+import { LevelGauge } from './CookingLevel';
 import { errorMessage, loadFeatureRequests, save, submitFeatureRequest } from './store';
-import { pwaStatus } from './pwa';
+import { pwaStatus, refreshApp } from './pwa';
 import { timePattern, type ThemeControl, type ThemePreference } from './theme';
 
 const themeModes = [
@@ -86,11 +87,17 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
   const [avoidDraft, setAvoidDraft] = useState<string | null>(null);
   const [pendingAvoid, setPendingAvoid] = useState(false);
   const [avoidSaved, setAvoidSaved] = useState(false);
+  const [pendingLevel, setPendingLevel] = useState<CookingLevel | null>(null);
+  const [levelSaved, setLevelSaved] = useState(false);
+  const [levelError, setLevelError] = useState<string | null>(null);
   const [themeError, setThemeError] = useState<string | null>(null);
   const [timeDraft, setTimeDraft] = useState<Partial<Record<ThemeTime, string>>>({});
+  const [updating, setUpdating] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const pwa = pwaStatus();
   const selectedModel = pendingModel ?? settings?.model;
   const savedAvoid = settings?.avoid ?? '';
+  const selectedLevel = pendingLevel ?? settings?.cookingLevel ?? defaultCookingLevel;
   const avoidText = avoidDraft ?? savedAvoid;
   const { preference, theme } = appearance;
   const currentTheme = theme === 'dark' ? 'sombre' : 'clair';
@@ -110,11 +117,21 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
     setTimeDraft(current => ({ ...current, [key]: value }));
     if (timePattern.test(value)) changeTheme({ ...preference, [key]: value });
   }
-  function saveSettings(patch: Partial<Pick<AppSettings, 'model' | 'household' | 'avoid'>>) {
+  function saveSettings(patch: Partial<Pick<AppSettings, 'model' | 'household' | 'avoid' | 'cookingLevel'>>) {
     return save([{
       type: 'settings', id: 'global', model: settings?.model ?? '', household: settings?.household ?? defaultHousehold,
-      avoid: savedAvoid, ...patch,
+      avoid: savedAvoid, cookingLevel: settings?.cookingLevel ?? defaultCookingLevel, ...patch,
     }]);
+  }
+  async function changeLevel(cookingLevel: CookingLevel) {
+    setPendingLevel(cookingLevel);
+    setLevelError(null);
+    setLevelSaved(false);
+    try {
+      await saveSettings({ cookingLevel });
+      setLevelSaved(true);
+    } catch (cause) { setLevelError(errorMessage(cause)); }
+    finally { setPendingLevel(null); }
   }
   async function changeModel(model: string) {
     setPendingModel(model);
@@ -154,6 +171,17 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
     } catch (cause) { setError(errorMessage(cause)); }
     finally { setPendingAvoid(false); }
   }
+  async function updateApp() {
+    setUpdating(true);
+    setUpdateError(null);
+    try {
+      await refreshApp();
+      window.location.reload();
+    } catch (cause) {
+      setUpdateError(`Mise à jour impossible : ${errorMessage(cause)} Vos repas et modifications locales restent conservés.`);
+      setUpdating(false);
+    }
+  }
   return <section className="settings">
     <div className="section-heading"><div><p className="eyebrow">LES COULISSES DU CARNET</p><h2>À votre façon</h2></div><Sparkles size={23} strokeWidth={1.3} /></div>
     <div className="settings-card">
@@ -183,21 +211,22 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
         <div><dt>Application hors ligne</dt><dd>{pwa.error ? 'Indisponible sur cet appareil' : pwa.ready ? 'Prête sur cet appareil' : import.meta.env.DEV ? 'Après le build de production' : 'Préparation en cours'}</dd></div>
       </dl>
       {pwa.error && <p className="inline-error" role="alert">{pwa.error}</p>}
-      {pwa.updateAvailable && <p className="info-box">Une nouvelle version est prête. Fermez tous les onglets et fenêtres de l’application, puis rouvrez-la. Vos modifications locales restent conservées.</p>}
+      {pwa.updateAvailable && <p className="info-box">Une nouvelle version est prête. Utilisez « Forcer la mise à jour » ou fermez tous les onglets et fenêtres de l’application, puis rouvrez-la. Vos modifications locales restent conservées.</p>}
       <div className="settings-actions"><button className="secondary-button" disabled={syncing} onClick={onSync}><RefreshCw size={16} className={syncing ? 'spinning' : ''} />Synchroniser</button>
+        <button className="secondary-button" disabled={updating || syncing || pendingModel !== null || pendingHousehold || pendingAvoid || pendingLevel !== null}
+          onClick={() => void updateApp()}><RefreshCw size={16} className={updating ? 'spinning' : ''} />{updating ? 'Mise à jour…' : 'Forcer la mise à jour'}</button>
         <button className="text-button" onClick={onInstall}><Download size={16} />Installer l’application</button></div>
+      <p className="field-hint">La mise à jour retélécharge l’application, y compris les styles CSS, puis recharge cette page. Le serveur doit être accessible ; les repas et modifications enregistrés restent conservés. Enregistrez d’abord les champs en cours de saisie.</p>
+      {updating && <p className="field-hint" role="status">Téléchargement de l’application avant rechargement…</p>}
+      {updateError && <p className="inline-error" role="alert">{updateError}</p>}
       <p className="field-hint">Astuce : quatre taps rapides sur « À table ! » actualisent aussi les données, sans effacer le carnet.</p>
     </div>
     <div className="settings-card">
       <h3><Sparkles size={19} />Votre foyer</h3>
-      <p>Les prochaines recettes générées par l’IA indiqueront des quantités adaptées à votre foyer.</p>
+      <p>Ces convives sont utilisés par défaut pour les repas. Touchez un repas choisi dans le planning pour adapter les convives de ce créneau uniquement. Les prochaines recettes générées par l’IA indiqueront des quantités adaptées au foyer.</p>
       <fieldset disabled={!settings || pendingHousehold}><legend className="field-label">Personnes à table</legend>
         <div className="household-options">
-          {([
-            ['adults', 'Adultes'],
-            ['teenagers', 'Adolescents'],
-            ['children', 'Enfants'],
-          ] as const).map(([person, label]) => <label key={person}>
+          {householdCategories.map(([person, label]) => <label key={person}>
             <span>{label}</span>
             <input type="number" min="0" max="20" step="1" value={settings?.household[person] ?? defaultHousehold[person]}
               onChange={event => void changeHousehold(person, event.target.value)} />
@@ -216,6 +245,20 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
       <p className="field-hint">L’IA évitera ces repas et ingrédients dans ses propositions et les retirera si possible des recettes. Ce n’est pas une garantie : vérifiez toujours en cas d’allergie.</p>
       {avoidSaved && <p className="field-hint" role="status">Préférences enregistrées ; elles seront utilisées pour les prochaines propositions IA.</p>}
       {error && <p className="inline-error" role="alert">{error}</p>}
+    </div>
+    <div className="settings-card">
+      <h3><ChefHat size={19} />Votre niveau en cuisine</h3>
+      <p>Du plat vite fait au repas de fête : ce niveau guide les idées générées par l’IA et le choix au hasard dans le carnet, qui ne pioche que parmi les plats de ce niveau. Pour un repas ponctuel, un appui long sur les boutons de génération ou de choix au hasard permet d’en choisir un autre.</p>
+      <fieldset disabled={!settings || pendingLevel !== null}><legend className="field-label">Niveau de cuisine</legend>
+        <div className="level-options">{cookingLevels.map(level =>
+          <label key={level} className={selectedLevel === level ? 'selected' : ''}>
+            <input type="radio" name="cooking-level" checked={selectedLevel === level} onChange={() => void changeLevel(level)} />
+            <span className="level-option-text"><strong>{cookingLevelLabels[level]}</strong><small>{cookingLevelHints[level]}</small></span>
+            <LevelGauge level={level} />
+          </label>)}</div>
+      </fieldset>
+      {levelSaved && <p className="field-hint" role="status">Niveau « {cookingLevelLabels[selectedLevel]} » enregistré ; il sera utilisé pour les prochaines générations IA et le choix au hasard.</p>}
+      {levelError && <p className="inline-error" role="alert">{levelError}</p>}
     </div>
     <div className="settings-card">
       <h3><Sparkles size={19} />Un petit coup de pouce de l’IA</h3>
@@ -241,6 +284,6 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
       <p className="field-hint">L’application ne limite pas le nombre d’appels IA. Les échecs comptent comme des tentatives et ne sont pas relancés automatiquement. Les compteurs ne sont pas une facture. Les limites de votre projet OpenAI restent applicables.</p>
     </div>
     <FeatureRequests online={online} />
-    <div className="privacy-note"><ShieldCheck size={22} strokeWidth={1.4} /><p>Un carnet partagé, sans compte utilisateur. Toute personne ayant accès à cette adresse peut lire et modifier les repas. La clé OpenAI ne quitte jamais le serveur. L’analyse transmet le nom du repas, la composition du foyer et les repas et ingrédients à éviter à OpenAI ; la génération transmet aussi la saison du créneau, les noms du carnet (archives comprises) et ceux des repas choisis de J−15 à J+15 autour d’aujourd’hui, sans leurs dates ni les recettes.</p></div>
+    <div className="privacy-note"><ShieldCheck size={22} strokeWidth={1.4} /><p>Un carnet partagé, sans compte utilisateur. Toute personne ayant accès à cette adresse peut lire et modifier les repas. La clé OpenAI ne quitte jamais le serveur. L’analyse transmet le nom du repas, la composition du foyer et les repas et ingrédients à éviter à OpenAI ; la génération transmet aussi la saison du créneau, le niveau de cuisine demandé, les noms du carnet (archives comprises) et ceux des repas choisis de J−15 à J+15 autour d’aujourd’hui, sans leurs dates ni les recettes.</p></div>
   </section>;
 }

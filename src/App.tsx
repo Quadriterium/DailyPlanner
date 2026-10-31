@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { BookOpen, CalendarDays, Check, CircleAlert, CloudOff, Download, Leaf, RefreshCw, Settings2 } from 'lucide-react';
-import { parisDate, recipeUrl, type Slot } from '../shared/model';
+import { mealId, parisDate, recipeUrl, type Slot } from '../shared/model';
 import { Modal } from './components';
 import { Planner } from './Planner';
 import { MealEditor } from './MealEditor';
@@ -21,7 +21,7 @@ export function App() {
   const appearance = useTheme();
   const [tab, setTab] = useState<'planner' | 'library' | 'settings'>('planner');
   const [today, setToday] = useState(parisDate());
-  const [selected, setSelected] = useState<{ date: string; slot: Slot; start: string } | null>(null);
+  const [selected, setSelected] = useState<{ date: string; slot: Slot; start: string; index?: 1 } | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [toast, setToast] = useState(false);
   const [, updatePwa] = useState(0);
@@ -31,6 +31,9 @@ export function App() {
   const dishes = state.records.filter(record => record.type === 'dish');
   const meals = state.records.filter(record => record.type === 'meal');
   const settings = state.records.find(record => record.type === 'settings');
+  const otherSelectedMeal = selected ? meals.find(meal =>
+    meal.date === selected.date && meal.slot === selected.slot &&
+    meal.id !== mealId(selected.date, selected.slot, selected.index) && meal.text.trim()) : undefined;
   const pwa = pwaStatus();
   const importing = Boolean(state.capabilities?.aiConfigured) && dishes.some(dish => {
     const analysis = state.analyses.find(item => item.dishId === dish.id && item.analysisKey === dish.analysisKey);
@@ -91,6 +94,7 @@ export function App() {
   }
 
   function titleTap() {
+    setTab('planner');
     const now = performance.now();
     taps.current.count = now - taps.current.last < 650 ? taps.current.count + 1 : 1;
     taps.current.last = now;
@@ -139,7 +143,7 @@ export function App() {
         {state.error ? <><CircleAlert /><h2>Impossible d’ouvrir le stockage local</h2><p>{state.error}</p><p>Vérifiez les permissions de stockage et l’espace disponible. Aucune saisie ne sera acceptée tant qu’elle ne peut pas être sauvegardée.</p></> : <><Leaf className="spinning" /><p>On met la table…</p></>}
       </div> : <>
         {state.error && <div className="connection-banner" role="status"><CloudOff size={17} /><span>{state.error}</span></div>}
-        {tab === 'planner' && <Planner key={today} today={today} meals={meals} dishes={dishes} analyses={state.analyses} onSelect={(date, slot, start) => setSelected({ date, slot, start })} onSaved={() => setToast(true)} />}
+        {tab === 'planner' && <Planner key={today} today={today} meals={meals} dishes={dishes} analyses={state.analyses} cookingLevel={settings?.cookingLevel} onSelect={(date, slot, start, index) => setSelected({ date, slot, start, index })} onSaved={() => setToast(true)} />}
         {tab === 'library' && <Library dishes={dishes} analyses={state.analyses} online={state.connection === 'online' && Boolean(state.capabilities?.aiConfigured)} onSaved={() => setToast(true)} />}
         {tab === 'settings' && <Settings settings={settings} capabilities={state.capabilities} online={state.connection === 'online'} appearance={appearance}
           lastSync={state.lastSync} pending={state.pending} syncing={state.syncing} onSync={() => void forceSync()} onInstall={() => void install()} />}
@@ -150,8 +154,10 @@ export function App() {
       <span className="footer-signature">Le plaisir des choses simples</span>
     </footer>
     {pwa.error && tab !== 'settings' && <p className="pwa-warning" role="alert">Mode hors ligne : {pwa.error}</p>}
-    {selected && <MealEditor {...selected} today={today} dishes={dishes} analyses={state.analyses}
-      meal={meals.find(meal => meal.id === `${selected.date}:${selected.slot}`)}
+    {selected && <MealEditor key={mealId(selected.date, selected.slot, selected.index)} {...selected} today={today} dishes={dishes} analyses={state.analyses}
+      household={settings?.household} cookingLevel={settings?.cookingLevel}
+      meal={meals.find(meal => meal.id === mealId(selected.date, selected.slot, selected.index))}
+      onAddDish={!otherSelectedMeal ? () => setSelected({ ...selected, index: selected.index === 1 ? undefined : 1 }) : undefined}
       onClose={() => setSelected(null)} onSaved={() => setToast(true)} />}
     {toast && <div className="toast" role="status"><Check size={17} />Enregistré sur cet appareil</div>}
     {notice && <Modal title={notice.title} onClose={() => setNotice(null)}>

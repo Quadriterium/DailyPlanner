@@ -1,6 +1,6 @@
 ---
 name: app-ai-library
-description: "Comprendre le carnet de repas et l'enrichissement OpenAI de À table ! : génération de repas de saison, correction différée du nom, saisons, ingrédients, recette, worker asynchrone, analysisKey, corrections manuelles, archivage, erreurs, modèles autorisés, compteurs et budget API."
+description: "Comprendre le carnet de repas et l'enrichissement OpenAI de À table ! : génération de repas de saison, niveau de cuisine (paramètre, niveau des fiches, tirage par niveau), correction différée du nom, saisons, ingrédients, recette, worker asynchrone, analysisKey, corrections manuelles, archivage, erreurs, modèles autorisés, compteurs et budget API."
 ---
 
 # Bibliothèque de repas et analyse IA
@@ -36,6 +36,24 @@ au même `analysisKey`, sinon nom brut et saison de création.
 Pour un import URL, `analysis.name` fournit aussi un nom provisoire dès sa
 découverte dans les métadonnées Recipe, y compris si la suite échoue.
 
+## Niveau de cuisine
+
+- `cookingLevels` (1 à 4), `cookingLevelLabels` et `cookingLevelHints` sont
+  définis dans le modèle partagé. `settings.cookingLevel` vaut 2 par défaut
+  (défaut Zod pour les anciens paramètres) ; `details.level` reste optionnel
+  pour les anciennes fiches et analyses.
+- L'IA doit toujours renvoyer `level` (schéma JSON strict, `aiDetailsSchema`) :
+  elle l'évalue à l'analyse d'un nom ou d'un lien (1 pour un plat non identifié).
+  La difficulté dépend des gestes, pas de la seule durée de cuisson passive.
+  À la génération, `niveauDemande` est transmis et `generateMeal()` refuse
+  une réponse de niveau différent, sans réétiquetage ni relance automatique.
+- `POST /api/meals/generate` accepte `{ date, level? }` ; sans `level`, le
+  serveur utilise `settings.cookingLevel`. Le client envoie toujours le niveau
+  (paramètres, ou niveau choisi par appui long via `LevelButton`).
+- `randomMealCandidates(..., level)` exclut les fiches sans niveau ou d'un
+  autre niveau, et le repli sur une répétition reste limité à ce niveau.
+- Une correction manuelle du niveau dans le carnet passe par `dish.details`.
+
 ## Import d'un lien
 
 - `recipeUrl` reconnaît uniquement les URL HTTP(S) sans identifiants, jusqu'à
@@ -66,13 +84,13 @@ Une ancienne réponse ne doit jamais écraser cette nouvelle demande.
 ## Génération depuis une case vide
 
 - `fillMeal()` synchronise d'abord les saisies et le modèle, puis appelle
-  `POST /api/meals/generate` avec la date du créneau.
+  `POST /api/meals/generate` avec la date du créneau et le niveau de cuisine.
 - `mealGenerationContext()` construit le contexte depuis les données serveur :
   noms de toutes les fiches (archives comprises), noms des repas choisis de
   J−15 à J+15 autour d'aujourd'hui à Paris, bornes incluses. Les noms bruts et
   affichés des fiches liées sont inclus et les listes dédupliquées, sans troncature.
-- `generateMeal()` transmet ces listes et la saison du créneau, sans dates,
-  identifiants, ingrédients ni recettes existantes. La consigne exclut les plats
+- `generateMeal()` transmet ces listes, la saison du créneau et le niveau demandé,
+  sans dates, identifiants, ingrédients ni recettes existantes. La consigne exclut les plats
   existants à l'identique et les variantes proches de repas choisis dans la période ;
   une vraie variante d'un plat ancien non choisi reste possible.
 - Un doublon de nom (casse et espaces normalisés) est refusé explicitement,
@@ -103,7 +121,7 @@ Une ancienne réponse ne doit jamais écraser cette nouvelle demande.
 - API Responses : uniquement le nom, le foyer et le texte facultatif « à éviter »
   (`settings.avoid`, clé `aEviter`, omise si vide) pour l'analyse d'un nom ;
   URL et contenu extrait en plus pour l'import d'un lien ; en plus, saison,
-  noms du carnet et noms des repas choisis sur la période pour la génération,
+  niveau demandé, noms du carnet et noms des repas choisis sur la période pour la génération,
   `store: false`, JSON structuré
   strict, validation Zod, 1 400 tokens de sortie maximum, timeout 45 secondes.
 - Ne jamais afficher/lire une clé dans les réponses, logs ou fichiers client.

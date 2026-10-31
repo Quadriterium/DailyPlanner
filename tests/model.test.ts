@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addDays, compareVersions, defaultHousehold, dishDetails, isoWeekday, mealDisplayName, parisDate, randomMealCandidates, recipeUrl, recordSchema, seasonForDate } from '../shared/model';
+import { addDays, compareVersions, cookingLevelLabels, cookingLevels, defaultCookingLevel, defaultHousehold, dishDetails, householdSummary, isoWeekday, mealDisplayName, mealHousehold, mealId, parisDate, randomMealCandidates, recipeUrl, recordSchema, seasonForDate } from '../shared/model';
 import { dish, details, meal } from './fixtures';
 
 describe('Dates et saisons françaises', () => {
@@ -57,6 +57,50 @@ describe('Contrats et versions', () => {
     expect(recordSchema.parse(settings)).toMatchObject({ household: defaultHousehold });
     expect(recordSchema.safeParse({ ...settings, household: { adults: 0, teenagers: 0, children: 0 } }).success).toBe(false);
   });
+  it('donne un niveau de cuisine intermédiaire aux anciens paramètres et n’accepte que quatre niveaux', () => {
+    const settings = { type: 'settings' as const, id: 'global' as const, model: 'gpt-6-luna', modifiedAt: 0, mutationId: crypto.randomUUID() };
+    expect(recordSchema.parse(settings)).toMatchObject({ cookingLevel: defaultCookingLevel });
+    expect(defaultCookingLevel).toBe(2);
+    expect(cookingLevels.map(level => cookingLevelLabels[level])).toEqual([
+      'Tablier tout neuf', 'Popote du quotidien', 'Toque affûtée', 'Haute voltige étoilée',
+    ]);
+    for (const level of cookingLevels) expect(recordSchema.parse({ ...settings, cookingLevel: level })).toMatchObject({ cookingLevel: level });
+    for (const level of [0, 5, 2.5, '3']) {
+      expect(recordSchema.safeParse({ ...settings, cookingLevel: level }).success).toBe(false);
+      expect(recordSchema.safeParse(dish({ details: { ...details, level } as typeof details })).success).toBe(false);
+    }
+    const { level: _level, ...legacy } = details;
+    expect(recordSchema.safeParse(dish({ details: legacy })).success).toBe(true);
+  });
+  it('utilise les paramètres à jour sauf si les convives du repas sont personnalisés', () => {
+    const household = { adults: 1, teenagers: 0, children: 3 };
+    const custom = { adults: 2, teenagers: 0, children: 0 };
+    expect(mealHousehold(meal(), household)).toEqual(household);
+    expect(mealHousehold(meal({ household: null }), household)).toEqual(household);
+    expect(mealHousehold(meal({ household: custom }), household)).toEqual(custom);
+    expect(mealHousehold(undefined)).toEqual(defaultHousehold);
+    expect(householdSummary(household)).toBe('1 adulte · 3 enfants');
+    expect(householdSummary(custom)).toBe('2 adultes');
+    expect(householdSummary({ adults: 0, teenagers: 1, children: 1 })).toBe('1 adolescent · 1 enfant');
+  });
+  it('valide les convives sans imposer une migration des anciens repas', () => {
+    expect(recordSchema.safeParse(meal()).success).toBe(true);
+    expect(recordSchema.safeParse(meal({ household: null })).success).toBe(true);
+    expect(recordSchema.safeParse(meal({ household: { adults: 20, teenagers: 0, children: 1 } })).success).toBe(true);
+    for (const adults of [-1, 21, 1.5, NaN]) {
+      expect(recordSchema.safeParse(meal({ household: { adults, teenagers: 0, children: 0 } })).success).toBe(false);
+    }
+    expect(recordSchema.safeParse(meal({ household: { adults: 0, teenagers: 0, children: 0 } })).success).toBe(false);
+    expect(recordSchema.safeParse(meal({ text: '', household: { adults: 2, teenagers: 0, children: 0 } })).success).toBe(false);
+  });
+  it('autorise deux plats indépendants par créneau et conserve les identifiants historiques', () => {
+    expect(mealId('2026-10-30', 'lunch')).toBe('2026-10-30:lunch');
+    expect(mealId('2026-10-30', 'lunch', 1)).toBe('2026-10-30:lunch:2');
+    expect(recordSchema.safeParse(meal({ id: '2026-10-30:lunch:2', index: 1 })).success).toBe(true);
+    expect(recordSchema.safeParse(meal({ index: 1 })).success).toBe(false);
+    expect(recordSchema.safeParse(meal({ id: '2026-10-30:lunch:2' })).success).toBe(false);
+    expect(recordSchema.safeParse({ ...meal(), id: '2026-10-30:lunch:3', index: 2 }).success).toBe(false);
+  });
 
   describe('Tirage de saison sur les sept jours affichés', () => {
     it('ignore archives et autres saisons et accepte toute l’année', () => {
@@ -84,6 +128,22 @@ describe('Contrats et versions', () => {
       expect(randomMealCandidates([recipe, other], [analysis], [used], '2026-10-30', '2026-10-30')).toEqual([other]);
       expect(randomMealCandidates([recipe], [analysis], [used], '2026-10-30', '2026-10-30')).toEqual([recipe]);
       expect(randomMealCandidates([], [], [], '2026-10-30', '2026-10-30')).toEqual([]);
+    });
+    it('ne pioche que parmi les plats du niveau demandé, sans plat non évalué', () => {
+      const easy = dish({ details: { ...details, name: 'Omelette', level: 1 } });
+      const usual = dish({ details: { ...details, name: 'Gratin', level: 2 } });
+      const unrated = dish({ name: 'Soupe' });
+      const analyzed = dish({ name: 'nom brut' });
+      const analysis = {
+        dishId: analyzed.id, analysisKey: analyzed.analysisKey, details: { ...details, name: 'Pot-au-feu', level: 3 as const },
+        status: 'ready' as const, error: null, updatedAt: 1,
+      };
+      const all = [easy, usual, unrated, analyzed];
+      expect(randomMealCandidates(all, [analysis], [], '2026-10-30', '2026-10-30', 1)).toEqual([easy]);
+      expect(randomMealCandidates(all, [analysis], [], '2026-10-30', '2026-10-30', 3)).toEqual([analyzed]);
+      expect(randomMealCandidates(all, [analysis], [], '2026-10-30', '2026-10-30', 4)).toEqual([]);
+      expect(randomMealCandidates(all, [analysis], [meal({ text: 'Omelette' })], '2026-10-30', '2026-10-30', 1)).toEqual([easy]);
+      expect(randomMealCandidates(all, [analysis], [], '2026-10-30', '2026-10-30')).toEqual(all);
     });
   });
   it('départage les dates identiques de manière déterministe', () => {
