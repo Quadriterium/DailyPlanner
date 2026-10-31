@@ -1,11 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState, type UIEvent } from 'react';
 import { ArrowDown, ArrowUp, CalendarDays, Leaf, LoaderCircle, Moon, Plus, Shuffle, Sparkles, Sun } from 'lucide-react';
-import { addDays, formatDate, isoWeekday, seasonForDate, seasonLabels, type Meal, type Slot } from '../shared/model';
+import { addDays, formatDate, isoWeekday, mealDisplayName, seasonForDate, seasonLabels, type Analysis, type Dish, type Meal, type Slot } from '../shared/model';
 import { Modal } from './components';
 import { errorMessage, fillMeal } from './store';
 
-export function Planner({ today, meals, onSelect, onSaved }: {
-  today: string; meals: Meal[]; onSelect: (date: string, slot: Slot, start: string) => void; onSaved: () => void;
+export function Planner({ today, meals, dishes, analyses, onSelect, onSaved }: {
+  today: string; meals: Meal[]; dishes: Dish[]; analyses: Analysis[];
+  onSelect: (date: string, slot: Slot, start: string) => void; onSaved: () => void;
 }) {
   const [range, setRange] = useState({ start: -7, end: 20 });
   const [visibleDay, setVisibleDay] = useState(today);
@@ -16,6 +17,8 @@ export function Planner({ today, meals, onSelect, onSaved }: {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const mealMap = new Map(meals.map(meal => [meal.id, meal]));
+  const dishMap = new Map(dishes.map(dish => [dish.id, dish]));
+  const analysisMap = new Map(analyses.map(analysis => [analysis.dishId, analysis]));
   const season = seasonForDate(visibleDay);
   const dates = Array.from({ length: range.end - range.start + 1 }, (_, index) => addDays(today, range.start + index));
 
@@ -99,13 +102,15 @@ export function Planner({ today, meals, onSelect, onSaved }: {
           </div>
           {(['lunch', 'dinner'] as const).map(slot => {
             const meal = mealMap.get(`${date}:${slot}`);
+            const dish = meal?.dishId ? dishMap.get(meal.dishId) : undefined;
+            const name = meal ? mealDisplayName(meal, dish, dish ? analysisMap.get(dish.id) : undefined) : '';
             const label = `${formatDate(date, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}, ${slot === 'lunch' ? 'midi' : 'soir'}`;
             const pending = busy === `${date}:${slot}`;
             return <div key={slot} className={`meal-slot ${meal?.text ? 'filled' : 'empty'}`} aria-busy={pending}>
               <button className={`meal-cell ${meal?.text ? 'filled' : ''}`} disabled={pending}
-              aria-label={`${label}${meal?.text ? ` : ${meal.text}` : ' : choisir un repas'}`}
+              aria-label={`${label}${meal?.text ? ` : ${name}` : ' : choisir un repas'}`}
               onClick={() => onSelect(date, slot, visibleDay)}>
-              {meal?.text ? <span>{meal.text}</span> : pending ? <LoaderCircle size={16} className="spinning" aria-label="Recherche d’un repas en cours" />
+              {meal?.text ? <span>{name}</span> : pending ? <LoaderCircle size={16} className="spinning" aria-label="Recherche d’un repas en cours" />
                 : <><Plus size={16} strokeWidth={1.4} /><span className="placeholder">À imaginer</span></>}
               </button>
               {!meal?.text && <div className="meal-quick-actions">

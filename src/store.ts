@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import {
-  dishDetails, generateMealResponseSchema, normalizedName, randomMealCandidates, seasonForDate, syncResponseSchema,
-  type DishDetails, type Meal, type Slot,
+  dishDetails, featureRequestListSchema, featureRequestSchema, generateMealResponseSchema, normalizedName, randomMealCandidates,
+  seasonForDate, syncResponseSchema, type DishDetails, type FeatureRequest, type Meal, type Slot,
 } from '../shared/model';
 import { createRepository, type Draft, type Snapshot } from './repository';
 import { newId } from './id';
@@ -178,4 +178,32 @@ export function synchronize(): Promise<void> {
 
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Une erreur inattendue est survenue.';
+}
+
+async function featureRequestCall(init?: RequestInit): Promise<unknown> {
+  let response: Response;
+  try {
+    response = await fetch('/api/feature-requests', { ...init, cache: 'no-store', signal: AbortSignal.timeout(8000) });
+  } catch (error) {
+    throw new Error('Serveur inaccessible. Les demandes d’évolution nécessitent une connexion.', { cause: error });
+  }
+  const body: unknown = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(typeof body === 'object' && body !== null && 'error' in body && typeof body.error === 'string'
+    ? body.error : `Demande refusée (HTTP ${response.status}).`);
+  return body;
+}
+
+export async function loadFeatureRequests(): Promise<FeatureRequest[]> {
+  const result = featureRequestListSchema.safeParse(await featureRequestCall());
+  if (!result.success) throw new Error('Réponse serveur incompatible.');
+  return result.data.requests;
+}
+
+export async function submitFeatureRequest(text: string): Promise<FeatureRequest> {
+  const body = await featureRequestCall({
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+  });
+  const result = featureRequestSchema.safeParse(typeof body === 'object' && body !== null && 'request' in body ? body.request : null);
+  if (!result.success) throw new Error('Réponse serveur incompatible.');
+  return result.data;
 }

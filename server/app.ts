@@ -4,7 +4,7 @@ import rateLimit from '@fastify/rate-limit';
 import staticFiles from '@fastify/static';
 import { existsSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
-import { generateMealRequestSchema, isResetScoped, syncRequestSchema } from '../shared/model.js';
+import { createFeatureRequestSchema, generateMealRequestSchema, isResetScoped, syncRequestSchema } from '../shared/model.js';
 import { generateMeal, mealGenerationContext } from './ai.js';
 import type { Store } from './database.js';
 import type { Config } from './config.js';
@@ -52,6 +52,12 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
       request.log.error(error);
       return reply.code(502).send({ error: error instanceof Error ? error.message : 'La génération IA a échoué.' });
     }
+  });
+  app.get('/api/feature-requests', async () => ({ requests: store.featureRequests() }));
+  app.post('/api/feature-requests', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+    const parsed = createFeatureRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Décrivez votre demande en 3 à 1 000 caractères.' });
+    return reply.code(201).send({ request: store.addFeatureRequest(parsed.data.text) });
   });
   app.post('/api/sync', { config: { rateLimit: { max: 180, timeWindow: '1 minute' } } }, async (request, reply) => {
     const parsed = syncRequestSchema.safeParse(request.body);

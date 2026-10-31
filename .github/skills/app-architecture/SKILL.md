@@ -31,8 +31,9 @@ modifier la configuration ou appeler OpenAI sans nécessité.
 | [App](../../../src/App.tsx) | Navigation, synchronisations automatiques, quadruple tap, installation et notifications |
 | [Planner](../../../src/Planner.tsx) | Grille chronologique glissante, midi/soir, défilement vertical |
 | [Library](../../../src/Library.tsx) | Consultation, correction manuelle, archivage et relance IA |
-| [Settings](../../../src/Settings.tsx) | Modèle autorisé, compteurs IA, connexion et état PWA |
-| [styles](../../../src/styles.css) | Interface responsive crème, terracotta et sauge |
+| [Settings](../../../src/Settings.tsx) | Thème de l'appareil, modèle autorisé, compteurs IA, connexion et état PWA |
+| [thème](../../../src/theme.ts) et [son script de démarrage](../../../public/theme.js) | Clair, sombre, selon l'heure ou comme le système, propre à l'appareil et appliqué avant React |
+| [styles](../../../src/styles.css) | Interface responsive crème, terracotta et sauge, déclinée en thème sombre |
 | [service worker](../../../pwa/service-worker.js) | Cache de l'application, jamais de l'API |
 | [configuration serveur](../../../server/config.ts) | Réseau, origine autorisée, base, clé et modèles IA |
 
@@ -44,6 +45,9 @@ modifier la configuration ou appeler OpenAI sans nécessité.
   `analysisKey`. Des `details` non nuls représentent une correction manuelle.
 - `settings` : un record partagé `global`, contenant notamment le modèle IA choisi.
 - `Analysis` : résultat ou état de travail IA séparé des records utilisateur.
+  Pour un import URL, `dish.sourceUrl` conserve le lien et `Analysis.name` peut
+  publier le nom avant la recette. `mealDisplayName` affiche ce nom à la place
+  du lien d'origine, sans réécrire `meal.text`.
 - Chaque record utilisateur porte `modifiedAt` et `mutationId`.
   Aucun menu ni plat n'est prérempli.
 

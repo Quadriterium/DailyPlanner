@@ -1,6 +1,6 @@
 ---
 name: app-interface
-description: "Comprendre ou faire évoluer l'interface À table ! : planning midi/soir, jours glissants, défilement et swipe vertical, saisie de repas, suggestions saisonnières, carnet, responsive Pixel/tablette, paramètres et quadruple tap."
+description: "Comprendre ou faire évoluer l'interface À table ! : planning midi/soir, jours glissants, défilement et swipe vertical, saisie de repas, suggestions saisonnières, carnet, responsive Pixel/tablette, paramètres, thème clair/sombre et quadruple tap."
 ---
 
 # Comprendre les parcours et l'interface
@@ -49,6 +49,9 @@ description: "Comprendre ou faire évoluer l'interface À table ! : planning mid
 - Le texte du planning est un instantané de la saisie, non le nom calculé
   dynamiquement à partir de la fiche. Une sélection utilise le nom affiché au
   moment du choix.
+- Exception pour une URL HTTP(S) : `mealDisplayName` affiche le nom de la fiche
+  dès identification, sans réécrire `meal.text`. Le lien d'origine reste dans
+  `dish.sourceUrl` ; pendant l'import, la synchronisation visible passe à 2 secondes.
 - Ne fermer l'éditeur et n'afficher le succès qu'après la sauvegarde locale.
   Un échec de stockage doit être visible, sans perdre la saisie.
 
@@ -63,6 +66,15 @@ description: "Comprendre ou faire évoluer l'interface À table ! : planning mid
   Succès et erreur sont présentés dans un dialogue ; un échec laisse l'app utilisable.
 - Conserver les dialogues natifs, labels, navigation clavier et zones tactiles.
   Pour les UUID client, utiliser [newId](../../../src/id.ts), compatible HTTP LAN.
+- Le thème (clair, sombre, selon l'heure, comme le système) est propre à
+  l'appareil : `localStorage` `a-table-theme`, jamais synchronisé. Le mode
+  horaire suit l'heure locale de l'appareil, pas `Europe/Paris`.
+  [public/theme.js](../../../public/theme.js) l'applique avant React (CSP sans
+  script inline) : garder son calcul identique à `resolveTheme()` dans
+  [theme](../../../src/theme.ts), ce que vérifie le test de parité.
+- Le thème sombre surcharge les couleurs via `[data-theme=dark]` dans les
+  styles : toute nouvelle couleur claire doit recevoir son équivalent sombre.
+  Les jours vont du marron pastel (lundi) au doré pastel (dimanche).
 
 ## Vérification ciblée
 

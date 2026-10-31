@@ -233,6 +233,59 @@ test('paramètres : modèle partagé, conservé après rechargement et désactiv
   await expect(firstModel).toBeDisabled();
 });
 
+test('paramètres : thème sombre, horaire ou système, propre à l’appareil et sans flash', async ({ page, browser, baseURL }) => {
+  const html = page.locator('html');
+  const settings = page.getByRole('button', { name: 'Paramètres', exact: true });
+  const theme = (label: string) => page.getByRole('radio', { name: label, exact: true });
+  await expect(html).toHaveAttribute('data-theme', 'light');
+  await settings.click();
+  await expect(theme('Clair')).toBeChecked();
+  await theme('Sombre').check();
+  await expect(html).toHaveAttribute('data-theme', 'dark');
+  await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', '#1c1814');
+  expect(await page.evaluate(() => getComputedStyle(document.documentElement).backgroundColor)).toBe('rgb(21, 18, 15)');
+
+  const evening = new Date();
+  evening.setHours(19, 58, 50, 0);
+  await page.clock.install({ time: evening });
+  await page.reload();
+  await awaitSynced(page);
+  await expect(html).toHaveAttribute('data-theme', 'dark');
+  await page.clock.pauseAt(evening.getTime() + 60_000);
+  await settings.click();
+  await theme('Selon l’heure').check();
+  await expect(html).toHaveAttribute('data-theme', 'light');
+  await expect(page.getByText('Sombre de 20 h à 7 h, selon l’heure de cet appareil. En ce moment : clair.')).toBeVisible();
+  await page.clock.runFor(10_100);
+  await expect(html).toHaveAttribute('data-theme', 'dark');
+  await page.getByLabel('Sombre à partir de', { exact: true }).fill('21:30');
+  await expect(html).toHaveAttribute('data-theme', 'light');
+  await expect(page.getByText('Sombre de 21 h 30 à 7 h', { exact: false })).toBeVisible();
+  await page.clock.resume();
+
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await theme('Comme le système').check();
+  await expect(html).toHaveAttribute('data-theme', 'dark');
+  await page.emulateMedia({ colorScheme: 'light' });
+  await expect(html).toHaveAttribute('data-theme', 'light');
+  await page.reload();
+  await awaitSynced(page);
+  await settings.click();
+  await expect(theme('Comme le système')).toBeChecked();
+
+  // Sans le code de l’application, public/theme.js applique déjà le thème mémorisé.
+  const bare = await browser.newContext({ baseURL, serviceWorkers: 'block' });
+  try {
+    await bare.addInitScript(() => localStorage.setItem('a-table-theme', JSON.stringify({ mode: 'dark' })));
+    const early = await bare.newPage();
+    await early.route('**/assets/**', route => route.abort());
+    await early.goto('/');
+    await expect(early.locator('#root')).toBeEmpty();
+    await expect(early.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await expect(early.locator('meta[name="theme-color"]')).toHaveAttribute('content', '#1c1814');
+  } finally { await bare.close(); }
+});
+
 test('HTTP LAN : saisie, carnet et synchronisation sans contexte sécurisé', async ({ page }) => {
   test.skip(!process.env.E2E_HOST, 'Nécessite E2E_HOST avec une IP LAN, pas localhost.');
   expect(await page.evaluate(() => window.isSecureContext)).toBe(false);

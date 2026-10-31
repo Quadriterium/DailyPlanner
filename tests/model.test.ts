@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addDays, compareVersions, defaultHousehold, dishDetails, isoWeekday, parisDate, randomMealCandidates, recordSchema, seasonForDate } from '../shared/model';
+import { addDays, compareVersions, defaultHousehold, dishDetails, isoWeekday, mealDisplayName, parisDate, randomMealCandidates, recipeUrl, recordSchema, seasonForDate } from '../shared/model';
 import { dish, details, meal } from './fixtures';
 
 describe('Dates et saisons françaises', () => {
@@ -25,6 +25,29 @@ describe('Dates et saisons françaises', () => {
   });
 });
 describe('Contrats et versions', () => {
+  it('accepte les liens longs, sans augmenter la limite des noms et des recettes enrichies', () => {
+    const url = `https://example.org/recipe?tracking=${'a'.repeat(500)}`;
+    expect(recordSchema.parse(dish({ name: url, sourceUrl: url })).name).toBe(url);
+    expect(recordSchema.parse(meal({ text: url })).type).toBe('meal');
+    expect(recordSchema.safeParse(meal({ text: 'a'.repeat(241) })).success).toBe(false);
+    expect(recordSchema.safeParse(dish({ name: 'a'.repeat(241) })).success).toBe(false);
+    expect(recordSchema.safeParse(dish({ details: { ...details, name: url } })).success).toBe(false);
+    expect(recipeUrl('ftp://example.org/recipe')).toBeUndefined();
+    expect(recipeUrl('https://example.org/' + 'a'.repeat(2048))).toBeUndefined();
+  });
+  it('affiche le nom découvert pour un lien seulement, sans réécrire les textes ni utiliser une analyse obsolète', () => {
+    const url = 'https://example.org/recipe';
+    const recipe = dish({ name: url, sourceUrl: url });
+    const planned = meal({ text: url, dishId: recipe.id });
+    const analysis = { dishId: recipe.id, analysisKey: recipe.analysisKey, details: null,
+      name: 'Gratin de courge', status: 'processing' as const, error: null, updatedAt: 1 };
+    expect(mealDisplayName(planned, recipe, analysis)).toBe('Gratin de courge');
+    expect(planned.text).toBe(url);
+    expect(mealDisplayName(planned, { ...recipe, analysisKey: crypto.randomUUID() }, analysis)).toBe(url);
+    expect(mealDisplayName({ ...planned, text: 'Mon gratin' }, recipe, analysis)).toBe('Mon gratin');
+    expect(mealDisplayName(planned, { ...recipe, details: { ...details, name: 'Ma version' } }, analysis)).toBe('Ma version');
+    expect(mealDisplayName(planned, undefined, analysis)).toBe(url);
+  });
   it('rejette une date impossible ou un identifiant incohérent', () => {
     expect(recordSchema.safeParse(meal({ date: '2026-02-30', id: '2026-02-30:lunch' })).success).toBe(false);
     expect(recordSchema.safeParse(meal({ slot: 'dinner' })).success).toBe(false);

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ArrowUpRight, Check, Leaf, Pencil, Search, Shuffle, Sparkles, Trash2 } from 'lucide-react';
 import {
-  dishDetails, formatDate, normalizedName, seasonalDishes, seasonForDate, seasonLabels,
+  dishDetails, formatDate, mealDisplayName, normalizedName, recipeUrl, seasonalDishes, seasonForDate, seasonLabels,
   type Analysis, type Dish, type Meal, type Slot,
 } from '../shared/model';
 import { EmptyState, Modal } from './components';
@@ -25,6 +25,7 @@ export function MealEditor({ date, slot, start, meal, today, dishes, analyses, o
   const currentDish = dishes.find(dish => dish.id === meal?.dishId);
   const currentAnalysis = currentDish ? analysisMap.get(currentDish.id) : undefined;
   const currentDetails = currentDish ? dishDetails(currentDish, currentAnalysis) : undefined;
+  const displayName = meal ? mealDisplayName(meal, currentDish, currentAnalysis) : '';
   const analysisError = !currentDish?.details && currentAnalysis?.analysisKey === currentDish?.analysisKey
     ? currentAnalysis?.error : null;
   const available = dishes.filter(dish => !dish.archived);
@@ -40,16 +41,19 @@ export function MealEditor({ date, slot, start, meal, today, dishes, analyses, o
     setError(null);
     const drafts: Draft[] = [];
     let dishId: string | null = null;
+    const url = recipeUrl(value);
     if (value.trim()) {
       const existing = chosenDish ?? available.find(dish =>
-        normalizedName(dish.name) === normalizedName(value) ||
-        normalizedName(dishDetails(dish, analysisMap.get(dish.id)).name) === normalizedName(value));
+        url ? (dish.sourceUrl ?? recipeUrl(dish.name)) === url :
+          normalizedName(dish.name) === normalizedName(value) ||
+          normalizedName(dishDetails(dish, analysisMap.get(dish.id)).name) === normalizedName(value));
       if (existing) dishId = existing.id;
       else {
         dishId = newId();
         drafts.push({
           type: 'dish', id: dishId, name: value.trim(), creationSeason: seasonForDate(today),
           analysisKey: newId(), details: null, archived: false,
+          ...(url ? { sourceUrl: url } : {}),
         });
       }
     }
@@ -83,9 +87,9 @@ export function MealEditor({ date, slot, start, meal, today, dishes, analyses, o
   return <Modal title={editing ? 'Qu’est-ce qu’on mange ?' : 'Votre repas'} onClose={onClose}>
     <p className="modal-subtitle">{formatDate(date, { weekday: 'long', day: 'numeric', month: 'long' })} · {slot === 'lunch' ? 'Midi' : 'Soir'}</p>
     {!editing ? <>
-      <h3 className="meal-detail-name">{meal?.text}</h3>
+      <h3 className="meal-detail-name">{displayName}</h3>
       <div className="action-grid" aria-busy={busy}>
-        <button className="secondary-button" disabled={busy} onClick={() => setEditing(true)}><Pencil size={17} />Modifier le repas</button>
+        <button className="secondary-button" disabled={busy} onClick={() => { setText(displayName); setEditing(true); }}><Pencil size={17} />Modifier le repas</button>
         <button className="secondary-button danger" disabled={busy} onClick={() => void commit('')}><Trash2 size={16} />Vider</button>
         <button className="secondary-button" disabled={busy} onClick={() => void replace('ai')}><Sparkles size={17} />{filling === 'ai' ? 'Génération…' : 'Générer avec l’IA'}</button>
         <button className="secondary-button" disabled={busy} onClick={() => void replace('random')}><Shuffle size={17} />{filling === 'random' ? 'Recherche…' : 'Choisir au hasard'}</button>
@@ -94,7 +98,8 @@ export function MealEditor({ date, slot, start, meal, today, dishes, analyses, o
       {error && <p className="inline-error" role="alert">{error}</p>}
       <section className="meal-recipe" aria-label="Recette du repas">
         <h3>La recette</h3>
-        {currentDetails && currentDetails.name !== meal?.text && <p className="field-hint">Fiche du carnet : {currentDetails.name}</p>}
+        {currentDetails && currentDetails.name !== displayName && <p className="field-hint">Fiche du carnet : {currentDetails.name}</p>}
+        {currentDish?.sourceUrl && <p className="field-hint"><a href={currentDish.sourceUrl} target="_blank" rel="noopener noreferrer">Voir la recette d’origine</a></p>}
         {currentDetails && currentDetails.ingredients.length > 0 && <>
           <h4>Ingrédients principaux</h4>
           <ul>{currentDetails.ingredients.map((ingredient, index) => <li key={index}>{ingredient}</li>)}</ul>
@@ -111,8 +116,9 @@ export function MealEditor({ date, slot, start, meal, today, dishes, analyses, o
     </> : <>
     <form onSubmit={event => { event.preventDefault(); if (text.trim()) void commit(text); }}>
       <label className="field-label" htmlFor="meal-name">Votre idée du jour</label>
-      <textarea id="meal-name" placeholder="Par exemple : poulet, frites et salade…" value={text} maxLength={240} rows={2}
+      <textarea id="meal-name" placeholder="Un plat ou un lien de recette https://…" value={text} maxLength={2048} rows={2}
         onChange={event => setText(event.target.value)} />
+      <p className="field-hint">Collez un lien HTTP ou HTTPS : l’IA identifiera le plat et adaptera la recette au foyer des paramètres après synchronisation. Nom : 240 caractères ; lien : 2 048.</p>
       {error && <p className="inline-error" role="alert">{error}</p>}
       <div className="action-grid">
         {meal?.text && <button className="secondary-button danger" type="button" disabled={busy} onClick={() => void commit('')}><Trash2 size={16} />Vider</button>}

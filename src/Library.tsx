@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Archive, ArrowUpRight, Check, Leaf, RotateCcw, Search, Sparkles } from 'lucide-react';
-import { dishDetails, seasonLabels, seasons, type Analysis, type Dish, type Season } from '../shared/model';
+import { dishDetails, recipeUrl, seasonLabels, seasons, type Analysis, type Dish, type Season } from '../shared/model';
 import { EmptyState, Modal } from './components';
 import { errorMessage, save } from './store';
 import { newId } from './id';
@@ -59,13 +59,24 @@ function DishEditor({ dish, analysis, online, onClose, onSaved }: {
   const [recipe, setRecipe] = useState(initial.recipe);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    if (dirty) return;
+    const updated = dishDetails(dish, analysis);
+    setName(updated.name);
+    setSelectedSeasons(updated.seasons);
+    setIngredients(updated.ingredients.join('\n'));
+    setRecipe(updated.recipe);
+  }, [dish, analysis, dirty]);
 
   async function persist(action: 'edit' | 'archive' | 'analyze') {
     setBusy(true);
     setError(null);
     try {
       await save([action === 'archive' ? { ...dish, archived: !dish.archived }
-        : action === 'analyze' ? { ...dish, name: name.trim(), details: null, analysisKey: newId() }
+        : action === 'analyze' ? { ...dish, name: name.trim(), details: null, analysisKey: newId(),
+          ...((dish.sourceUrl ?? recipeUrl(dish.name)) ? { sourceUrl: dish.sourceUrl ?? recipeUrl(dish.name) } : {}) }
           : { ...dish, name: name.trim(), details: {
             name: name.trim(), seasons: selectedSeasons,
             ingredients: ingredients.split('\n').map(item => item.trim()).filter(Boolean), recipe,
@@ -78,15 +89,17 @@ function DishEditor({ dish, analysis, online, onClose, onSaved }: {
     }
   }
   function toggleSeason(season: Season) {
+    setDirty(true);
     setSelectedSeasons(current => current.includes(season) ? current.filter(value => value !== season)
       : season === 'all' ? ['all'] : [...current.filter(value => value !== 'all'), season]);
   }
   return <Modal title="Une page du carnet" onClose={onClose} wide>
     <p className="modal-subtitle">Modifier cette fiche ne change pas les textes déjà inscrits au planning.</p>
+    {dish.sourceUrl && <p className="field-hint"><a href={dish.sourceUrl} target="_blank" rel="noopener noreferrer">Voir la recette d’origine</a></p>}
     {!dish.details && analysis?.error && <p className="inline-error" role="alert">{analysis.error}</p>}
-    <form onSubmit={event => { event.preventDefault(); void persist('edit'); }}>
+    <form onChange={() => setDirty(true)} onSubmit={event => { event.preventDefault(); void persist('edit'); }}>
       <label className="field-label" htmlFor="dish-name">Nom du repas</label>
-      <input id="dish-name" value={name} onChange={event => setName(event.target.value)} maxLength={240} required />
+      <input id="dish-name" value={name} onChange={event => setName(event.target.value)} maxLength={recipeUrl(name) ? 2048 : 240} required />
       <fieldset><legend className="field-label">Les bonnes saisons</legend><div className="season-filters">
         {seasons.map(season => <button type="button" key={season} aria-pressed={selectedSeasons.includes(season)} onClick={() => toggleSeason(season)}>{seasonLabels[season]}</button>)}
       </div></fieldset>
