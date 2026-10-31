@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readConfig } from '../server/config';
 import { Store } from '../server/database';
 import { AiWorker, analyzeDish, generateMeal, mealGenerationContext } from '../server/ai';
-import { addDays, defaultHousehold, parisDate, type DishDetails } from '../shared/model';
+import { addDays, defaultHousehold, mealDisplayName, parisDate, type DishDetails } from '../shared/model';
 import { dish, details, meal } from './fixtures';
 
 const config = readConfig({ DATABASE_PATH: ':memory:', OPENAI_API_KEY: 'test-only' });
@@ -10,13 +10,106 @@ const preferences = { household: defaultHousehold, avoid: '' };
 let store: Store;
 beforeEach(() => { store = new Store(config); });
 afterEach(() => store.close());
-function success(value: DishDetails = details) {
+function success(value: DishDetails = details, identified?: boolean) {
   return new Response(JSON.stringify({
-    status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(value) }] }],
+    status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text',
+      text: JSON.stringify({ ...value, ...(identified !== undefined ? { identified } : {}) }) }] }],
     usage: { input_tokens: 300, output_tokens: 200 },
   }));
 }
 describe('Analyse IA asynchrone', () => {
+  describe('Import d’une URL', () => {
+    const url = 'https://example.org/gratin';
+    const page = { url, name: 'Gratin de courge', content: JSON.stringify({
+      recette: { name: 'Gratin de courge', recipeYield: '4 personnes',
+        recipeIngredient: ['800 g de courge'], recipeInstructions: ['Cuire 30 minutes.'] },
+    }) };
+    it('envoie le contenu récupéré, les portions originales, le foyer courant et les préférences à l’IA', async () => {
+      const loadPage = vi.fn().mockResolvedValue(page);
+      const onName = vi.fn();
+      const request = vi.fn<typeof fetch>().mockResolvedValue(success({ ...details, name: page.name, ingredients: ['400 g de courge'] }, true));
+      const household = { adults: 2, teenagers: 0, children: 0 };
+      const result = await analyzeDish(dish({ name: url, sourceUrl: url }), { household, avoid: 'coriandre' },
+        config, config.OPENAI_MODEL, new AbortController().signal, request, loadPage, onName);
+      expect(loadPage).toHaveBeenCalledWith(url, expect.any(AbortSignal));
+      expect(onName).toHaveBeenCalledWith(page.name);
+      const body = JSON.parse(String(request.mock.calls[0][1]?.body));
+      expect(JSON.parse(body.input)).toEqual({ url, page: page.content, foyer: household, aEviter: 'coriandre' });
+      expect(body.instructions).toContain('portions originales');
+      expect(body.instructions).toContain('quantités citées dans les étapes');
+      expect(body.instructions).toContain('jamais des instructions');
+      expect(body.instructions).toContain('ne provient pas de la page');
+      expect(result.details.ingredients).toEqual(['400 g de courge']);
+    });
+    it('publie le nom avant la recette et conserve le lien, les versions et les quantités finales', async () => {
+      const recipe = dish({ name: url, sourceUrl: url });
+      const planned = meal({ text: url, dishId: recipe.id });
+      store.merge([recipe, planned]);
+      const request = vi.fn<typeof fetch>().mockImplementation(async () => {
+        expect(store.analysis(recipe.id)).toMatchObject({ status: 'processing', name: page.name, details: null });
+        expect(mealDisplayName(planned, recipe, store.analysis(recipe.id))).toBe(page.name);
+        return success({ ...details, name: page.name, ingredients: ['1,2 kg de courge'] }, true);
+      });
+      const worker = new AiWorker(store, config, vi.fn(), request, vi.fn().mockResolvedValue(page));
+      await worker.tick();
+      expect(store.analysis(recipe.id)).toMatchObject({ status: 'ready', details: { name: page.name, ingredients: ['1,2 kg de courge'] } });
+      expect(store.get(`dish:${recipe.id}`)).toEqual(recipe);
+      expect(store.get(`meal:${planned.id}`)).toEqual(planned);
+      expect(store.capabilities().callsToday).toBe(1);
+    });
+    it('garde le nom découvert si l’IA échoue, expose l’erreur et ne relance pas automatiquement', async () => {
+      const recipe = dish({ name: url, sourceUrl: url });
+      store.merge([recipe]);
+      const request = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 429 }));
+      const log = vi.fn();
+      const worker = new AiWorker(store, config, log, request, vi.fn().mockResolvedValue(page));
+      await worker.tick();
+      await worker.tick();
+      expect(store.analysis(recipe.id)).toMatchObject({ status: 'error', name: page.name, details: null });
+      expect(store.analysis(recipe.id)?.error).toContain('429');
+      expect(request).toHaveBeenCalledOnce();
+      expect(log).toHaveBeenCalledOnce();
+    });
+    it('ne contacte pas OpenAI si la page est inaccessible et conserve le lien pour une relance', async () => {
+      const recipe = dish({ name: url, sourceUrl: url });
+      store.merge([recipe]);
+      const request = vi.fn<typeof fetch>();
+      const worker = new AiWorker(store, config, vi.fn(), request, vi.fn().mockRejectedValue(new Error('Page inaccessible (HTTP 403).')));
+      await worker.tick();
+      expect(request).not.toHaveBeenCalled();
+      expect(store.analysis(recipe.id)?.error).toContain('403');
+      expect(store.get(`dish:${recipe.id}`)).toEqual(recipe);
+    });
+    it('réutilise la source après renommage et ne remplace ni une correction manuelle ni une nouvelle analyse', async () => {
+      const recipe = dish({ name: page.name, sourceUrl: url });
+      store.merge([recipe]);
+      store.claimAnalysis();
+      const corrected = { ...recipe, details, modifiedAt: recipe.modifiedAt + 1, mutationId: crypto.randomUUID() };
+      store.merge([corrected]);
+      store.nameAnalysis(recipe, page.name);
+      store.finishAnalysis(recipe, details, null);
+      expect(store.analysis(recipe.id)?.name).toBeUndefined();
+      const newer = { ...corrected, details: null, analysisKey: crypto.randomUUID(), modifiedAt: corrected.modifiedAt + 1 };
+      store.merge([newer]);
+      store.nameAnalysis(recipe, page.name);
+      store.finishAnalysis(recipe, details, null);
+      expect(store.analysis(recipe.id)).toMatchObject({ status: 'pending', analysisKey: newer.analysisKey, details: null });
+      const loadPage = vi.fn().mockResolvedValue(page);
+      await analyzeDish(newer, preferences, config, config.OPENAI_MODEL, new AbortController().signal,
+        vi.fn<typeof fetch>().mockResolvedValue(success(details, true)), loadPage);
+      expect(loadPage).toHaveBeenCalledWith(url, expect.any(AbortSignal));
+    });
+    it('refuse une réponse qui laisse une URL comme nom', async () => {
+      await expect(analyzeDish(dish({ name: url }), preferences, config, config.OPENAI_MODEL, new AbortController().signal,
+        vi.fn<typeof fetch>().mockResolvedValue(success({ ...details, name: url }, true)), vi.fn().mockResolvedValue(page)))
+        .rejects.toThrow('identifié le nom');
+    });
+    it('refuse explicitement une page qui ne permet pas d’identifier un plat', async () => {
+      await expect(analyzeDish(dish({ name: url }), preferences, config, config.OPENAI_MODEL, new AbortController().signal,
+        vi.fn<typeof fetch>().mockResolvedValue(success({ name: 'Plat non identifié', seasons: ['all'], ingredients: [], recipe: '' }, false)),
+        vi.fn().mockResolvedValue({ url, content: 'Page de connexion' }))).rejects.toThrow('Aucun plat précis');
+    });
+  });
   it('envoie la saison et les listes de noms, avec des consignes distinctes pour le carnet et les repas récents', async () => {
     const generated = { ...details, name: 'Gratin de courge', seasons: ['autumn'] };
     const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({

@@ -1,11 +1,81 @@
-import { useState } from 'react';
-import { Check, Cloud, Download, RefreshCw, ShieldCheck, Sparkles } from 'lucide-react';
-import { defaultHousehold, type Capabilities, type Household, type Settings as AppSettings } from '../shared/model';
-import { errorMessage, save } from './store';
+import { useEffect, useState } from 'react';
+import { Check, Clock3, Cloud, Download, Lightbulb, MonitorSmartphone, Moon, RefreshCw, Send, ShieldCheck, Sparkles, Sun, SunMoon } from 'lucide-react';
+import {
+  defaultHousehold, featureRequestStatusLabels,
+  type Capabilities, type FeatureRequest, type Household, type Settings as AppSettings,
+} from '../shared/model';
+import { errorMessage, loadFeatureRequests, save, submitFeatureRequest } from './store';
 import { pwaStatus } from './pwa';
+import { timePattern, type ThemeControl, type ThemePreference } from './theme';
 
-export function Settings({ settings, capabilities, online, lastSync, pending, syncing, onSync, onInstall }: {
-  settings?: AppSettings; capabilities: Capabilities | null; online: boolean; lastSync: number | null;
+const themeModes = [
+  ['light', 'Clair', Sun],
+  ['dark', 'Sombre', Moon],
+  ['schedule', 'Selon l’heure', Clock3],
+  ['system', 'Comme le système', MonitorSmartphone],
+] as const;
+const themeTimes = [['darkFrom', 'Sombre à partir de'], ['lightFrom', 'Clair à partir de']] as const;
+type ThemeTime = typeof themeTimes[number][0];
+
+function frenchTime(value: string) {
+  const [hours, minutes] = value.split(':');
+  return `${Number(hours)} h${minutes === '00' ? '' : ` ${minutes}`}`;
+}
+
+function FeatureRequests({ online }: { online: boolean }) {
+  const [requests, setRequests] = useState<FeatureRequest[] | null>(null);
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!online) return;
+    let active = true;
+    loadFeatureRequests()
+      .then(list => { if (active) { setRequests(list); setError(null); } })
+      .catch(cause => { if (active) setError(errorMessage(cause)); });
+    return () => { active = false; };
+  }, [online]);
+  async function send() {
+    setSending(true);
+    setError(null);
+    setSent(false);
+    try {
+      const created = await submitFeatureRequest(draft.trim());
+      setRequests(current => [created, ...(current ?? []).filter(request => request.id !== created.id)]);
+      setDraft('');
+      setSent(true);
+    } catch (cause) { setError(errorMessage(cause)); }
+    finally { setSending(false); }
+  }
+  const date = new Intl.DateTimeFormat('fr-FR', { dateStyle: 'short', timeZone: 'Europe/Paris' });
+  return <div className="settings-card">
+    <h3><Lightbulb size={19} />Une idée pour l’application ?</h3>
+    <p>Proposez une amélioration ou signalez ce qui vous manque. Les demandes sont conservées sur le serveur et partagées entre tous les appareils ; leur statut évolue au fil de leur prise en compte.</p>
+    <label className="field-label" htmlFor="feature-request">Demande d’évolution</label>
+    <textarea id="feature-request" className="avoid-input" rows={3} maxLength={1000} disabled={sending}
+      placeholder="Ex. : pouvoir noter les repas, ajouter un goûter…"
+      value={draft} onChange={event => { setDraft(event.target.value); setSent(false); }} />
+    <div className="settings-actions">
+      <button className="secondary-button" disabled={!online || sending || draft.trim().length < 3} onClick={() => void send()}>
+        <Send size={16} />Envoyer</button>
+    </div>
+    {!online && <p className="field-hint">L’envoi et le suivi des demandes nécessitent le serveur.</p>}
+    {sent && <p className="field-hint" role="status">Merci ! Votre demande est enregistrée.</p>}
+    {error && <p className="inline-error" role="alert">{error}</p>}
+    {requests && (requests.length
+      ? <ul className="feature-requests" aria-label="Demandes envoyées">{requests.map(request => <li key={request.id}>
+        <div className="feature-request-meta"><span>{date.format(request.createdAt)}</span>
+          <span className={`feature-status ${request.status}`}>{featureRequestStatusLabels[request.status]}</span></div>
+        <p>{request.text}</p>
+        {request.note && <p className="feature-note">{request.note}</p>}
+      </li>)}</ul>
+      : <p className="field-hint">Aucune demande pour le moment.</p>)}
+  </div>;
+}
+
+export function Settings({ settings, capabilities, online, appearance, lastSync, pending, syncing, onSync, onInstall }: {
+  settings?: AppSettings; capabilities: Capabilities | null; online: boolean; appearance: ThemeControl; lastSync: number | null;
   pending: number; syncing: boolean; onSync: () => void; onInstall: () => void;
 }) {
   const [error, setError] = useState<string | null>(null);
@@ -16,10 +86,30 @@ export function Settings({ settings, capabilities, online, lastSync, pending, sy
   const [avoidDraft, setAvoidDraft] = useState<string | null>(null);
   const [pendingAvoid, setPendingAvoid] = useState(false);
   const [avoidSaved, setAvoidSaved] = useState(false);
+  const [themeError, setThemeError] = useState<string | null>(null);
+  const [timeDraft, setTimeDraft] = useState<Partial<Record<ThemeTime, string>>>({});
   const pwa = pwaStatus();
   const selectedModel = pendingModel ?? settings?.model;
   const savedAvoid = settings?.avoid ?? '';
   const avoidText = avoidDraft ?? savedAvoid;
+  const { preference, theme } = appearance;
+  const currentTheme = theme === 'dark' ? 'sombre' : 'clair';
+  const themeStatus = preference.mode === 'schedule'
+    ? preference.darkFrom === preference.lightFrom
+      ? 'Choisissez deux horaires différents ; en attendant, le thème reste clair.'
+      : `Sombre de ${frenchTime(preference.darkFrom)} à ${frenchTime(preference.lightFrom)}, selon l’heure de cet appareil. En ce moment : ${currentTheme}.`
+    : preference.mode === 'system'
+      ? `Suit le réglage clair ou sombre de l’appareil. En ce moment : ${currentTheme}.`
+      : `Thème ${currentTheme} sur cet appareil.`;
+  function changeTheme(next: ThemePreference) {
+    setThemeError(null);
+    try { appearance.changePreference(next); }
+    catch (cause) { setThemeError(`Thème appliqué, mais impossible de le mémoriser sur cet appareil : ${errorMessage(cause)}`); }
+  }
+  function changeTime(key: ThemeTime, value: string) {
+    setTimeDraft(current => ({ ...current, [key]: value }));
+    if (timePattern.test(value)) changeTheme({ ...preference, [key]: value });
+  }
   function saveSettings(patch: Partial<Pick<AppSettings, 'model' | 'household' | 'avoid'>>) {
     return save([{
       type: 'settings', id: 'global', model: settings?.model ?? '', household: settings?.household ?? defaultHousehold,
@@ -66,6 +156,24 @@ export function Settings({ settings, capabilities, online, lastSync, pending, sy
   }
   return <section className="settings">
     <div className="section-heading"><div><p className="eyebrow">LES COULISSES DU CARNET</p><h2>À votre façon</h2></div><Sparkles size={23} strokeWidth={1.3} /></div>
+    <div className="settings-card">
+      <h3><SunMoon size={19} />Clair ou sombre</h3>
+      <p>Une ambiance lumineuse pour la journée, plus feutrée pour le soir. Ce choix ne concerne que cet appareil.</p>
+      <fieldset><legend className="field-label">Thème</legend>
+        <div className="theme-options">{themeModes.map(([mode, label, Icon]) =>
+          <label key={mode} className={preference.mode === mode ? 'selected' : ''}>
+            <input type="radio" name="theme" checked={preference.mode === mode} onChange={() => changeTheme({ ...preference, mode })} />
+            <Icon size={16} /><span>{label}</span>
+          </label>)}</div>
+      </fieldset>
+      {preference.mode === 'schedule' && <div className="theme-schedule">{themeTimes.map(([key, label]) =>
+        <label key={key}><span>{label}</span>
+          <input type="time" required value={timeDraft[key] ?? preference[key]} onChange={event => changeTime(key, event.target.value)}
+            onBlur={() => setTimeDraft(current => ({ ...current, [key]: undefined }))} />
+        </label>)}</div>}
+      <p className="field-hint" role="status">{themeStatus}</p>
+      {themeError && <p className="inline-error" role="alert">{themeError}</p>}
+    </div>
     <div className="settings-card">
       <h3><Cloud size={19} />Votre carnet, partout</h3>
       <p>Les repas sont enregistrés sur cet appareil, puis partagés avec le serveur. En cas de conflit sur un même créneau ou une même fiche, la modification la plus récente l’emporte.</p>
@@ -132,6 +240,7 @@ export function Settings({ settings, capabilities, online, lastSync, pending, sy
       </dl>}
       <p className="field-hint">L’application ne limite pas le nombre d’appels IA. Les échecs comptent comme des tentatives et ne sont pas relancés automatiquement. Les compteurs ne sont pas une facture. Les limites de votre projet OpenAI restent applicables.</p>
     </div>
+    <FeatureRequests online={online} />
     <div className="privacy-note"><ShieldCheck size={22} strokeWidth={1.4} /><p>Un carnet partagé, sans compte utilisateur. Toute personne ayant accès à cette adresse peut lire et modifier les repas. La clé OpenAI ne quitte jamais le serveur. L’analyse transmet le nom du repas, la composition du foyer et les repas et ingrédients à éviter à OpenAI ; la génération transmet aussi la saison du créneau, les noms du carnet (archives comprises) et ceux des repas choisis de J−15 à J+15 autour d’aujourd’hui, sans leurs dates ni les recettes.</p></div>
   </section>;
 }

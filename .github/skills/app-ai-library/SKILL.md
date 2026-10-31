@@ -33,6 +33,30 @@ description: "Comprendre le carnet de repas et l'enrichissement OpenAI de À tab
 
 Priorité d'affichage : `dish.details` enregistré (manuel ou généré), sinon analyse `ready` correspondant
 au même `analysisKey`, sinon nom brut et saison de création.
+Pour un import URL, `analysis.name` fournit aussi un nom provisoire dès sa
+découverte dans les métadonnées Recipe, y compris si la suite échoue.
+
+## Import d'un lien
+
+- `recipeUrl` reconnaît uniquement les URL HTTP(S) sans identifiants, jusqu'à
+  2 048 caractères. `MealEditor` conserve `dish.sourceUrl` et le texte URL du menu.
+- [recipe-page](../../../server/recipe-page.ts) récupère le HTML public : DNS
+  contrôlé et épinglé, ports standards, adresses privées/locales refusées,
+  redirections revérifiées (quatre maximum), 2 Mo et 15 secondes maximum.
+- Les métadonnées JSON-LD Recipe fournissent nom, portions, ingrédients et étapes ;
+  sinon le texte visible est envoyé à l'IA pour identifier le plat.
+- `nameAnalysis` publie le nom structuré avant l'appel IA, sans écraser une
+  correction manuelle ou une nouvelle clé. `finishAnalysis` conserve ce nom
+  provisoire en cas d'erreur. Le worker alloue 60 secondes à l'import complet.
+- L'IA utilise la recette source, adapte les quantités au foyer courant, reformule
+  les étapes et signale les portions estimées ou une recette indicative absente
+  de la page. Une URL comme nom final est refusée ; le booléen structuré
+  `identified: false` signale explicitement qu'aucun plat n'est identifiable.
+- `mealDisplayName` remplace uniquement l'affichage du lien d'origine lié à sa
+  fiche ; aucun record utilisateur n'est réécrit. `App` synchronise toutes les
+  deux secondes pendant un import visible avec IA configurée.
+- Le lien est conservé lors des corrections et relances, pour recalculer les
+  quantités depuis la source. Pas de navigateur JavaScript, cookies ou connexion.
 
 Une correction manuelle est prioritaire sur une analyse en cours.
 Une relance explicite crée un nouvel `analysisKey` et remet `details` à null :
@@ -77,7 +101,8 @@ Une ancienne réponse ne doit jamais écraser cette nouvelle demande.
 - Sans clé, modèle autorisé ou fiche admissible, pas d'appel.
   Les fiches archivées et celles possédant des détails manuels sont ignorées.
 - API Responses : uniquement le nom, le foyer et le texte facultatif « à éviter »
-  (`settings.avoid`, clé `aEviter`, omise si vide) pour l'analyse ; en plus, saison,
+  (`settings.avoid`, clé `aEviter`, omise si vide) pour l'analyse d'un nom ;
+  URL et contenu extrait en plus pour l'import d'un lien ; en plus, saison,
   noms du carnet et noms des repas choisis sur la période pour la génération,
   `store: false`, JSON structuré
   strict, validation Zod, 1 400 tokens de sortie maximum, timeout 45 secondes.
@@ -96,7 +121,7 @@ Une ancienne réponse ne doit jamais écraser cette nouvelle demande.
 ## Vérification ciblée
 
 ```powershell
-npm test -- tests/ai.test.ts tests/server.test.ts tests/model.test.ts
+npm test -- tests/recipe-page.test.ts tests/ai.test.ts tests/server.test.ts tests/model.test.ts
 ```
 
 Les [tests IA](../../../tests/ai.test.ts) simulent le fournisseur, sans clé ni coût.

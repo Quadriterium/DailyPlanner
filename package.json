@@ -14,13 +14,16 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "backup": "node --env-file-if-exists=.env scripts/backup.mjs",
-    "reset": "tsx --env-file-if-exists=.env server/reset.ts"
+    "reset": "tsx --env-file-if-exists=.env server/reset.ts",
+    "requests": "tsx --env-file-if-exists=.env server/requests.ts"
   },
   "dependencies": {
     "@fastify/helmet": "^13.0.2",
     "@fastify/rate-limit": "^10.3.0",
     "@fastify/static": "^10.1.8",
     "fastify": "^5.6.1",
+    "cheerio": "^1.1.2",
+    "ipaddr.js": "^2.2.0",
     "idb": "^8.0.3",
     "lucide-react": "^0.468.0",
     "react": "^19.2.0",

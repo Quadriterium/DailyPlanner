@@ -20,6 +20,22 @@ beforeEach(async () => {
 afterEach(async () => { await app.close(); store.close(); });
 
 describe('API et stockage partagé', () => {
+  it('synchronise les liens longs et le nom découvert sans réécrire les records utilisateur', async () => {
+    const url = `https://example.org/gratin?source=${'a'.repeat(500)}`;
+    const recipe = dish({ name: url, sourceUrl: url });
+    const planned = meal({ text: url, dishId: recipe.id });
+    const response = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [recipe, planned] } });
+    expect(response.statusCode).toBe(200);
+    expect(store.claimAnalysis()?.dish).toEqual(recipe);
+    store.nameAnalysis(recipe, 'Gratin de courge');
+    const synchronized = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [] } });
+    const body = syncResponseSchema.parse(synchronized.json());
+    expect(body.records).toContainEqual(recipe);
+    expect(body.records).toContainEqual(planned);
+    expect(body.analyses).toContainEqual(expect.objectContaining({
+      dishId: recipe.id, analysisKey: recipe.analysisKey, status: 'processing', name: 'Gratin de courge', details: null,
+    }));
+  });
   it('propose les nouveaux modèles dans les capacités et accepte leur sélection partagée', async () => {
     let modifiedAt = Date.now();
     for (const model of ['gpt-5.6-terra', 'gpt-6-sol']) {
@@ -267,6 +283,22 @@ describe('API et stockage partagé', () => {
     expect(store.settings().household).toEqual(household);
     const accepted = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [dish()], resetId } });
     expect(accepted.json().records).toHaveLength(2);
+  });
+  it('enregistre les demandes d’évolution et expose leur statut', async () => {
+    expect((await app.inject({ method: 'POST', url: '/api/feature-requests', payload: { text: ' ' } })).statusCode).toBe(400);
+    const created = await app.inject({ method: 'POST', url: '/api/feature-requests', payload: { text: '  Noter les repas  ' } });
+    expect(created.statusCode).toBe(201);
+    const request = created.json().request;
+    expect(request).toMatchObject({ text: 'Noter les repas', status: 'received', note: null });
+    expect(store.updateFeatureRequest(request.id.slice(0, 8), 'added', 'Disponible dans le carnet.')).toBe(true);
+    expect(store.updateFeatureRequest('ffffffff-none', 'added', null)).toBe(false);
+    const list = await app.inject('/api/feature-requests');
+    expect(list.json().requests).toEqual([expect.objectContaining({ id: request.id, status: 'added', note: 'Disponible dans le carnet.' })]);
+    const foreign = await app.inject({
+      method: 'POST', url: '/api/feature-requests', payload: { text: 'Spam' },
+      headers: { origin: 'https://other.invalid', 'sec-fetch-site': 'cross-site' },
+    });
+    expect(foreign.statusCode).toBe(403);
   });
   it('rejette les écritures depuis un site tiers', async () => {
     const response = await app.inject({

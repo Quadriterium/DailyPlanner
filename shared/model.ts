@@ -15,6 +15,16 @@ export const householdSchema = z.object({
   message: 'Le foyer doit contenir au moins une personne.',
 });
 export type Household = z.infer<typeof householdSchema>;
+export const recipeUrlSchema = z.string().trim().max(2048).url().refine(value => {
+  if (!/^https?:\/\//i.test(value) || !URL.canParse(value)) return false;
+  const url = new URL(value);
+  return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password;
+}, 'Utilisez un lien HTTP ou HTTPS sans identifiants.');
+export function recipeUrl(value: string): string | undefined {
+  const result = recipeUrlSchema.safeParse(value);
+  return result.success ? result.data : undefined;
+}
+const mealInputSchema = z.union([z.string().max(240), recipeUrlSchema]);
 const version = {
   modifiedAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   mutationId: z.string().uuid(),
@@ -29,8 +39,9 @@ export type DishDetails = z.infer<typeof detailsSchema>;
 export const dishSchema = z.object({
   type: z.literal('dish'),
   id: z.string().uuid(),
-  name: z.string().trim().min(1).max(240),
+  name: z.string().trim().min(1).pipe(mealInputSchema),
   creationSeason: seasonSchema,
+  sourceUrl: recipeUrlSchema.optional(),
   analysisKey: z.string().uuid(),
   details: detailsSchema.nullable(),
   archived: z.boolean(),
@@ -45,7 +56,7 @@ export const mealSchema = z.object({
   id: z.string(),
   date: dateSchema,
   slot: z.enum(['lunch', 'dinner']),
-  text: z.string().max(240),
+  text: mealInputSchema,
   dishId: z.string().uuid().nullable(),
   ...version,
 }).strict();
@@ -76,6 +87,7 @@ export const analysisSchema = z.object({
   status: z.enum(['pending', 'processing', 'ready', 'error']),
   details: detailsSchema.nullable(),
   error: z.string().nullable(),
+  name: detailsSchema.shape.name.optional(),
   updatedAt: z.number(),
 });
 export type Analysis = z.infer<typeof analysisSchema>;
@@ -102,6 +114,23 @@ export const syncResponseSchema = z.object({
 });
 export type SyncResponse = z.infer<typeof syncResponseSchema>;
 
+export const featureRequestStatuses = ['received', 'planned', 'added', 'declined'] as const;
+export const featureRequestStatusLabels: Record<FeatureRequestStatus, string> = {
+  received: 'Reçue', planned: 'Prévue', added: 'Ajoutée', declined: 'Non retenue',
+};
+export const featureRequestSchema = z.object({
+  id: z.string().uuid(),
+  text: z.string().min(1).max(1000),
+  status: z.enum(featureRequestStatuses),
+  note: z.string().max(1000).nullable(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+}).strict();
+export type FeatureRequest = z.infer<typeof featureRequestSchema>;
+export type FeatureRequestStatus = typeof featureRequestStatuses[number];
+export const createFeatureRequestSchema = z.object({ text: z.string().trim().min(3).max(1000) }).strict();
+export const featureRequestListSchema = z.object({ requests: z.array(featureRequestSchema) }).strict();
+
 /** Records removed by a server-forced reset: planned meals and library dishes, never settings. */
 export function isResetScoped(record: Pick<RecordData, 'type'>): boolean {
   return record.type === 'meal' || record.type === 'dish';
@@ -118,7 +147,16 @@ export function compareVersions(a: Pick<RecordData, 'modifiedAt' | 'mutationId'>
 export function dishDetails(dish: Dish, analysis?: Analysis): DishDetails {
   if (dish.details) return dish.details;
   if (analysis?.analysisKey === dish.analysisKey && analysis.status === 'ready' && analysis.details) return analysis.details;
-  return { name: dish.name, seasons: [dish.creationSeason], ingredients: [], recipe: '' };
+  return {
+    name: analysis?.analysisKey === dish.analysisKey && analysis.name ? analysis.name : dish.name,
+    seasons: [dish.creationSeason], ingredients: [], recipe: '',
+  };
+}
+
+export function mealDisplayName(meal: Meal, dish?: Dish, analysis?: Analysis): string {
+  return recipeUrl(meal.text) && dish && meal.dishId === dish.id &&
+    meal.text.trim() === (dish.sourceUrl ?? dish.name).trim()
+    ? dishDetails(dish, analysis).name : meal.text;
 }
 
 export function normalizedName(value: string): string {

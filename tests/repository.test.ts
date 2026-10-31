@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createRepository, type Repository } from '../src/repository';
+import { mealDisplayName } from '../shared/model';
 import { dish, meal, snapshot } from './fixtures';
 
 let repo: Repository;
@@ -8,6 +9,27 @@ beforeEach(() => { repo = createRepository(crypto.randomUUID()); });
 afterEach(async () => { await repo.close(); });
 
 describe('Sauvegarde locale et synchronisation', () => {
+  it('conserve le lien et le nom provisoire hors ligne sans laisser une ancienne analyse écraser une correction', async () => {
+    const url = `https://example.org/recipe?tracking=${'a'.repeat(500)}`;
+    await repo.save([dish({ name: url, sourceUrl: url })]);
+    const [recipe] = await repo.pending();
+    if (recipe.type !== 'dish') throw new Error('Fiche attendue');
+    const planned = meal({ text: url, dishId: recipe.id });
+    const analysis = { dishId: recipe.id, analysisKey: recipe.analysisKey, status: 'processing' as const,
+      name: 'Gratin de courge', details: null, error: null, updatedAt: Date.now() };
+    await repo.merge({ ...snapshot([recipe, planned]), analyses: [analysis] });
+    const state = await repo.snapshot();
+    expect(state.records).toContainEqual(recipe);
+    expect(mealDisplayName(planned, recipe, state.analyses[0])).toBe(analysis.name);
+    const corrected = { ...recipe, name: 'Ma correction', analysisKey: crypto.randomUUID() };
+    await repo.save([corrected]);
+    await repo.merge({ ...snapshot([recipe, planned]), analyses: [{ ...analysis, updatedAt: Date.now() + 1 }] });
+    const current = (await repo.snapshot()).records.find(record => record.type === 'dish');
+    expect(current).toMatchObject({ id: recipe.id, name: corrected.name, sourceUrl: url, analysisKey: corrected.analysisKey });
+    expect(current?.modifiedAt).toBeGreaterThan(recipe.modifiedAt);
+    expect(current?.mutationId).not.toBe(recipe.mutationId);
+    expect(current?.type === 'dish' && mealDisplayName(planned, current, analysis)).toBe(corrected.name);
+  });
   it('sauvegarde le repas et sa fiche atomiquement avant toute connexion', async () => {
     const recipe = dish();
     await repo.save([recipe, meal({ dishId: recipe.id })]);

@@ -3,8 +3,9 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
-  analysisSchema, compareVersions, defaultHousehold, parisDate, recordKey, recordSchema,
-  type Analysis, type Capabilities, type Dish, type DishDetails, type RecordData, type Settings,
+  analysisSchema, compareVersions, defaultHousehold, featureRequestSchema, parisDate, recordKey, recordSchema,
+  type Analysis, type Capabilities, type Dish, type DishDetails, type FeatureRequest, type FeatureRequestStatus,
+  type RecordData, type Settings,
 } from '../shared/model.js';
 import type { Config } from './config.js';
 
@@ -23,6 +24,10 @@ export class Store {
       CREATE TABLE IF NOT EXISTS ai_usage (
         day TEXT PRIMARY KEY, calls INTEGER NOT NULL DEFAULT 0,
         input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS feature_requests (
+        id TEXT PRIMARY KEY, text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'received',
+        note TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
       );
       PRAGMA user_version = 1;
     `);
@@ -171,15 +176,50 @@ export class Store {
     const current = this.get(`dish:${dish.id}`);
     // An obsolete response must never replace a manual edit or a newer analysis.
     if (current?.type !== 'dish' || current.analysisKey !== dish.analysisKey || current.details) return;
+    const name = this.analysis(dish.id)?.name;
     this.putAnalysis({
       dishId: dish.id, analysisKey: dish.analysisKey,
       status: error ? 'error' : 'ready', details, error,
+      ...(name ? { name } : {}),
     });
+  }
+
+  nameAnalysis(dish: Dish, name: string) {
+    const current = this.get(`dish:${dish.id}`);
+    const analysis = this.analysis(dish.id);
+    if (current?.type !== 'dish' || current.analysisKey !== dish.analysisKey || current.details || current.archived ||
+      analysis?.analysisKey !== dish.analysisKey || analysis.status !== 'processing') return;
+    this.putAnalysis({ ...analysis, name });
   }
 
   recordTokens(day: string, input: number, output: number) {
     this.db.prepare('UPDATE ai_usage SET input_tokens = input_tokens + ?, output_tokens = output_tokens + ? WHERE day = ?')
       .run(input, output, day);
+  }
+
+  featureRequests(): FeatureRequest[] {
+    return this.db.prepare('SELECT * FROM feature_requests ORDER BY created_at DESC, id').all()
+      .map(row => featureRequestSchema.parse({
+        id: row.id, text: row.text, status: row.status, note: row.note ?? null,
+        createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
+      }));
+  }
+
+  addFeatureRequest(text: string): FeatureRequest {
+    const now = Date.now();
+    const request = featureRequestSchema.parse({ id: randomUUID(), text, status: 'received', note: null, createdAt: now, updatedAt: now });
+    this.db.prepare('INSERT INTO feature_requests (id, text, status, note, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?)')
+      .run(request.id, request.text, request.status, now, now);
+    return request;
+  }
+
+  /** Returns false when no request matches the id or its unique prefix. */
+  updateFeatureRequest(idOrPrefix: string, status: FeatureRequestStatus, note: string | null): boolean {
+    const matches = this.db.prepare('SELECT id FROM feature_requests WHERE id LIKE ?').all(`${idOrPrefix.replace(/[%_]/g, '')}%`);
+    if (matches.length !== 1) return false;
+    this.db.prepare('UPDATE feature_requests SET status = ?, note = ?, updated_at = ? WHERE id = ?')
+      .run(status, note, Date.now(), String(matches[0].id));
+    return true;
   }
 
   close() { this.db.close(); }
