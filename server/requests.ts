@@ -6,10 +6,10 @@ const [command, id, status, ...noteParts] = process.argv.slice(2);
 const store = new Store(readConfig());
 try {
   if (!command || command === 'list') {
-    const requests = store.featureRequests();
+    const requests = store.allFeatureRequests();
     if (!requests.length) console.log('Aucune demande d’évolution.');
-    for (const request of requests) {
-      console.log(`${request.id.slice(0, 8)}  [${featureRequestStatusLabels[request.status]}]  ${new Date(request.createdAt).toLocaleString('fr-FR', { timeZone: 'Europe/Paris' })}`);
+    for (const { request, spaceId, spaceName } of requests) {
+      console.log(`${request.id.slice(0, 8)}  [${featureRequestStatusLabels[request.status]}]  ${new Date(request.createdAt).toLocaleString('fr-FR', { timeZone: 'Europe/Paris' })}  ${spaceName ?? `espace supprimé ${spaceId.slice(0, 8)}`}`);
       console.log(`  ${request.text.replace(/\n/g, '\n  ')}`);
       if (request.note) console.log(`  Réponse : ${request.note}`);
     }

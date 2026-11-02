@@ -84,8 +84,16 @@ de certificat de confiance ni modifier DNS/routeur sans accord.
   envoyées ne sont pas dans la sauvegarde.
 - Conserver si possible la même origine HTTPS : IndexedDB et le cache sont liés
   à l'origine. Un changement d'adresse ne transporte pas les données locales.
-- Sans authentification, toute personne ayant accès peut consulter/modifier et
+- Avec `AUTH_ENABLED=false`, toute personne ayant accès peut consulter/modifier et
   déclencher des appels IA sans plafond applicatif. HTTPS chiffre les échanges sans contrôler l'accès.
+- Avec `AUTH_ENABLED=true`, `.env` doit contenir `PUBLIC_ORIGIN` (https, ou
+  `http://localhost:<port>`), `GOOGLE_CLIENT_ID` et `GOOGLE_CLIENT_SECRET` ; le
+  serveur refuse sinon de démarrer. L'URI de redirection Google est
+  `<PUBLIC_ORIGIN>/api/auth/google/callback`. Derrière le tunnel Cloudflare :
+  `HOST=127.0.0.1` et `TRUSTED_PROXY=cloudflare`. Ne jamais afficher ces secrets.
+- La migration v2 du schéma sauvegarde la base dans `data/backups/` avant de
+  s'appliquer ; ensuite `npm run admin -- assign-common --email <adresse> --confirm`
+  rattache le premier compte aux données existantes.
 - Ne promettre ni disponibilité serveur permanente ni mode hors ligne avant sa
   mise en cache effective ; vérifier la santé d'un service réellement démarré.
 
@@ -94,6 +102,7 @@ de certificat de confiance ni modifier DNS/routeur sans accord.
 Pour une modification de code : `npm run typecheck`, puis les tests ciblés.
 Pour le réseau HTTP, utiliser `E2E_HOST` avec l'IP réelle et le scénario `HTTP LAN`
 de [Playwright](../../../e2e/planner.spec.ts) ; les
-[réglages E2E](../../../playwright.config.ts) utilisent une base mémoire sur 3199.
+[réglages E2E](../../../playwright.config.ts) utilisent une base mémoire sur 3199
+(sans comptes) et sur 3198 (comptes, fournisseur Google simulé, [scénarios](../../../e2e/auth.spec.ts)).
 Pour une configuration Caddy, utiliser `caddy validate` avant son lancement.
 Un changement documentaire seul ne nécessite pas de démarrer ces services.

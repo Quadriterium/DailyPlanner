@@ -1,5 +1,6 @@
 const CACHE = 'a-table-shell-__VERSION__';
 const FILES = __PRECACHE__;
+const LEGAL_PAGES = ['/confidentialite', '/conditions-utilisation'];
 let forcedActivation = false;
 
 self.addEventListener('install', event => {
@@ -46,8 +47,10 @@ self.addEventListener('fetch', event => {
   if (request.method !== 'GET' || url.origin !== self.location.origin ||
       url.pathname.startsWith('/api/')) return;
   if (request.mode === 'navigate') {
+    // Legal pages are standalone documents, not the application shell.
+    const page = LEGAL_PAGES.includes(url.pathname) ? `${url.pathname}.html` : '/index.html';
     event.respondWith(caches.open(CACHE).then(async cache =>
-      (await cache.match('/index.html')) ?? fetch(request),
+      (await cache.match(page)) ?? fetch(request),
     ));
   } else if (FILES.includes(url.pathname)) {
     event.respondWith(caches.open(CACHE).then(async cache =>

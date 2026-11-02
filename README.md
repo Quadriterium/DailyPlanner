@@ -72,7 +72,7 @@ Client : http://localhost:5173 ; API : `PORT` de `.env` (3000 par défaut), via 
 
 - À l’ouverture : **aujourd’hui et les six jours suivants**, selon `Europe/Paris`. Une ligne par jour, deux colonnes midi/soir. Le titre et la navigation forment une bannière compacte ; les sept lignes se partagent la hauteur disponible et le planning occupe toute la largeur de la page. Sur les écrans très courts, la page reste défilable pour préserver la lisibilité et les cibles tactiles.
 - Faire défiler **verticalement la grille** : passé au-dessus, futur en dessous. Les flèches déplacent de sept jours ; « Aujourd’hui » recentre le planning. L’historique reste conservé.
-- Toucher un créneau pour saisir un repas ou choisir dans une **liste de cartes**, sans combobox. Les suggestions sont exclusivement vos créations, classées selon la saison de la date sélectionnée. « Tous les repas » ignore la saison. Sur un créneau vide, le dialogue propose aussi **Générer avec l’IA** et **Choisir au hasard**.
+- Toucher **Créer un repas** pour saisir une idée ou choisir dans une liste de cartes. La saisie propose une autocomplétion des plats actifs du carnet, toutes saisons confondues : sélectionner un plat réutilise sa fiche et sa recette, sans nouvel appel IA. Valider avec **Créer le repas**. Les cartes sous la saisie restent filtrées par saison ; « Tous les repas » ignore ce filtre. Sur un créneau vide, le dialogue propose aussi **Générer avec l’IA** et **Choisir au hasard**.
 - Toucher un repas déjà choisi ouvre sa recette et ses ingrédients, lorsqu’ils sont disponibles. « Modifier le repas » permet de changer le nom ou de choisir une autre fiche ; « Vider » supprime uniquement ce choix du planning. On peut aussi le remplacer au hasard dans le carnet de saison ou demander une proposition à l’IA. En cas d’échec, le repas initial reste conservé.
 - Un créneau **midi ou soir peut contenir deux plats maximum**. Touchez le plat choisi, puis **Ajouter un deuxième plat** dans sa fiche : saisie, sélection du carnet, tirage ou génération IA. Sur téléphone (jusqu’à 520 px), le nom conserve toute la largeur de la carte, sans bouton d’ajout dans le planning. Sur tablette et ordinateur, un raccourci **+** est intégré au bord droit de la carte ; toucher le nom ouvre toujours sa fiche. L’ajout n’est proposé que s’il reste une place. Les deux plats se partagent la case existante, sans agrandir les jours : une carte séparée en deux, chaque nom sur deux lignes au plus (le nom complet reste visible dans la fiche). Les convives n’y sont pas affichés pour préserver la lisibilité. Touchez chaque plat pour sa recette ou ses convives (par exemple soupe pour les enfants et filet mignon pour les adultes). Modifier ou vider l’un ne touche pas l’autre.
 - Chaque case vide propose deux boutons à droite : **étincelles** pour générer un repas de saison avec l’IA, **flèches croisées** pour piocher au hasard dans le carnet de saison (y compris les plats « toute l’année », hors archives). Le choix est enregistré directement. Le tirage privilégie les repas absents des **sept jours affichés**, puis accepte une répétition si aucun autre choix n’existe. Il fonctionne aussi hors ligne ; un carnet sans repas de saison affiche une explication.
@@ -143,7 +143,9 @@ Si un modèle déjà sélectionné est retiré de la liste autorisée, les analy
 | `OPENAI_MODEL` | `gpt-6-luna` | Modèle initial d’une nouvelle base |
 | `OPENAI_ALLOWED_MODELS` | `gpt-6-luna,gpt-6-sol,gpt-5.6-luna,gpt-5.6-terra` | Liste autorisée dans les paramètres |
 
-L’application n’impose aucun quota journalier ou mensuel d’appels IA, ni de limite de génération par minute. Les anciennes variables `AI_DAILY_LIMIT` et `AI_MONTHLY_LIMIT` sont ignorées et peuvent être supprimées de `.env`.
+Chaque foyer dispose par défaut de **20 requêtes IA par jour**, renouvelées à minuit en `Europe/Paris`. Générations et enrichissements automatiques partagent le quota, échecs compris. Le contrôle est effectué côté serveur avant l’appel, y compris en cas de requêtes simultanées. Les enrichissements en attente reprennent automatiquement le lendemain ; la saisie manuelle et les recettes existantes restent utilisables. Il n’y a pas de quota mensuel ni de limite de génération par minute. Les anciennes variables `AI_DAILY_LIMIT` et `AI_MONTHLY_LIMIT` restent ignorées.
+
+Pendant une génération explicite, un dialogue bloquant indique la préparation du plat ; une animation discrète repère ensuite le repas ajouté au planning. Une nouvelle recette enrichie en arrière-plan affiche son état dans la fiche et se met à jour automatiquement, sans devoir la rouvrir.
 
 Une seule analyse à la fois, délai de 45 secondes, sortie plafonnée à 1 400 tokens. Les tentatives sont comptabilisées **avant** l’appel, y compris les échecs. Les compteurs journaliers et mensuels utilisent `Europe/Paris` et persistent après redémarrage. Les erreurs ne sont pas relancées automatiquement ; elles sont visibles dans le carnet. Une analyse interrompue au redémarrage doit également être relancée explicitement.
 
@@ -153,9 +155,39 @@ Les recettes/ingrédients IA sont des suggestions, pas une composition garantie,
 
 ## HTTPS et exposition Internet
 
-### Important : pas d’authentification
+### Comptes Google et foyers
 
-**Toute personne qui connaît ou trouve l’adresse peut lire et modifier les menus et déclencher des appels OpenAI. HTTPS chiffre les échanges mais ne restreint pas l’accès.** Le serveur vérifie les origines des requêtes navigateur, limite le débit de synchronisation et impose les modèles autorisés côté serveur, mais ne plafonne pas les appels IA. Cela ne remplace pas un contrôle d’accès contre une personne déterminée. Ne pas y stocker d’informations sensibles.
+Avec `AUTH_ENABLED=true`, chaque personne se connecte avec Google et appartient à un **foyer** : planning, carnet et réglages sont partagés entre ses membres et invisibles des autres foyers. Sans connexion, l’application fonctionne en **mode invité** : les repas restent dans le navigateur, l’IA, la synchronisation et les demandes d’évolution sont indisponibles. À la connexion, les repas invités sont ajoutés au foyer. Un membre invite quelqu’un depuis **Paramètres → Compte et foyer** (lien valable 7 jours, une seule utilisation), peut retirer un membre ou quitter le foyer. Conception détaillée : [docs/authentification-google.md](docs/authentification-google.md).
+
+Configuration, dans `.env` uniquement (jamais dans Git ni dans une variable `VITE_*`) :
+
+```dotenv
+AUTH_ENABLED=true
+PUBLIC_ORIGIN=https://dailyplanner.fr      # ou http://localhost:3000 en essai local
+GOOGLE_CLIENT_ID=…apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=…
+TRUSTED_PROXY=cloudflare                   # derrière le tunnel Cloudflare ; none sinon
+```
+
+Le client OAuth Google est de type « Application Web », avec l’URI de redirection autorisée `<PUBLIC_ORIGIN>/api/auth/google/callback`. Le serveur refuse de démarrer si `AUTH_ENABLED=true` sans identifiants. Les cookies sont `Secure` dès que `PUBLIC_ORIGIN` est en HTTPS ; ouvrir l’application **exactement** à l’adresse de `PUBLIC_ORIGIN`. Les pages publiques [/confidentialite](public/confidentialite.html) et [/conditions-utilisation](public/conditions-utilisation.html) contiennent des champs `[À COMPLÉTER]` à renseigner avant l’ouverture publique.
+
+Au premier démarrage, la base passe au schéma v2 après une sauvegarde automatique dans `data/backups/` ; les données existantes forment l’espace « commun ». Après la première connexion, rattacher son compte à cet espace :
+
+```powershell
+npm run admin -- users
+npm run admin -- spaces
+npm run admin -- assign-common --email <adresse> --confirm
+npm run admin -- assign-space --space <identifiant> --email <adresse> --confirm [--force]
+npm run admin -- revoke-sessions --email <adresse>
+npm run admin -- ai-limit --space <identifiant> --mode unlimited
+npm run admin -- ai-limit --space <identifiant> --mode default
+```
+
+`spaces` affiche le quota de chaque foyer. `ai-limit` permet à l’administrateur du serveur de désactiver la limite pour un foyer choisi (`unlimited`), ou de rétablir les 20 requêtes par jour (`default`), sans remettre le compteur à zéro. Cette exemption persiste après redémarrage et n’est pas modifiable depuis les paramètres des membres.
+
+Les appareils qui contenaient l’ancien carnet commun proposent, après connexion, d’importer leurs modifications non synchronisées.
+
+**Avec `AUTH_ENABLED=false`** (valeur par défaut), il n’y a pas d’authentification : toute personne qui connaît l’adresse peut lire et modifier les menus et déclencher des appels OpenAI. HTTPS chiffre les échanges mais ne restreint pas l’accès. Dans ce mode, l’espace `common` partage les 20 requêtes quotidiennes. Avec les comptes activés, chaque foyer a son propre quota, sauf exemption administrative. Le serveur vérifie également les origines des requêtes navigateur et les modèles autorisés. Le quota n’est pas un plafond de dépenses OpenAI.
 
 Seul Caddy doit être exposé. Ne jamais ouvrir directement le port Node 3000 ni publier le dossier de données. Le serveur statique ne sert que `dist/client`.
 
@@ -196,6 +228,69 @@ Configurer le Planificateur de tâches Windows pour lancer au démarrage :
 
 Activer le redémarrage des tâches en cas d’échec ; empêcher la mise en veille du PC si une synchronisation permanente est souhaitée. Un redémarrage serveur n’interrompt pas la consultation/saisie des clients déjà mis en cache.
 
+Sur le PC actuel, la tâche `dailyplanner` démarre plutôt **à l’ouverture de la
+session utilisateur**, comme `serveur_jeu` (Simple Games). Elle exécute PowerShell 7
+avec le profil utilisateur et appelle la fonction `launchDailyPlanner` :
+
+```powershell
+pwsh.exe -NoLogo -NonInteractive -Command '$ErrorActionPreference = "Stop"; launchDailyPlanner'
+```
+
+La fonction est définie dans `$PROFILE` et lance le serveur de production depuis
+`C:\apps\a-table`, avec le `.env` de production. Elle ne lance ni le mode
+développement, ni un navigateur, ni Caddy. La tâche ignore les lancements multiples,
+reste active sans limite de durée, fonctionne aussi sur batterie et tente trois
+redémarrages espacés d’une minute en cas d’échec. La tâche `winepicker` est
+désactivée pour éviter son conflit avec le port 3000. Le dépôt utilise le port 3001
+en développement ; la production reste sur le port 3000.
+
+Pour suspendre ou réactiver ce démarrage automatique :
+
+```powershell
+Disable-ScheduledTask -TaskName dailyplanner
+Enable-ScheduledTask -TaskName dailyplanner
+```
+
+### Séparer le dépôt et la production (Windows)
+
+Le build et les données de production peuvent vivre hors du dépôt, par défaut dans
+`C:\apps\a-table`. La première exécution reprend la configuration `.env` actuelle,
+fait une sauvegarde cohérente de la base dans `data\planner.sqlite`, puis copie le
+build et installe uniquement les dépendances nécessaires à l’exécution :
+
+```powershell
+npm run deploy
+# ou : npm run deploy -- 'D:\Applications\a-table'
+```
+
+La commande sauvegarde d’abord la base, puis demande l’arrêt du serveur et de son
+démarrage automatique. Désactivez la tâche, par exemple avec
+`Disable-ScheduledTask -TaskName dailyplanner`, arrêtez le processus Node et
+confirmez ; le build n’est lancé qu’après vérification que le port est libre. Les
+déploiements suivants sauvegardent la base dans `backups\` et conservent les anciens
+builds dans `releases\`. Le fichier `.env` de production n’est pas écrasé ; lors du
+premier déploiement, son `DATABASE_PATH` est isolé dans le dossier de production.
+Après avoir arrêté et vérifié le serveur, on peut passer `-ServerStopped` pour
+confirmer sans invite interactive :
+`npm run deploy -- -ServerStopped`.
+
+Le script reste compatible avec Windows PowerShell 5.1 sans `Get-FileHash` :
+la comparaison des dépendances utilise SHA-256 via .NET. Conserver son encodage
+UTF-8 avec BOM pour afficher correctement les accents dans Windows PowerShell.
+
+Pour la tâche actuelle, `launchDailyPlanner` dans le profil PowerShell et le
+répertoire de travail de `dailyplanner` doivent pointer vers `C:\apps\a-table`.
+Hors tâche planifiée, `C:\apps\a-table\scripts\start.ps1` démarre aussi la
+production. Configurez le `.env` du dépôt pour le développement avec
+`HOST=127.0.0.1`, `PORT=3001` et `DATABASE_PATH=./data/dev.sqlite` ; gardez la clé
+OpenAI vide et ne définissez pas `PUBLIC_ORIGIN` en développement. `npm run dev`
+utilisera ainsi une API et une base distinctes ; la production gardera son port et
+sa base actuels. Pour essayer les comptes en développement, ajoutez `AUTH_ENABLED=true`,
+les identifiants du client OAuth de développement et `PUBLIC_ORIGIN=http://localhost:3001`
+(URI de redirection `http://localhost:3001/api/auth/google/callback`), puis utilisez
+`npm run build` et `npm start` en ouvrant `http://localhost:3001`. Gardez si possible la même origine HTTPS pour les appareils déjà
+installés.
+
 Pour migrer : installer Node et Caddy sur la nouvelle machine, copier le code et une sauvegarde cohérente de SQLite, recréer `.env`, exécuter `npm ci` puis `npm run build`, et déplacer le DNS. Garder si possible **la même origine HTTPS** : IndexedDB et le cache sont propres à chaque origine. Avant de changer d’adresse, synchroniser chaque appareil sur l’ancien serveur.
 
 ## Sauvegardes
@@ -213,12 +308,13 @@ La commande utilise `VACUUM INTO` et refuse d’écraser une destination existan
 ### Repartir de zéro
 
 ```powershell
-npm run reset -- --confirm
+npm run reset -- --space common --confirm
+npm run reset -- --email <adresse> --confirm   # foyer de ce compte
 ```
 
-Supprime les repas du planning et les fiches du carnet, avec leurs analyses IA ; les paramètres (modèle, foyer) et les compteurs IA sont conservés. Une sauvegarde est d’abord créée dans `data/backups/`. Fonctionne serveur démarré.
+Supprime les repas du planning et les fiches du carnet d’un seul espace, avec leurs analyses IA ; les paramètres (modèle, convives) et les compteurs IA sont conservés. Une sauvegarde est d’abord créée dans `data/backups/`. Fonctionne serveur démarré.
 
-Le serveur change alors son identifiant de réinitialisation : à leur prochaine synchronisation, toutes les applications (PWA, navigateurs) **effacent leurs repas et fiches locaux, y compris ceux pas encore envoyés**. Les paramètres locaux et leurs modifications en attente sont conservés. Tant qu’un appareil n’a pas appliqué la réinitialisation, ses envois de repas et de fiches sont ignorés (ses paramètres restent acceptés), pour qu’il ne fasse pas réapparaître les données supprimées. Une PWA installée doit d’abord avoir reçu la version de l’application qui gère ce mécanisme.
+Le serveur change alors son identifiant de réinitialisation : à leur prochaine synchronisation, toutes les applications (PWA, navigateurs) de cet espace **effacent leurs repas et fiches locaux, y compris ceux pas encore envoyés**. Les paramètres locaux et leurs modifications en attente sont conservés. Tant qu’un appareil n’a pas appliqué la réinitialisation, ses envois de repas et de fiches sont ignorés (ses paramètres restent acceptés), pour qu’il ne fasse pas réapparaître les données supprimées. Une PWA installée doit d’abord avoir reçu la version de l’application qui gère ce mécanisme.
 
 ## Vérification
 
@@ -235,6 +331,6 @@ npm run test:e2e -- --project=pixel-chrome --grep='HTTP LAN'
 Remove-Item Env:E2E_HOST
 ```
 
-Les tests unitaires couvrent dates françaises/DST, contrats, conflits, effacements persistants, synchronisation en vol, concurrence des onglets, redémarrage SQLite, comptabilisation des appels sans plafond et erreurs OpenAI. Les tests navigateur couvrent les formats téléphone/tablette/desktop, Chrome et Firefox, le rechargement réellement hors ligne, le serveur inaccessible malgré Internet, le quadruple clic, l’archivage et les conflits entre deux appareils.
+Les tests unitaires couvrent dates françaises/DST, contrats, conflits, effacements persistants, synchronisation en vol, concurrence des onglets, redémarrage SQLite, quotas par foyer et erreurs OpenAI. Les tests navigateur couvrent les formats téléphone/tablette/desktop, Chrome et Firefox, le rechargement réellement hors ligne, le serveur inaccessible malgré Internet, archivage’archivage et les conflits entre deux appareils.
 
 Les appels OpenAI sont **simulés dans les tests** : aucune clé ni dépense n’est nécessaire. Un essai réel avec votre clé et une vérification sur les appareils physiques restent nécessaires après le déploiement.

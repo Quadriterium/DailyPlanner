@@ -18,7 +18,7 @@ async function writeMeal(page: Page, text: string, date = today, slot: 'lunch' |
   );
   expect(Math.abs(missingWidth)).toBeLessThan(2);
   await page.getByLabel('Votre idée du jour', { exact: true }).fill(text);
-  await page.getByRole('button', { name: 'Garder ce repas' }).click();
+  await page.getByRole('button', { name: 'Créer le repas' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(cell(page, date, slot)).toHaveText(text);
 }
@@ -126,7 +126,7 @@ test('bibliothèque modifiable, suggestions et archivage sans effacer les menus'
   await page.getByRole('button', { name: new RegExp(text) }).click();
   await page.getByLabel('Nom du repas', { exact: true }).fill(corrected);
   await page.getByRole('button', { name: 'Toute l’année', exact: true }).click();
-  await page.getByLabel(/Ingrédients principaux/).fill('Carottes\nPommes de terre');
+  await page.getByLabel(/Ingrédients et quantités/).fill('Carottes\nPommes de terre');
   await page.getByLabel('Une petite recette', { exact: true }).fill('Cuire les légumes, puis mixer.');
   await page.getByRole('button', { name: 'Enregistrer la fiche' }).click();
   await page.getByRole('button', { name: 'Mon planning', exact: true }).click();
@@ -238,7 +238,7 @@ test('serveur indisponible malgré Internet, suppression hors ligne et réconcil
   expect(await page.evaluate(() => navigator.onLine)).toBe(true);
   await cell(page).click();
   await page.getByRole('button', { name: 'Vider', exact: true }).click();
-  await expect(cell(page)).toContainText('À imaginer');
+  await expect(cell(page)).toContainText('Créer un repas');
   await forceSync(page);
   await expect(page.getByRole('dialog', { name: 'Actualisation impossible' })).toBeVisible();
   await page.getByRole('button', { name: 'Compris' }).click();
@@ -248,7 +248,7 @@ test('serveur indisponible malgré Internet, suppression hors ligne et réconcil
   await page.getByRole('button', { name: 'Compris' }).click();
   await page.reload();
   await awaitSynced(page);
-  await expect(cell(page)).toContainText('À imaginer');
+  await expect(cell(page)).toContainText('Créer un repas');
 });
 
 test('deux appareils : le dernier changement gagne, les autres créneaux sont conservés', async ({ page, context, browser }) => {

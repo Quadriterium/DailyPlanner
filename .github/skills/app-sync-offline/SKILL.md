@@ -40,6 +40,24 @@ description: "Comprendre et diagnostiquer la synchronisation À table ! : Indexe
 - Les analyses IA ne participent pas aux versions utilisateur ; voir
   [le skill IA](../app-ai-library/SKILL.md).
 
+## Comptes et bases locales
+
+- Une base IndexedDB par contexte : `a-table-v1` (carnet commun, `AUTH_ENABLED=false`),
+  `a-table-guest` (mode invité, jamais synchronisée) et `a-table-u-<user>-s-<space>`
+  (un compte dans un foyer). `localStorage` `a-table-auth` mémorise le dernier
+  compte pour ouvrir sa base hors ligne avant la vérification de session.
+- Changer de base passe par `switchSpace` (sérialisé, avec époque) : une réponse
+  de synchronisation d'une ancienne base est ignorée. Les onglets suivent via
+  `BroadcastChannel` (`space-changed`).
+- 401 : session expirée, la base et l'outbox restent, bandeau de reconnexion.
+  403 / autre foyer : accès retiré, pas d'envoi. La déconnexion conserve la base
+  du compte et ses modifications en attente pour la prochaine connexion.
+- Import invité → foyer : après une première synchronisation (pour connaître
+  `resetId`), `importInto` copie les records avec leurs versions dans une seule
+  transaction, rattache les plats de même nom normalisé, puis vide la base invité.
+  Relancer l'import est idempotent. L'ancien `a-table-v1` non synchronisé est
+  proposé à l'import une seule fois après connexion.
+
 ## Transport et erreurs
 
 - Envoi d'au plus 100 mutations par requête ; réponse avec instantané complet,
@@ -59,7 +77,7 @@ description: "Comprendre et diagnostiquer la synchronisation À table ! : Indexe
 
 - Le build précache HTML, JS, CSS, manifeste et icônes sous une version calculée.
   L'installation doit télécharger tous ces fichiers pour réussir.
-- `/api/` n'est pas intercepté. Le shell est servi depuis le cache ; les données
+- `/api/` n'est pas intercepté. Les navigations vers `/confidentialite` et`n  `/conditions-utilisation` reçoivent leur page HTML, jamais le shell.`n  Le shell est servi depuis le cache ; les données
   restent dans IndexedDB.
 - Par défaut, une mise à jour attend la fermeture des anciens clients.
   Le bouton « Forcer la mise à jour » retélécharge le shell avec `cache: 'reload'`,

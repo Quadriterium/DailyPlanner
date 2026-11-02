@@ -35,7 +35,9 @@ modifier la configuration ou appeler OpenAI sans nécessité.
 | [thème](../../../src/theme.ts) et [son script de démarrage](../../../public/theme.js) | Clair, sombre, selon l'heure ou comme le système, propre à l'appareil et appliqué avant React |
 | [styles](../../../src/styles.css) | Interface responsive crème, terracotta et sauge, déclinée en thème sombre |
 | [service worker](../../../pwa/service-worker.js) | Cache de l'application, jamais de l'API |
-| [configuration serveur](../../../server/config.ts) | Réseau, origine autorisée, base, clé et modèles IA |
+| [configuration serveur](../../../server/config.ts) | Réseau, origine autorisée, base, clé et modèles IA, comptes Google |
+| [Account](../../../src/Account.tsx) et [authentification serveur](../../../server/auth/routes.ts) | Connexion Google (OIDC + PKCE), sessions par cookie, foyers, invitations, mode invité |
+| [administration](../../../server/admin.ts) | `npm run admin` : comptes, espaces, rattachement à l'espace commun, révocation des sessions |
 
 ## Modèle mental
 
@@ -47,13 +49,16 @@ modifier la configuration ou appeler OpenAI sans nécessité.
   Les quantités de la fiche du carnet ne sont pas recalculées par ce réglage.
 - `dish` : fiche réutilisable avec nom, saison de création, archivage et
   `analysisKey`. Des `details` non nuls représentent une correction manuelle.
-- `settings` : un record partagé `global`, contenant notamment le modèle IA choisi
+- `settings` : un record `global` par foyer, contenant notamment le modèle IA choisi
   et le niveau de cuisine (`cookingLevel`, 1 à 4) ; `details.level` porte celui d'une fiche.
 - `Analysis` : résultat ou état de travail IA séparé des records utilisateur.
   Pour un import URL, `dish.sourceUrl` conserve le lien et `Analysis.name` peut
   publier le nom avant la recette. `mealDisplayName` affiche ce nom à la place
   du lien d'origine, sans réécrire `meal.text`.
-- Chaque record utilisateur porte `modifiedAt` et `mutationId`.
+- Chaque record utilisateur porte `modifiedAt` et `mutationId`. Côté serveur, il
+  appartient à un espace (`space_id`) : l'espace « common » (données d'avant les
+  comptes) ou un foyer. Chaque utilisateur appartient à un seul foyer ; toutes les
+  routes de données sont filtrées par l'espace de la session.
   Aucun menu ni plat n'est prérempli.
 
 Chemin principal :
@@ -66,7 +71,11 @@ Saisie -> transaction IndexedDB (records + outbox) -> confirmation locale
 
 Le fonctionnement hors ligne n'implique pas que le serveur soit toujours disponible :
 un client déjà mis en cache reste utilisable, mais le partage attend la reconnexion.
-Il n'y a pas d'authentification ; HTTPS ne restreint pas qui peut accéder aux données.
+Avec `AUTH_ENABLED=true`, l'accès exige une session Google ; sans connexion, le
+client fonctionne en mode invité dans une base IndexedDB locale (`a-table-guest`)
+sans synchronisation ni IA. Avec `AUTH_ENABLED=false` (défaut), il n'y a pas
+d'authentification et tout le monde partage l'espace « common ».
+Conception détaillée : [authentification Google](../../../docs/authentification-google.md).
 
 ## Approfondir uniquement le sujet nécessaire
 

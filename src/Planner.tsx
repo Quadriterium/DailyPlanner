@@ -1,21 +1,24 @@
 import { useEffect, useLayoutEffect, useRef, useState, type UIEvent } from 'react';
 import { ArrowDown, ArrowUp, CalendarDays, Leaf, LoaderCircle, Moon, Plus, Shuffle, Sparkles, Sun, Users } from 'lucide-react';
 import { addDays, formatDate, householdSummary, isoWeekday, mealDisplayName, mealId, seasonForDate, seasonLabels, type Analysis, type CookingLevel, type Dish, type Meal, type Slot } from '../shared/model';
-import { Modal } from './components';
+import { GenerationProgress, Modal } from './components';
 import { LevelButton, seasonalLevelCounts } from './CookingLevel';
-import { errorMessage, fillMeal } from './store';
+import { errorMessage, fillMeal, signInHint, useServerFeatures } from './store';
 
-export function Planner({ today, meals, dishes, analyses, cookingLevel, onSelect, onSaved }: {
+export function Planner({ today, meals, dishes, analyses, cookingLevel, recentMeal, onSelect, onSaved }: {
   today: string; meals: Meal[]; dishes: Dish[]; analyses: Analysis[]; cookingLevel?: CookingLevel;
-  onSelect: (date: string, slot: Slot, start: string, index?: 1) => void; onSaved: () => void;
+  recentMeal: string | null;
+  onSelect: (date: string, slot: Slot, start: string, index?: 1) => void; onSaved: (id: string) => void;
 }) {
   const [range, setRange] = useState({ start: -7, end: 20 });
+  const serverFeatures = useServerFeatures();
   const [visibleDay, setVisibleDay] = useState(today);
   const scroll = useRef<HTMLDivElement>(null);
   const adjustment = useRef<number | 'today'>('today');
   const expanding = useRef(false);
   const filling = useRef(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mealMap = new Map(meals.map(meal => [meal.id, meal]));
   const dishMap = new Map(dishes.map(dish => [dish.id, dish]));
@@ -71,14 +74,16 @@ export function Planner({ today, meals, dishes, analyses, cookingLevel, onSelect
     if (filling.current) return;
     filling.current = true;
     setBusy(`${date}:${slot}`);
+    setGenerating(mode === 'ai');
     try {
       await fillMeal(date, slot, visibleDay, mode, undefined, undefined, level);
-      onSaved();
+      onSaved(mealId(date, slot));
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
       filling.current = false;
       setBusy(null);
+      setGenerating(false);
     }
   }
 
@@ -111,7 +116,7 @@ export function Planner({ today, meals, dishes, analyses, cookingLevel, onSelect
               {choices.length ? choices.map(meal => {
                 const dish = meal.dishId ? dishMap.get(meal.dishId) : undefined;
                 const name = mealDisplayName(meal, dish, dish ? analysisMap.get(dish.id) : undefined);
-                return <div className={`meal-choice ${choices.length === 1 ? 'single' : ''}`} key={meal.id}>
+                return <div className={`meal-choice ${choices.length === 1 ? 'single' : ''} ${recentMeal === meal.id ? 'meal-just-added' : ''}`} key={meal.id}>
                   <button className="meal-cell filled" data-meal-id={meal.id} disabled={pending} title={name}
                     aria-label={`${label} : ${name}${meal.household ? ` ; convives personnalisés : ${householdSummary(meal.household)}` : ''}`}
                     onClick={() => onSelect(date, slot, visibleDay, meal.index)}>
@@ -119,16 +124,16 @@ export function Planner({ today, meals, dishes, analyses, cookingLevel, onSelect
                     {choices.length === 1 && meal.household && <Users className="meal-guests-marker" size={14} aria-hidden="true" />}
                   </button>
                   {choices.length === 1 && <button className="meal-add-second" aria-label={`${label} : ajouter un deuxième plat`}
-                    title="Ajouter un deuxième plat" onClick={() => onSelect(date, slot, visibleDay, first?.text.trim() ? 1 : undefined)}><Plus size={16} /></button>}
+                    title="Ajouter un deuxième plat" onClick={() => onSelect(date, slot, visibleDay, first?.text.trim() ? 1 : undefined)}><Plus size={16} /><span>Plat</span></button>}
                 </div>;
               }) : <button className="meal-cell" disabled={pending} aria-label={`${label} : choisir un repas`}
                 onClick={() => onSelect(date, slot, visibleDay)}>
                 {pending ? <LoaderCircle size={16} className="spinning" aria-label="Recherche d’un repas en cours" />
-                  : <><Plus size={16} strokeWidth={1.4} /><span className="placeholder">À imaginer</span></>}
+                  : <><Plus size={16} strokeWidth={1.8} /><span className="placeholder">Créer un repas</span></>}
               </button>}
               {!choices.length && <div className="meal-quick-actions">
-                <LevelButton className="meal-quick-button" disabled={Boolean(busy)} preferred={cookingLevel}
-                  title="Générer un repas de saison avec l’IA (appui long : choisir le niveau)"
+                <LevelButton className="meal-quick-button" disabled={Boolean(busy) || !serverFeatures} preferred={cookingLevel}
+                  title={serverFeatures ? 'Générer un repas de saison avec l’IA (appui long : choisir le niveau)' : signInHint}
                   aria-label={`${label} : générer un repas de saison avec l’IA`}
                   menuTitle="Générer avec l’IA" menuSubtitle={`Pour le ${label} : choisissez le niveau de cuisine de ce repas. Celui des paramètres ne change pas.`}
                   onPress={() => void fill(date, slot, 'ai')} onLevel={level => void fill(date, slot, 'ai', level)}><Sparkles size={16} /></LevelButton>
@@ -149,6 +154,7 @@ export function Planner({ today, meals, dishes, analyses, cookingLevel, onSelect
         <button className="icon-button" aria-label="Voir les sept jours suivants" onClick={() => scroll.current?.scrollBy({ top: rowHeight() * 7, behavior: 'smooth' })}><ArrowDown size={16} /></button>
       </div>
     </div>
+    {generating && <GenerationProgress />}
     {error && <Modal title="Repas non choisi" onClose={() => setError(null)}><p role="alert">{error}</p></Modal>}
   </section>;
 }

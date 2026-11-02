@@ -79,6 +79,18 @@ description: "Comprendre ou faire évoluer l'interface À table ! : planning mid
   Remplacer le plat conserve ses convives ; le vider les réinitialise.
   Ce réglage ne recalcule pas les ingrédients de la fiche partagée.
 
+## Compte et foyer
+
+- [Account](../../../src/Account.tsx) : bouton Google (désactivé hors ligne),
+  carte « Compte et foyer » en tête des paramètres (renommer, membres, inviter,
+  révoquer, quitter, se déconnecter) et liens vers les pages légales publiques.
+- Mode invité : bandeau `.account-banner` au-dessus du pied de page (texte court
+  sous 520 px), indicateur « Sur cet appareil uniquement ». Les boutons IA restent
+  visibles mais désactivés, avec `signInHint` en infobulle.
+- Bandeaux « Session expirée » (Se reconnecter) et « Vous ne faites plus partie de
+  ce foyer ». Le retour OAuth `?auth=…` et le fragment `#invitation=…` sont lus
+  puis retirés de l'URL au démarrage de [App](../../../src/App.tsx).
+
 ## Carnet, réglages et notifications
 
 - Une correction de fiche ou un archivage ne réécrit pas les anciens menus.
