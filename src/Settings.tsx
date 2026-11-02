@@ -230,7 +230,7 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
     </div>
     <div className="settings-card">
       <h3><Sparkles size={19} />Votre foyer</h3>
-      <p>Ces convives sont utilisés par défaut pour les repas. Touchez un repas choisi dans le planning pour adapter les convives de ce créneau uniquement. Les prochaines recettes générées par l’IA indiqueront des quantités adaptées au foyer.</p>
+      <p>Ces convives sont utilisés par défaut pour les repas. Les quantités des recettes du planning se recalculent immédiatement, même pour un plat déjà dans le carnet, si son nombre de portions d’origine est connu. Touchez un repas pour personnaliser ses convives. Le calcul local compte une portion par adulte ou adolescent et une demi-portion par enfant.</p>
       <fieldset disabled={!settings || pendingHousehold}><legend className="field-label">Personnes à table</legend>
         <div className="household-options">
           {householdCategories.map(([person, label]) => <label key={person}>
@@ -240,7 +240,7 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
           </label>)}
         </div>
       </fieldset>
-      {householdSaved && <p className="field-hint" role="status">Composition du foyer enregistrée ; elle sera utilisée pour les prochaines recettes IA.</p>}
+      {householdSaved && <p className="field-hint" role="status">Composition du foyer enregistrée ; les quantités du planning suivent ce réglage lorsque les portions d’origine sont connues.</p>}
       <label className="field-label" htmlFor="avoid">Repas et ingrédients à éviter</label>
       <textarea id="avoid" className="avoid-input" rows={3} maxLength={1000} disabled={!settings || pendingAvoid}
         placeholder="Ex. : champignons, fruits de mer, coriandre, plats trop épicés…"
@@ -291,7 +291,7 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
       </dl>}
       <p className="field-hint">{capabilities?.dailyLimit === null
         ? 'Votre foyer utilise l’IA sans limite quotidienne.'
-        : 'Votre foyer dispose de 20 requêtes IA par jour, renouvelées à minuit (heure de Paris). Générations et enrichissements partagent cette limite.'} Les échecs comptent comme des tentatives et ne sont pas relancés automatiquement. Les compteurs concernent votre foyer et ne sont pas une facture. Les limites de votre projet OpenAI restent applicables.</p>
+        : 'Votre foyer dispose de 20 requêtes IA par jour, renouvelées à minuit (heure de Paris).'} </p>
     </div>
     <FeatureRequests online={online} allowed={allowed} />
     <div className="privacy-note"><ShieldCheck size={22} strokeWidth={1.4} /><p>{auth.mode === 'disabled'

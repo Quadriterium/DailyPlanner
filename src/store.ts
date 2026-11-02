@@ -1,9 +1,9 @@
 import { useSyncExternalStore } from 'react';
 import {
-  apiErrorSchema, authSessionSchema, authStartResponseSchema, cookingLevelLabels, createdInvitationSchema, defaultCookingLevel,
+  addDays, apiErrorSchema, authSessionSchema, authStartResponseSchema, catalogCandidates, cookingLevelLabels, createdInvitationSchema, defaultCookingLevel,
   defaultOpenAiModel, dishDetails, featureRequestListSchema, featureRequestSchema, generateMealResponseSchema, invitationPreviewSchema,
-  mealId, normalizedName, randomMealCandidates, seasonForDate, spaceDetailsSchema, syncResponseSchema,
-  type AuthSession, type CookingLevel, type CreatedInvitation, type DishDetails, type FeatureRequest, type Household,
+  mealId, normalizedName, randomMealCandidates, recentMealNames, seasonForDate, spaceDetailsSchema, syncResponseSchema,
+  type AuthSession, type CatalogEntry, type CookingLevel, type CreatedInvitation, type Dish, type DishDetails, type FeatureRequest, type Household,
   type InvitationPreview, type Meal, type SessionSpace, type SessionUser, type Slot, type SpaceDetails,
 } from '../shared/model';
 import {
@@ -11,6 +11,7 @@ import {
   type Draft, type Repository, type Snapshot,
 } from './repository';
 import { newId } from './id';
+import { catalogEntries, syncCatalog } from './catalog';
 
 export type AuthMode = 'unknown' | 'disabled' | 'guest' | 'signed-in' | 'expired' | 'revoked';
 export interface AuthState { mode: AuthMode; user: SessionUser | null; space: SessionSpace | null }
@@ -222,6 +223,7 @@ export async function checkSession(allowSpaceChange = false, timeout = 8000): Pr
 
 export function initialize() {
   if (!initializing) initializing = (async () => {
+    void syncCatalog();
     const memo = readMemo();
     let auth = memo ? authFromMemo(memo) : null;
     defaultModel = memo?.defaultModel ?? defaultModel;
@@ -289,6 +291,18 @@ export function preferredCookingLevel(records: State['records']): CookingLevel {
   return settings?.cookingLevel ?? defaultCookingLevel;
 }
 
+/** Shared recipes eligible for a random draw: not already in the household notebook, nor chosen around this date. */
+export function sharedRandomCandidates(
+  date: string, level?: CookingLevel, records = state.records, analyses = state.analyses, entries = catalogEntries(),
+): CatalogEntry[] {
+  const known = records.filter(record => record.type === 'dish').flatMap(dish =>
+    [dish.name, dishDetails(dish, analyses.find(analysis => analysis.dishId === dish.id)).name]);
+  const settings = records.find(record => record.type === 'settings');
+  return catalogCandidates(entries, {
+    date, level, avoid: settings?.avoid ?? '', excludedNames: [...known, ...recentMealNames(records, analyses, date)],
+  });
+}
+
 export async function fillMeal(
   date: string, slot: Slot, start: string, mode: 'ai' | 'random', replacing?: Meal, index?: 1, level?: CookingLevel,
 ) {
@@ -303,6 +317,7 @@ export async function fillMeal(
     }
   } else if (previous?.type === 'meal' && previous.text.trim()) throw new Error('Ce créneau contient déjà un repas.');
   let generated: DishDetails | undefined;
+  let generatedSource: string | undefined;
   if (mode === 'ai') {
     await synchronize();
     requireServerFeatures();
@@ -330,6 +345,7 @@ export async function fillMeal(
     const result = generateMealResponseSchema.safeParse(body);
     if (!result.success) throw new Error('Proposition IA invalide. Le créneau reste inchangé.');
     generated = result.data.details;
+    generatedSource = result.data.sourceUrl;
     await refresh();
     const current = state.records.find(record => record.type === 'meal' && record.id === id);
     if (current?.mutationId !== previous?.mutationId) {
@@ -339,21 +355,33 @@ export async function fillMeal(
   const dishes = state.records.filter(record => record.type === 'dish');
   const meals = state.records.filter(record => record.type === 'meal');
   const randomLevel = level ?? preferredCookingLevel(state.records);
-  const candidates = generated ? [] : randomMealCandidates(dishes, state.analyses, meals, date, start, randomLevel);
-  const selected = generated
-    ? dishes.find(dish => !dish.archived && (
+  let selected: Dish | undefined;
+  let copied: { details: DishDetails; sourceUrl?: string } | undefined;
+  if (generated) {
+    selected = dishes.find(dish => !dish.archived && (
       normalizedName(dish.name) === normalizedName(generated.name) ||
-      normalizedName(dishDetails(dish, state.analyses.find(analysis => analysis.dishId === dish.id)).name) === normalizedName(generated.name)))
-    : candidates[Math.floor(Math.random() * candidates.length)];
-  const details = generated ?? (selected ? dishDetails(selected, state.analyses.find(analysis => analysis.dishId === selected.id)) : undefined);
+      normalizedName(dishDetails(dish, state.analyses.find(analysis => analysis.dishId === dish.id)).name) === normalizedName(generated.name)));
+    if (!selected) copied = { details: generated, ...(generatedSource ? { sourceUrl: generatedSource } : {}) };
+  } else {
+    const candidates = randomMealCandidates(dishes, state.analyses, meals, date, start, randomLevel);
+    const week = meals.filter(meal => meal.date >= start && meal.date <= addDays(start, 6) && meal.text.trim());
+    const unused = candidates.filter(dish => !week.some(meal => meal.dishId === dish.id));
+    const shared = sharedRandomCandidates(date, randomLevel);
+    // Uniform draw over unused household dishes and suitable shared ones; household repeats only as a last resort.
+    const pool: (Dish | CatalogEntry)[] = unused.length || shared.length ? [...unused, ...shared] : candidates;
+    const choice = pool[Math.floor(Math.random() * pool.length)];
+    if (choice && 'type' in choice) selected = choice;
+    else if (choice) copied = { details: choice.details, ...(choice.sourceUrl ? { sourceUrl: choice.sourceUrl } : {}) };
+  }
+  const details = copied?.details ?? (selected ? dishDetails(selected, state.analyses.find(analysis => analysis.dishId === selected!.id)) : undefined);
   if (!details) throw new Error(randomMealCandidates(dishes, state.analyses, meals, date, start).length
-    ? `Aucun repas de saison de niveau « ${cookingLevelLabels[randomLevel]} » dans le carnet. Appuyez longuement sur le bouton pour choisir un autre niveau${serverFeaturesAvailable() ? ', ou utilisez la génération IA' : ''}.`
-    : `Aucun repas de saison dans le carnet. Ajoutez-en un${serverFeaturesAvailable() ? ' ou utilisez la génération IA' : ''}.`);
+    ? `Aucun repas de saison de niveau « ${cookingLevelLabels[randomLevel]} » dans le carnet ni le catalogue. Appuyez longuement sur le bouton pour choisir un autre niveau${serverFeaturesAvailable() ? ', ou utilisez la génération IA' : ''}.`
+    : `Aucun repas de saison dans le carnet ni le catalogue. Ajoutez-en un${serverFeaturesAvailable() ? ' ou utilisez la génération IA' : ''}.`);
   const drafts: Draft[] = [];
   const dishId = selected?.id ?? newId();
-  if (!selected && generated) drafts.push({
-    type: 'dish', id: dishId, name: generated.name, creationSeason: seasonForDate(date),
-    analysisKey: newId(), details: generated, archived: false,
+  if (copied) drafts.push({
+    type: 'dish', id: dishId, name: copied.details.name, creationSeason: seasonForDate(date),
+    analysisKey: newId(), details: copied.details, archived: false, ...(copied.sourceUrl ? { sourceUrl: copied.sourceUrl } : {}),
   });
   drafts.push({ type: 'meal', id, date, slot, ...(index === 1 ? { index } : {}),
     text: details.name, dishId, household: replacing?.household ?? null });
@@ -375,6 +403,7 @@ export function synchronizeInBackground() {
 
 export async function synchronize(): Promise<void> {
   await initialize();
+  void syncCatalog();
   const mode = state.auth.mode;
   if (mode === 'revoked') return;
   // Guests and expired sessions only look for a session opened meanwhile (sign-in in another tab); never /api/sync.

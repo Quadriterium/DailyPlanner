@@ -5,9 +5,28 @@ import { details, dish, meal, snapshot } from '../tests/fixtures';
 const today = parisDate();
 const household = { adults: 2, teenagers: 1, children: 3 };
 const custom = { adults: 2, teenagers: 0, children: 0 };
-const recipe = dish({ name: 'Poulet-frites', details });
+const recipe = dish({ name: 'Poulet-frites', details: { ...details, servings: 6 } });
 const cell = (page: Page, slot = 'lunch') => page.locator(`[data-date="${today}"] .meal-cell`).nth(slot === 'lunch' ? 0 : 1);
-const guests = (page: Page) => page.getByRole('region', { name: 'Convives du repas' });
+const guests = (page: Page) => page.getByRole('dialog', { name: 'Convives du repas' }).getByRole('region', { name: 'Convives du repas' });
+const chip = (page: Page) => page.locator('.meal-guests-chip');
+const people = (value: Household) => value.adults + value.teenagers + value.children;
+const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+async function expectGuests(page: Page, value: Household, customised: boolean) {
+  await expect(chip(page)).toHaveAttribute('title', new RegExp(escape(householdSummary(value))));
+  await expect(chip(page)).toContainText(`${people(value)} ${people(value) > 1 ? 'personnes' : 'personne'}`);
+  if (customised) await expect(chip(page)).toContainText('personnalisé');
+  else await expect(chip(page)).not.toContainText('personnalisé');
+}
+
+async function manage(page: Page) {
+  await page.getByRole('button', { name: 'Modifier le repas', exact: true }).click();
+}
+
+async function changeDish(page: Page) {
+  await manage(page);
+  await page.getByRole('button', { name: 'Changer le plat', exact: true }).click();
+}
 
 async function setup(page: Page, context: BrowserContext, extra: RecordData[] = []) {
   const records = new Map<string, RecordData>();
@@ -30,8 +49,15 @@ async function setup(page: Page, context: BrowserContext, extra: RecordData[] = 
 }
 
 async function editGuests(page: Page) {
-  await guests(page).getByRole('button', { name: /Adapter/ }).click();
+  await chip(page).click();
+  await expect(page.getByRole('dialog', { name: 'Convives du repas' })).toBeVisible();
   await expect(guests(page).getByRole('checkbox')).toBeFocused();
+}
+
+async function cancelGuests(page: Page) {
+  await guests(page).getByRole('button', { name: 'Annuler' }).click();
+  await expect(guests(page)).toHaveCount(0);
+  await expect(chip(page)).toBeFocused();
 }
 
 async function fillGuests(page: Page, value: Household) {
@@ -42,9 +68,10 @@ async function fillGuests(page: Page, value: Household) {
 }
 
 async function saveGuests(page: Page) {
-  await guests(page).getByRole('button', { name: 'Enregistrer les convives' }).click();
-  await expect(guests(page).getByRole('status')).toHaveText('Convives enregistrés pour ce repas.');
-  await expect(guests(page).getByRole('button', { name: /Adapter/ })).toBeFocused();
+  await guests(page).getByRole('button', { name: 'Enregistrer', exact: true }).click();
+  await expect(guests(page)).toHaveCount(0);
+  await expect(page.getByRole('status').filter({ hasText: 'Convives enregistrés pour ce repas.' })).toBeVisible();
+  await expect(chip(page)).toBeFocused();
 }
 
 async function prepareOffline(page: Page) {
@@ -66,25 +93,28 @@ async function addDish(page: Page, slot: Locator) {
   if (await shortcut.isVisible()) await shortcut.click();
   else {
     await slot.locator('.meal-cell').click();
-    await page.getByRole('dialog').getByRole('button', { name: 'Ajouter un deuxième plat', exact: true }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Ajouter un plat', exact: true }).click();
   }
 }
 
 test('convives : valeurs du foyer, personnalisation locale, annulation et retour aux paramètres', async ({ page, context }) => {
   const records = await setup(page, context);
   await cell(page).click();
-  await expect(guests(page)).toContainText(householdSummary(household));
-  await expect(guests(page)).toContainText('Selon vos paramètres');
+  await expectGuests(page, household, false);
   await editGuests(page);
+  await expect(guests(page).getByRole('checkbox')).toHaveAccessibleName('Reprendre le nombre de personnes des paramètres');
+  await expect(guests(page)).toContainText('Les changements effectués dans les paramètres s’appliqueront aussi à ce plat.');
+  await expect(guests(page)).not.toContainText('Ces nombres ne s’appliqueront');
   await fillGuests(page, custom);
-  await guests(page).getByRole('button', { name: 'Annuler' }).click();
-  await expect(guests(page)).toContainText(householdSummary(household));
+  await expect(guests(page)).toContainText('Ces nombres ne s’appliqueront qu’à ce plat, sans modifier les paramètres ni les autres plats.');
+  await expect(guests(page)).not.toContainText('Les changements effectués dans les paramètres');
+  await cancelGuests(page);
+  await expectGuests(page, household, false);
   await editGuests(page);
   await fillGuests(page, custom);
   await saveGuests(page);
-  await expect(guests(page)).toContainText('Personnalisé');
-  await expect(guests(page)).toContainText('2 adultes');
-  await expect(page.getByRole('region', { name: 'Recette du repas' })).toContainText('ne sont pas recalculées');
+  await expectGuests(page, custom, true);
+  await expect(page.getByRole('region', { name: 'Recette du repas' })).toContainText('Quantités pour 2 personnes');
   await page.getByRole('button', { name: 'Fermer', exact: true }).click();
   await expect(cell(page)).toHaveAccessibleName(/convives personnalisés : 2 adultes/);
   await expect(cell(page).locator('.meal-guests-marker')).toHaveCount(1);
@@ -95,12 +125,11 @@ test('convives : valeurs du foyer, personnalisation locale, annulation et retour
   expect(records.get(`dish:${recipe.id}`)).toEqual(recipe);
   await page.reload();
   await cell(page).click();
-  await expect(guests(page)).toContainText('2 adultes');
+  await expectGuests(page, custom, true);
   await editGuests(page);
   await guests(page).getByRole('checkbox').check();
   await saveGuests(page);
-  await expect(guests(page)).toContainText(householdSummary(household));
-  await expect(guests(page)).toContainText('Selon vos paramètres');
+  await expectGuests(page, household, false);
   await page.getByRole('button', { name: 'Fermer', exact: true }).click();
   await expect(cell(page).locator('.meal-guests-marker')).toHaveCount(0);
   await expect(page.locator('.connection-indicator')).toHaveText('Carnet à jour');
@@ -112,7 +141,143 @@ test('convives : valeurs du foyer, personnalisation locale, annulation et retour
   await page.reload();
   await expect(page.locator('.connection-indicator')).toHaveText('Carnet à jour');
   await cell(page).click();
-  await expect(guests(page)).toContainText(householdSummary(changed));
+  await expectGuests(page, changed, false);
+});
+
+test('convives : composition visible, modification directe et aperçu local sans modifier la fiche', async ({ page, context }) => {
+  const source = { ...recipe, details: { ...details, servings: 6, ingredients: ['600 g de poulet', '3 œufs'],
+    recipe: 'Pour 6 personnes. Mélanger 600 g de poulet et 3 œufs. Cuire 20 minutes à 180 °C.' } };
+  const records = await setup(page, context, [source]);
+  await cell(page).click();
+  await expect(chip(page)).toContainText('2 adultes');
+  await expect(chip(page)).toContainText('1 adolescent');
+  await expect(chip(page)).toContainText('3 enfants');
+  await expect(chip(page)).toContainText('Selon les paramètres du foyer');
+  await editGuests(page);
+  await expect(guests(page).getByLabel('Adultes', { exact: true })).toHaveValue('2');
+  await expect(guests(page).getByLabel('Adolescents', { exact: true })).toHaveValue('1');
+  await expect(guests(page).getByLabel('Enfants', { exact: true })).toHaveValue('3');
+  await guests(page).getByRole('button', { name: 'Retirer un enfant', exact: true }).click();
+  await expect(guests(page).getByRole('checkbox')).not.toBeChecked();
+  await expect(guests(page)).toContainText('Repas pour 5 personnes');
+  await expect(guests(page).locator('.meal-guests-preview')).toContainText('500 g de poulet');
+  await guests(page).getByText('Voir la recette adaptée', { exact: true }).click();
+  await expect(guests(page).locator('.recipe-text')).toHaveText('Pour 5 personnes. Mélanger 500 g de poulet et 3 œufs. Cuire 20 minutes à 180 °C.');
+  await cancelGuests(page);
+  const displayedRecipe = page.getByRole('region', { name: 'Recette du repas' });
+  await expect(displayedRecipe).toContainText('600 g de poulet');
+  await editGuests(page);
+  await fillGuests(page, custom);
+  await saveGuests(page);
+  await expect(displayedRecipe).toContainText('200 g de poulet');
+  await expect(displayedRecipe.locator('.recipe-text')).toContainText('Pour 2 personnes.');
+  await page.reload();
+  await cell(page).click();
+  await expect(displayedRecipe).toContainText('200 g de poulet');
+  expect(records.get(`dish:${source.id}`)).toEqual(source);
+});
+
+test('convives : changer le foyer recalcule un plat existant puis sa réutilisation, sans appel IA', async ({ page, context }) => {
+  const source = { ...recipe, details: { ...details, servings: 6, ingredients: ['600 g de poulet'],
+    recipe: 'Pour 6 personnes. Cuire 600 g de poulet pendant 20 minutes.' } };
+  const records = await setup(page, context, [source]);
+  let aiCalls = 0;
+  await context.route('**/api/meals/generate', route => { aiCalls++; return route.abort(); });
+  await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+  await page.getByLabel('Enfants', { exact: true }).fill('0');
+  await expect(page.getByLabel('Enfants', { exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Mon planning', exact: true }).click();
+  await cell(page).click();
+  await expectGuests(page, { adults: 2, teenagers: 1, children: 0 }, false);
+  await expect(page.getByRole('region', { name: 'Recette du repas' })).toContainText('300 g de poulet');
+  await page.getByRole('button', { name: 'Fermer', exact: true }).click();
+  await page.locator(`[data-date="${addDays(today, 1)}"] .meal-cell`).first().click();
+  await page.getByRole('dialog').getByRole('button', { name: /^Poulet-frites/ }).click();
+  await page.locator(`[data-date="${addDays(today, 1)}"] .meal-cell`).first().click();
+  await expect(page.getByRole('region', { name: 'Recette du repas' }).locator('.recipe-text')).toHaveText('Pour 3 personnes. Cuire 300 g de poulet pendant 20 minutes.');
+  await expect(page.locator('.connection-indicator')).toHaveText('Carnet à jour');
+  expect(records.get(`dish:${source.id}`)).toEqual(source);
+  expect(records.get(`meal:${mealId(addDays(today, 1), 'lunch')}`)).toMatchObject({ dishId: source.id });
+  expect(aiCalls).toBe(0);
+});
+
+test('convives : gratin de courge réutilisé par autocomplétion, de six à huit personnes', async ({ page, context }) => {
+  const source = { ...recipe, name: 'Gratin de courge et lentilles', details: {
+    ...details, name: 'Gratin de courge et lentilles', servings: 6,
+    ingredients: ['1,2 kg de courge butternut', '250 g de lentilles vertes', '2 oignons', '20 cl de crème fraîche'],
+    recipe: '1. Préchauffer le four à 200 °C.\n2. Cuire les lentilles et la courge pendant 25 à 30 minutes.',
+  } };
+  const records = await setup(page, context, [source, {
+    type: 'settings', id: 'global', model: 'gpt-6-luna', household: { adults: 2, teenagers: 2, children: 2 },
+    cookingLevel: 2, avoid: '', modifiedAt: Date.now(), mutationId: crypto.randomUUID(),
+  }]);
+  await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+  await page.getByLabel('Adultes', { exact: true }).fill('4');
+  await expect(page.getByLabel('Adultes', { exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Mon planning', exact: true }).click();
+  const next = page.locator(`[data-date="${addDays(today, 1)}"] .meal-cell`).first();
+  await next.click();
+  await page.getByLabel('Votre idée du jour', { exact: true }).fill('gratin de courge');
+  await page.getByRole('option', { name: /Gratin de courge et lentilles/ }).click();
+  await page.getByRole('button', { name: 'Créer le repas', exact: true }).click();
+  await next.click();
+  await expectGuests(page, { adults: 4, teenagers: 2, children: 2 }, false);
+  const displayedRecipe = page.getByRole('region', { name: 'Recette du repas' });
+  await expect(displayedRecipe).toContainText('1,6 kg de courge butternut');
+  await expect(displayedRecipe).toContainText('330 g de lentilles vertes');
+  await expect(displayedRecipe.locator('.recipe-text')).toHaveText(source.details.recipe);
+  await page.reload();
+  await next.click();
+  await expect(displayedRecipe).toContainText('1,6 kg de courge butternut');
+  expect(records.get(`dish:${source.id}`)).toEqual(source);
+});
+
+test('convives : ancienne fiche sans base, avertissement puis portions renseignées dans le carnet', async ({ page, context }) => {
+  const source = { ...recipe, details: { ...details, ingredients: ['600 g de poulet'] } };
+  await setup(page, context, [source]);
+  await cell(page).click();
+  await expect(page.getByRole('region', { name: 'Recette du repas' })).toContainText('Nombre de portions d’origine inconnu');
+  await page.getByRole('button', { name: 'Fermer', exact: true }).click();
+  await page.getByRole('button', { name: 'Mon carnet', exact: true }).click();
+  await page.getByRole('button', { name: /^Poulet-frites/ }).click();
+  const base = page.getByLabel('Nombre de personnes de la recette d’origine', { exact: true });
+  await expect(base).toHaveValue('');
+  await base.fill('4');
+  await page.getByRole('button', { name: 'Enregistrer la fiche', exact: true }).click();
+  await page.getByRole('button', { name: 'Mon planning', exact: true }).click();
+  await cell(page).click();
+  await expect(page.getByRole('region', { name: 'Recette du repas' })).toContainText('900 g de poulet');
+});
+
+test('actions du repas : fenêtre visible sans déplacer une longue recette et retour du focus', async ({ page, context }) => {
+  await setup(page, context, [{ ...recipe, details: { ...details, recipe: details.recipe.repeat(30) } }]);
+  await cell(page).click();
+  const main = page.getByRole('dialog', { name: 'Votre repas', exact: true });
+  const modify = main.getByRole('button', { name: 'Modifier le repas', exact: true });
+  await expect(main.getByRole('button', { name: 'Supprimer', exact: true })).toHaveCount(0);
+  await modify.scrollIntoViewIfNeeded();
+  const scrollTop = await main.evaluate(element => element.scrollTop);
+  await modify.click();
+  const actions = page.getByRole('dialog', { name: 'Modifier le repas', exact: true });
+  await expect(actions).toBeVisible();
+  for (const name of ['Changer le plat', 'Supprimer', 'Générer un nouveau plat']) {
+    await expect(actions.getByRole('button', { name, exact: true })).toBeInViewport();
+  }
+  for (const name of ['Vider', 'Générer avec l’IA', 'Choisir au hasard']) {
+    await expect(actions.getByRole('button', { name, exact: true })).toHaveCount(0);
+  }
+  expect(await actions.evaluate(element => element.scrollWidth <= element.clientWidth && element.scrollHeight <= element.clientHeight)).toBe(true);
+  expect(await main.evaluate(element => element.scrollTop)).toBe(scrollTop);
+  await page.screenshot({ path: test.info().outputPath('actions-repas.png') });
+  await page.keyboard.press('Escape');
+  await expect(actions).toHaveCount(0);
+  await expect(modify).toBeFocused();
+  expect(await main.evaluate(element => element.scrollTop)).toBe(scrollTop);
+  await modify.click();
+  await actions.getByRole('button', { name: 'Fermer', exact: true }).click();
+  await expect(actions).toHaveCount(0);
+  await expect(modify).toBeFocused();
+  expect(await main.evaluate(element => element.scrollTop)).toBe(scrollTop);
 });
 
 test('convives : validation, compteurs tactiles et affichage sans débordement en clair et sombre', async ({ page, context }) => {
@@ -121,7 +286,7 @@ test('convives : validation, compteurs tactiles et affichage sans débordement e
   await editGuests(page);
   await fillGuests(page, { adults: 0, teenagers: 0, children: 0 });
   const adult = guests(page).getByLabel('Adultes', { exact: true });
-  const save = guests(page).getByRole('button', { name: 'Enregistrer les convives' });
+  const save = guests(page).getByRole('button', { name: 'Enregistrer', exact: true });
   await expect(guests(page).getByRole('button', { name: 'Retirer un adulte' })).toBeDisabled();
   await save.click();
   await expect(guests(page).getByRole('alert')).toContainText('au moins une personne');
@@ -139,6 +304,9 @@ test('convives : validation, compteurs tactiles et affichage sans débordement e
   await expect(adult).toHaveValue('1');
   for (const theme of ['light', 'dark']) {
     await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
+    await guests(page).evaluate(async element => {
+      await Promise.all(element.closest('dialog')!.getAnimations({ subtree: true }).map(animation => animation.finished));
+    });
     const bounds = await guests(page).evaluate(element => {
       const dialog = element.closest('dialog')!;
       return {
@@ -159,7 +327,7 @@ test('convives : validation, compteurs tactiles et affichage sans débordement e
     await page.screenshot({ path: test.info().outputPath(`convives-${theme}.png`) });
   }
   await saveGuests(page);
-  await expect(guests(page)).toContainText('1 adulte');
+  await expectGuests(page, { adults: 1, teenagers: 0, children: 0 }, true);
 });
 
 test('convives : serveur inaccessible, remplacement du plat et remise à zéro après vidage', async ({ page, context }) => {
@@ -173,22 +341,23 @@ test('convives : serveur inaccessible, remplacement du plat et remise à zéro a
   await page.getByRole('button', { name: 'Fermer', exact: true }).click();
   await page.reload();
   await cell(page).click();
-  await expect(guests(page)).toContainText('2 adultes');
-  await page.getByRole('button', { name: 'Modifier le repas', exact: true }).click();
+  await expectGuests(page, custom, true);
+  await changeDish(page);
   await page.getByLabel('Votre idée du jour', { exact: true }).fill('Mon autre plat');
   await page.getByRole('button', { name: 'Créer le repas' }).click();
   await cell(page).click();
-  await expect(guests(page)).toContainText('2 adultes');
-  await page.getByRole('button', { name: 'Choisir au hasard', exact: true }).click();
+  await expectGuests(page, custom, true);
+  await changeDish(page);
+  await page.getByRole('button', { name: new RegExp(`^${recipe.name}`) }).click();
   await cell(page).click();
-  await expect(guests(page)).toContainText('2 adultes');
-  await page.getByRole('button', { name: 'Vider', exact: true }).click();
+  await expectGuests(page, custom, true);
+  await manage(page);
+  await page.getByRole('button', { name: 'Supprimer', exact: true }).click();
   await cell(page).click();
   await page.getByLabel('Votre idée du jour', { exact: true }).fill(recipe.name);
   await page.getByRole('button', { name: 'Créer le repas' }).click();
   await cell(page).click();
-  await expect(guests(page)).toContainText(householdSummary(household));
-  await expect(guests(page)).toContainText('Selon vos paramètres');
+  await expectGuests(page, household, false);
   await page.getByRole('button', { name: 'Fermer', exact: true }).click();
   await context.unroute('**/api/sync', unavailable);
   await syncNow(page);
@@ -204,13 +373,14 @@ test('convives : une modification dans un autre onglet ne se fait pas écraser',
   await other.goto('/');
   await cell(other).click();
   await other.getByRole('button', { name: 'Modifier le repas', exact: true }).click();
+  await other.getByRole('button', { name: 'Changer le plat', exact: true }).click();
   await other.getByLabel('Votre idée du jour', { exact: true }).fill('Repas modifié ailleurs');
   await other.getByRole('button', { name: 'Créer le repas' }).click();
-  await guests(page).getByRole('button', { name: 'Enregistrer les convives' }).click();
+  await guests(page).getByRole('button', { name: 'Enregistrer', exact: true }).click();
   await expect(guests(page).getByRole('alert')).toContainText('Ce créneau a été modifié');
   await expect(cell(page)).toHaveText('Repas modifié ailleurs');
-  await guests(page).getByRole('button', { name: 'Annuler' }).click();
-  await expect(guests(page)).toContainText(householdSummary(household));
+  await cancelGuests(page);
+  await expectGuests(page, household, false);
 });
 
 test('deux plats : convives indépendants, case inchangée, choix rapide et vidage séparé', async ({ page, context }) => {
@@ -231,8 +401,8 @@ test('deux plats : convives indépendants, case inchangée, choix rapide et vida
   await expect(slot.locator('.meal-cell')).toHaveCount(2);
   await expect(slot.getByRole('button', { name: /ajouter un deuxième plat/ })).toHaveCount(0);
   await second.click();
-  await expect(page.getByRole('dialog').getByRole('button', { name: 'Ajouter un deuxième plat', exact: true })).toHaveCount(0);
-  await expect(guests(page)).toContainText(householdSummary(household));
+  await expect(page.getByRole('dialog').getByRole('button', { name: 'Ajouter un plat', exact: true })).toHaveCount(0);
+  await expectGuests(page, household, false);
   await editGuests(page);
   await fillGuests(page, { adults: 0, teenagers: 0, children: 3 });
   await saveGuests(page);
@@ -270,19 +440,21 @@ test('deux plats : convives indépendants, case inchangée, choix rapide et vida
   await expect(first).toHaveAccessibleName(/convives personnalisés : 2 adultes/);
   await expect(second).toHaveAccessibleName(/convives personnalisés : 3 enfants/);
   await second.click();
-  await page.getByRole('button', { name: 'Choisir au hasard', exact: true }).click();
+  await changeDish(page);
+  await page.getByRole('button', { name: new RegExp(`^${recipe.name}`) }).click();
   await expect(second).toHaveAccessibleName(/convives personnalisés : 3 enfants/);
   await expect(first).toHaveAccessibleName(/convives personnalisés : 2 adultes/);
   const secondName = await second.locator('.meal-name').innerText();
   await first.click();
-  await page.getByRole('button', { name: 'Vider', exact: true }).click();
+  await manage(page);
+  await page.getByRole('button', { name: 'Supprimer', exact: true }).click();
   await expect(slot.locator('.meal-cell')).toHaveCount(1);
   await expect(second).toHaveText(secondName);
   await addDish(page, slot);
   await page.getByLabel('Votre idée du jour', { exact: true }).fill('Filet mignon sauce champignon');
   await page.getByRole('button', { name: 'Créer le repas' }).click();
   await first.click();
-  await expect(guests(page)).toContainText(householdSummary(household));
+  await expectGuests(page, household, false);
   await page.getByRole('button', { name: 'Fermer', exact: true }).click();
   await expect(page.locator('.connection-indicator')).toHaveText('Carnet à jour');
   expect(records.get(`meal:${mealId(today, 'lunch', 1)}`)).toMatchObject({ index: 1, household: { adults: 0, teenagers: 0, children: 3 } });
@@ -301,7 +473,7 @@ test('deux plats : partage réel entre appareils et convives conservés hors lig
     await expect(page.locator('.connection-indicator')).toHaveText('Carnet à jour');
     await slot(page).locator('.meal-cell').click();
     const modify = page.getByRole('button', { name: 'Modifier le repas', exact: true });
-    if (await modify.isVisible()) await modify.click();
+    if (await modify.isVisible()) await changeDish(page);
     await page.getByLabel('Votre idée du jour', { exact: true }).fill('Filet mignon sauce champignon');
     await page.getByRole('button', { name: 'Créer le repas' }).click();
     await first(page).click();
@@ -395,11 +567,11 @@ test('ajout adaptatif : nom pleine largeur sur téléphone, raccourci intégré 
   }
   if (viewport) await page.setViewportSize(viewport);
   await slot.locator('.meal-cell').click();
-  const add = page.getByRole('dialog').getByRole('button', { name: 'Ajouter un deuxième plat', exact: true });
+  const add = page.getByRole('dialog').getByRole('button', { name: 'Ajouter un plat', exact: true });
   await expect(add).toBeEnabled();
   await editGuests(page);
-  await expect(add).toBeDisabled();
-  await guests(page).getByRole('button', { name: 'Annuler' }).click();
+  await cancelGuests(page);
+  await expect(add).toBeEnabled();
   await add.click();
   await expect(page.getByRole('dialog')).toHaveCount(1);
   await expect(page.getByRole('dialog')).toContainText('Deuxième plat');
@@ -472,5 +644,5 @@ test('deux plats : noms lisibles sur deux lignes entières, sans convives dans l
   await expect(first).toHaveAccessibleName(/convives personnalisés : 2 adultes/);
   await expect(page.locator(`[data-meal-id="${mealId(today, 'lunch', 1)}"]`)).toHaveAttribute('title', long);
   await first.click();
-  await expect(guests(page)).toContainText('2 adultes');
+  await expectGuests(page, custom, true);
 });

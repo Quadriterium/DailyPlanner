@@ -66,7 +66,7 @@ découverte dans les métadonnées Recipe, y compris si la suite échoue.
 - `nameAnalysis` publie le nom structuré avant l'appel IA, sans écraser une
   correction manuelle ou une nouvelle clé. `finishAnalysis` conserve ce nom
   provisoire en cas d'erreur. Le worker alloue 60 secondes à l'import complet.
-- L'IA utilise la recette source, adapte les quantités au foyer courant, reformule
+- L'IA utilise la recette source, recalcule les quantités pour 4 portions, reformule
   les étapes et signale les portions estimées ou une recette indicative absente
   de la page. Une URL comme nom final est refusée ; le booléen structuré
   `identified: false` signale explicitement qu'aucun plat n'est identifiable.
@@ -86,8 +86,9 @@ Une ancienne réponse ne doit jamais écraser cette nouvelle demande.
 - `fillMeal()` synchronise d'abord les saisies et le modèle, puis appelle
   `POST /api/meals/generate` avec la date du créneau et le niveau de cuisine.
 - `mealGenerationContext()` construit le contexte depuis les données serveur :
-  noms de toutes les fiches (archives comprises), noms des repas choisis de
-  J−15 à J+15 autour d'aujourd'hui à Paris, bornes incluses. Les noms bruts et
+  noms de toutes les fiches (archives comprises), noms du catalogue commun de
+  même saison et niveau, noms des repas choisis de J−15 à J+15 autour de la
+  date du créneau, bornes incluses. Les noms bruts et
   affichés des fiches liées sont inclus et les listes dédupliquées, sans troncature.
 - `generateMeal()` transmet ces listes, la saison du créneau et le niveau demandé,
   sans dates, identifiants, ingrédients ni recettes existantes. La consigne exclut les plats
@@ -102,6 +103,33 @@ Une ancienne réponse ne doit jamais écraser cette nouvelle demande.
   `dish.details` : pas de deuxième enrichissement automatique.
 - Un nom équivalent réutilise une fiche active sans remplacer ses détails.
   Un créneau modifié pendant la requête n'est pas écrasé par la proposition.
+
+## Catalogue commun
+
+- Table SQLite `catalog` (migration v4) : `seq` croissant, `name_key` unique
+  parmi les fiches actives, `deleted`, `data` (détails), `space_id` d'origine
+  (jamais exposé). `addToCatalog` n'accepte que des détails avec `items`,
+  `level` et `servings` ; appelé après la génération et par le worker
+  (noms saisis et liens). Les fiches antérieures ne sont pas migrées.
+- L'IA renvoie des ingrédients structurés (`items` : nom, quantité, unité) et
+  des `tags` pour `referenceServings` = 4 portions ; `scaleRecipe` les recalcule
+  exactement (`householdPortions` : enfant 0,5, ado/adulte 1). Le foyer n'est
+  plus envoyé à l'IA.
+- `POST /api/meals/generate` calcule d'abord `catalogCandidates` (saison du
+  créneau + `all`, niveau, `containsAvoided` sur ingrédients et tags, noms de
+  `recentMealNames` à ±15 jours). Si au moins `catalogDrawThreshold` (15)
+  candidats : tirage `randomInt`, `source: 'catalog'`, sans quota ni appel IA.
+  Sinon appel IA puis ajout au catalogue, `source: 'ai'`.
+- `GET /api/catalog?after=` est public (mode invité), limité à 60/min, paginé
+  par `seq` avec `catalogId` (réinitialisation client s'il change) et `removed`.
+- Client : [catalog](../../../src/catalog.ts) cache IndexedDB `a-table-catalog`
+  partagé par les comptes de l'appareil, synchronisé à l'initialisation et à
+  chaque synchronisation. Autocomplétion (carnet puis catalogue) et
+  « Choisir au hasard » (`sharedRandomCandidates`) copient la fiche choisie
+  dans le carnet du foyer.
+- Seul l'admin modifie le catalogue : `catalog`, `catalog-show`,
+  `catalog-correct`, `catalog-remove`, `catalog-restore` dans
+  [admin](../../../server/admin.ts). Les copies des carnets ne changent pas.
 
 ## Saisons et archivage
 
@@ -118,12 +146,12 @@ Une ancienne réponse ne doit jamais écraser cette nouvelle demande.
 - Worker déclenché au démarrage puis toutes les 5 secondes ; une analyse à la fois.
 - Sans clé, modèle autorisé ou fiche admissible, pas d'appel.
   Les fiches archivées et celles possédant des détails manuels sont ignorées.
-- API Responses : uniquement le nom, le foyer et le texte facultatif « à éviter »
+- API Responses : uniquement le nom et le texte facultatif « à éviter »
   (`settings.avoid`, clé `aEviter`, omise si vide) pour l'analyse d'un nom ;
   URL et contenu extrait en plus pour l'import d'un lien ; en plus, saison,
   niveau demandé, noms du carnet et noms des repas choisis sur la période pour la génération,
   `store: false`, JSON structuré
-  strict, validation Zod, 1 400 tokens de sortie maximum, timeout 45 secondes.
+  strict, validation Zod, 1 800 tokens de sortie maximum, timeout 45 secondes.
 - Ne jamais afficher/lire une clé dans les réponses, logs ou fichiers client.
   `store: false` ne garantit pas l'absence de toute conservation par le fournisseur.
 - Les compteurs journaliers/mensuels utilisent `Europe/Paris` et persistent en SQLite.

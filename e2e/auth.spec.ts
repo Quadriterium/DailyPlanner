@@ -13,7 +13,10 @@ const indicator = (page: Page) => page.locator('.connection-indicator');
 async function writeMeal(page: Page, text: string) {
   await cell(page).click();
   const modify = page.getByRole('button', { name: 'Modifier le repas', exact: true });
-  if (await modify.isVisible()) await modify.click();
+  if (await modify.isVisible()) {
+    await modify.click();
+    await page.getByRole('button', { name: 'Changer le plat', exact: true }).click();
+  }
   await page.getByLabel('Votre idée du jour', { exact: true }).fill(text);
   await page.getByRole('button', { name: 'Créer le repas' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);

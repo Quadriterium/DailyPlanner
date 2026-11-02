@@ -9,7 +9,10 @@ function cell(page: Page, date = today, slot: 'lunch' | 'dinner' = 'lunch') {
 async function openMealEditor(page: Page, date = today, slot: 'lunch' | 'dinner' = 'lunch') {
   await cell(page, date, slot).click();
   const modify = page.getByRole('button', { name: 'Modifier le repas', exact: true });
-  if (await modify.isVisible()) await modify.click();
+  if (await modify.isVisible()) {
+    await modify.click();
+    await page.getByRole('button', { name: 'Changer le plat', exact: true }).click();
+  }
 }
 async function writeMeal(page: Page, text: string, date = today, slot: 'lunch' | 'dinner' = 'lunch') {
   await openMealEditor(page, date, slot);
@@ -237,7 +240,8 @@ test('serveur indisponible malgré Internet, suppression hors ligne et réconcil
   await context.route('**/api/**', route => route.abort('connectionrefused'));
   expect(await page.evaluate(() => navigator.onLine)).toBe(true);
   await cell(page).click();
-  await page.getByRole('button', { name: 'Vider', exact: true }).click();
+  await page.getByRole('button', { name: 'Modifier le repas', exact: true }).click();
+  await page.getByRole('button', { name: 'Supprimer', exact: true }).click();
   await expect(cell(page)).toContainText('Créer un repas');
   await forceSync(page);
   await expect(page.getByRole('dialog', { name: 'Actualisation impossible' })).toBeVisible();

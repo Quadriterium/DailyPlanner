@@ -60,6 +60,11 @@ modifier la configuration ou appeler OpenAI sans nécessité.
   comptes) ou un foyer. Chaque utilisateur appartient à un seul foyer ; toutes les
   routes de données sont filtrées par l'espace de la session.
   Aucun menu ni plat n'est prérempli.
+- Catalogue commun : table SQLite `catalog` hors espaces, alimentée par les
+  fiches IA structurées, servie par `GET /api/catalog` (public, incrémental) et
+  mise en cache dans IndexedDB `a-table-catalog`. Un plat choisi y est copié
+  dans le carnet du foyer ; la génération y pioche dès 15 plats adaptés.
+  Voir app-ai-library.
 
 Chemin principal :
 

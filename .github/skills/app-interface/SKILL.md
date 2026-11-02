@@ -25,7 +25,7 @@ description: "Comprendre ou faire évoluer l'interface À table ! : planning mid
 - Une ligne par date, deux cases `lunch` et `dinner`. La grille défile
   verticalement et s'étend par blocs de sept jours aux extrémités.
 - Deux plats maximum par case, sans agrandir la ligne : toucher un plat puis
-  « Ajouter un deuxième plat » ouvre l'autre choix dans un éditeur réinitialisé.
+  « Ajouter un plat » (dans la fiche) ouvre l'autre choix dans un éditeur réinitialisé.
   Jusqu'à 520 px, l'ajout n'est proposé que dans la fiche et le nom prend toute
   la largeur ; au-delà, un + intégré visuellement à la carte sert de raccourci.
   Le nom et le + restent deux boutons frères, jamais des boutons imbriqués.
@@ -43,23 +43,30 @@ description: "Comprendre ou faire évoluer l'interface À table ! : planning mid
 
 - Une case ouvre un dialogue : texte libre en haut, liste de suggestions en bas,
   pas de combobox native.
-- Les suggestions viennent des fiches non archivées du carnet, sans catalogue
-  de démonstration. Une case vide propose aussi deux boutons à droite :
-  génération IA de saison et tirage au hasard dans le carnet de saison. Le
-  dialogue d'une case vide reprend ces deux actions sous la saisie.
-- Ces boutons enregistrent directement via `fillMeal()` dans le store.
+- Les suggestions viennent des fiches non archivées du carnet, puis du catalogue
+  commun (icône `BookOpen`, « Catalogue commun · ajouter au carnet ») ; choisir
+  une entrée du catalogue ou saisir exactement son nom copie sa fiche dans le
+  carnet sans appel IA. Une case vide propose à droite un seul bouton rapide :
+  la génération IA de saison. Le tirage au hasard n'est plus sur l'accueil : il
+  se fait depuis le dialogue (« Choisir au hasard », sous la saisie d'une case
+  vide, avec « Générer avec l’IA »).
+- Ces actions enregistrent directement via `fillMeal()` dans le store.
   Le tirage évite si possible les noms et identifiants déjà prévus sur les
-  **sept jours affichés**, puis accepte une répétition faute d'alternative.
-  Le tirage reste local ; seule la génération nécessite le serveur.
+  **sept jours affichés** et pioche uniformément entre ces fiches et les
+  candidats du catalogue local (`sharedRandomCandidates` : niveau, « à éviter »,
+  absents du carnet et des repas à ±15 jours), puis accepte une répétition du
+  carnet faute d'alternative. Le tirage reste local ; seule la génération
+  nécessite le serveur (qui peut elle-même piocher dans le catalogue).
 - Génération et tirage utilisent le niveau de cuisine des paramètres ; le tirage
-  ne pioche que les fiches de ce niveau. [LevelButton](../../../src/CookingLevel.tsx)
+  ne pioche que les fiches (carnet et catalogue) de ce niveau. [LevelButton](../../../src/CookingLevel.tsx)
   ouvre, par appui long (500 ms, 10 px de tolérance) ou clic droit, un menu
   natif de choix du niveau pour cette action seulement (avec le nombre de plats
-  de saison par niveau pour le tirage). Le clic qui suit un appui long est
-  ignoré, sauf au clavier (`detail === 0`), et `touchend` est annulé après
-  l'ouverture pour qu'un tap au relâcher ne ferme pas le menu ni n'y choisisse
-  un niveau. Garder les noms accessibles des boutons ; l'appui long est décrit
-  dans `title` et dans l'astuce sous les actions du dialogue.
+  de saison par niveau pour le tirage, menu « Choisir au hasard »). Il équipe le
+  bouton rapide IA de l'accueil et les boutons du dialogue. Le clic qui suit un
+  appui long est ignoré, sauf au clavier (`detail === 0`), et `touchend` est
+  annulé après l'ouverture pour qu'un tap au relâcher ne ferme pas le menu ni n'y
+  choisisse un niveau. Garder les noms accessibles des boutons ; l'appui long est
+  décrit dans `title` et dans l'astuce sous les actions du dialogue.
 - Le filtre de saison correspond à la **date du créneau** ; `all` convient à
   toutes les saisons. « Tous les repas » ignore ce filtre.
 - Une nouvelle fiche reçoit provisoirement la saison de **création**.
@@ -72,12 +79,33 @@ description: "Comprendre ou faire évoluer l'interface À table ! : planning mid
   `dish.sourceUrl` ; pendant l'import, la synchronisation visible passe à 2 secondes.
 - Ne fermer l'éditeur et n'afficher le succès qu'après la sauvegarde locale.
   Un échec de stockage doit être visible, sans perdre la saisie.
-- Un plat choisi ouvre aussi « À table pour ce repas ». « Adapter » permet
-  d'utiliser les paramètres actuels ou de personnaliser adultes/adolescents/enfants
-  (0 à 20 par catégorie, au moins une personne). Enregistrement explicite,
-  annulation et retour du focus ; une modification concurrente est signalée.
-  Remplacer le plat conserve ses convives ; le vider les réinitialise.
-  Ce réglage ne recalcule pas les ingrédients de la fiche partagée.
+- Un plat choisi ouvre un dialogue « Votre repas » dans cet ordre : nom, encadré
+  des convives (`.meal-guests-chip`, total, adultes/adolescents/enfants et origine
+  paramètres/personnalisation, `title` = `householdSummary`), région « Recette du repas », puis deux boutons :
+  « Modifier le repas » (`aria-haspopup="dialog"`) et « Ajouter un plat »
+  (le raccourci + du planning garde « ajouter un deuxième plat »). « Modifier
+  le repas » ouvre une fenêtre d’actions « Changer le plat » (éditeur « Votre idée du jour »),
+  « Supprimer » et « Générer un nouveau plat » (IA), absents du DOM tant
+  qu'elle n'est pas ouverte. La fermeture restaure le focus sur le bouton
+  sans déplacer la recette ni perdre sa position de défilement.
+- La puce ouvre une fenêtre imbriquée « Convives du repas » : case « Reprendre le
+  nombre de personnes des paramètres » (focus à l'ouverture) et adultes/adolescents/enfants
+  toujours visibles (0 à 20 par catégorie, au moins une personne). Changer une valeur
+  décoche l'option et recalcule l'aperçu ; la recocher reprend le foyer actuel. Enregistrement explicite ou
+  annulation, fermeture de la fenêtre, retour du focus sur la puce et statut
+  « Convives enregistrés pour ce repas. » ; une modification concurrente est
+  signalée. Remplacer le plat conserve ses convives ; le vider les réinitialise.
+  `shared/recipe.ts` recalcule à l'affichage, hors ligne et sans appel IA, les quantités
+  principales reconnues des ingrédients et leurs mentions dans les étapes, jamais
+  les temps/températures/tailles des conditionnements. `householdPortions` : un
+  adulte ou adolescent = une portion, un enfant = une demi-portion. Avec
+  `details.items` (fiches IA structurées, base 4 portions), les ingrédients sont
+  recalculés exactement par `formatIngredient` et les étapes restent inchangées.
+  La fiche partagée reste intacte ; seuls les repas suivant les paramètres suivent
+  aussi leurs changements, y compris lors de la réutilisation d'un plat existant.
+  `details.servings` mémorise la base lors d'une analyse/génération ; le carnet permet
+  de la corriger. Une mention explicite « pour X personnes/portions » sert de base aux
+  anciennes fiches, sinon avertissement et aucun recalcul avant renseignement de la base.
 
 ## Compte et foyer
 
