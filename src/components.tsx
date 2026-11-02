@@ -1,5 +1,8 @@
 import { useEffect, useRef, type ReactNode } from 'react';
-import { X, Sprout } from 'lucide-react';
+import { X, Sprout, LoaderCircle } from 'lucide-react';
+
+let modalCount = 0;
+let bodyOverflow = '';
 
 export function Botanical({ className = '' }: { className?: string }) {
   return <svg className={`botanical ${className}`} viewBox="0 0 220 230" fill="none" aria-hidden="true">
@@ -24,8 +27,8 @@ export function EmptyState({ title, children }: { title: string; children: React
   return <div className="empty-state"><Sprout size={28} strokeWidth={1.3} /><h3>{title}</h3><p>{children}</p></div>;
 }
 
-export function Modal({ title, children, onClose, wide = false }: {
-  title: string; children: ReactNode; onClose: () => void; wide?: boolean;
+export function Modal({ title, children, onClose, wide = false, dismissible = true }: {
+  title: string; children: ReactNode; onClose: () => void; wide?: boolean; dismissible?: boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const onCloseRef = useRef(onClose);
@@ -33,23 +36,34 @@ export function Modal({ title, children, onClose, wide = false }: {
   useEffect(() => {
     const element = dialog.current!;
     element.showModal();
-    const previousOverflow = document.body.style.overflow;
+    if (modalCount++ === 0) bodyOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     const close = () => onCloseRef.current();
     element.addEventListener('close', close);
     return () => {
       element.removeEventListener('close', close);
       element.close();
-      document.body.style.overflow = previousOverflow;
+      if (--modalCount === 0) document.body.style.overflow = bodyOverflow;
     };
   }, []);
   return <dialog ref={dialog} className={`modal ${wide ? 'wide' : ''}`} aria-label={title}
+    onCancel={event => { if (!dismissible) event.preventDefault(); }}
     onClick={event => {
-      if (event.target !== dialog.current) return;
+      if (!dismissible || event.target !== dialog.current) return;
       const bounds = dialog.current.getBoundingClientRect();
       if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) onClose();
     }}>
-    <div className="modal-heading"><h2>{title}</h2><button className="icon-button" aria-label="Fermer" onClick={onClose}><X size={20} /></button></div>
+    <div className="modal-heading"><h2>{title}</h2>{dismissible && <button className="icon-button" aria-label="Fermer" onClick={onClose}><X size={20} /></button>}</div>
     {children}
   </dialog>;
+}
+
+export function GenerationProgress() {
+  return <Modal title="Création du repas en cours" dismissible={false} onClose={() => undefined}>
+    <div className="generation-progress" role="status" aria-live="polite">
+      <LoaderCircle size={32} className="spinning" aria-hidden="true" />
+      <p>L’IA prépare votre plat et sa recette…</p>
+      <p className="field-hint">Cela peut prendre quelques instants. Le repas s’ajoutera automatiquement au planning.</p>
+    </div>
+  </Modal>;
 }

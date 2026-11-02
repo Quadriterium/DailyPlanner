@@ -1,138 +1,333 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
-  analysisSchema, compareVersions, defaultCookingLevel, defaultHousehold, featureRequestSchema, parisDate, recordKey, recordSchema,
+  analysisSchema, commonSpaceId, compareVersions, defaultCookingLevel, defaultHousehold, featureRequestSchema, parisDate, recordKey, recordSchema,
   type Analysis, type Capabilities, type Dish, type DishDetails, type FeatureRequest, type FeatureRequestStatus,
   type RecordData, type Settings,
 } from '../shared/model.js';
 import type { Config } from './config.js';
 
+export const schemaVersion = 3;
+export const dailyAiLimit = 20;
+export class AiQuotaError extends Error {
+  constructor() {
+    super('Limite de 20 requêtes IA atteinte pour ce foyer aujourd’hui. Réessayez demain (heure de Paris). Les recettes existantes restent disponibles.');
+  }
+}
+export type SpaceKind = 'common' | 'household';
+export interface Space { id: string; kind: SpaceKind; name: string; resetId: string | null; createdAt: number }
+
+const authSchema = `
+  CREATE TABLE IF NOT EXISTS spaces (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('common', 'household')),
+    name TEXT NOT NULL,
+    reset_id TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    email TEXT,
+    email_verified INTEGER NOT NULL DEFAULT 0,
+    picture_url TEXT,
+    created_at INTEGER NOT NULL,
+    last_login_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS identities (
+    provider TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    email TEXT,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (provider, subject)
+  );
+  CREATE TABLE IF NOT EXISTS memberships (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    space_id TEXT NOT NULL REFERENCES spaces(id),
+    joined_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS memberships_space ON memberships(space_id);
+  CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS auth_transactions (
+    id_hash TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    state TEXT NOT NULL,
+    nonce TEXT NOT NULL,
+    code_verifier TEXT NOT NULL,
+    invitation_hash TEXT,
+    expires_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS invitations (
+    id TEXT PRIMARY KEY,
+    space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    created_by TEXT NOT NULL REFERENCES users(id),
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    accepted_by TEXT REFERENCES users(id),
+    accepted_at INTEGER,
+    revoked_at INTEGER
+  );
+`;
+const sharedSchema = `
+  CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS ai_usage (
+    day TEXT PRIMARY KEY, calls INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0
+  );
+`;
+const spaceRecordsSchema = `
+  CREATE TABLE records (space_id TEXT NOT NULL, key TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY (space_id, key));
+  CREATE TABLE analyses (space_id TEXT NOT NULL, dish_id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY (space_id, dish_id));
+`;
+
 export class Store {
   readonly db: DatabaseSync;
+  private depth = 0;
 
-  constructor(readonly config: Config) {
+  constructor(readonly config: Config, options: { now?: () => Date } = {}) {
     if (config.DATABASE_PATH !== ':memory:') mkdirSync(dirname(config.DATABASE_PATH), { recursive: true });
     this.db = new DatabaseSync(config.DATABASE_PATH);
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA busy_timeout = 5000;
-      CREATE TABLE IF NOT EXISTS records (key TEXT PRIMARY KEY, data TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS analyses (dish_id TEXT PRIMARY KEY, data TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS ai_usage (
-        day TEXT PRIMARY KEY, calls INTEGER NOT NULL DEFAULT 0,
-        input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE TABLE IF NOT EXISTS feature_requests (
-        id TEXT PRIMARY KEY, text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'received',
-        note TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-      );
-      PRAGMA user_version = 1;
+      PRAGMA foreign_keys = ON;
     `);
-    if (!this.get('settings:global')) {
-      this.put({
-        type: 'settings', id: 'global', model: config.OPENAI_MODEL,
-        household: { ...defaultHousehold }, avoid: '', cookingLevel: defaultCookingLevel,
-        modifiedAt: 0, mutationId: '00000000-0000-0000-0000-000000000000',
-      });
-    }
-    for (const analysis of this.analyses()) {
-      if (analysis.status === 'processing') this.putAnalysis({
+    this.migrate(options.now?.() ?? new Date());
+    this.transaction(() => {
+      if (Number(this.db.prepare('PRAGMA user_version').get()?.user_version) >= 3) return;
+      this.db.exec(`
+        CREATE TABLE household_ai_usage (
+          space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE, day TEXT NOT NULL,
+          calls INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (space_id, day)
+        );
+        INSERT INTO household_ai_usage SELECT 'common', day, calls, input_tokens, output_tokens FROM ai_usage;
+        CREATE TABLE ai_limit_exemptions (space_id TEXT PRIMARY KEY REFERENCES spaces(id) ON DELETE CASCADE);
+        PRAGMA user_version = 3;
+      `);
+    });
+    this.ensureSpaceSettings(commonSpaceId);
+    for (const row of this.db.prepare('SELECT space_id, data FROM analyses').all()) {
+      const analysis = analysisSchema.parse(JSON.parse(String(row.data)));
+      if (analysis.status === 'processing') this.putAnalysis(String(row.space_id), {
         ...analysis, status: 'error',
         error: 'Analyse interrompue au redémarrage du serveur. Vous pouvez la relancer.',
       });
     }
   }
 
-  get(key: string): RecordData | undefined {
-    const row = this.db.prepare('SELECT data FROM records WHERE key = ?').get(key);
-    return row ? recordSchema.parse(JSON.parse(String(row.data))) : undefined;
-  }
-
-  records(): RecordData[] {
-    return this.db.prepare('SELECT data FROM records ORDER BY key').all()
-      .map(row => recordSchema.parse(JSON.parse(String(row.data))));
-  }
-
-  analyses(): Analysis[] {
-    return this.db.prepare('SELECT data FROM analyses ORDER BY dish_id').all()
-      .map(row => analysisSchema.parse(JSON.parse(String(row.data))));
-  }
-
-  analysis(id: string): Analysis | undefined {
-    const row = this.db.prepare('SELECT data FROM analyses WHERE dish_id = ?').get(id);
-    return row ? analysisSchema.parse(JSON.parse(String(row.data))) : undefined;
-  }
-
-  resetId(): string | null {
-    const row = this.db.prepare("SELECT value FROM meta WHERE key = 'resetId'").get();
-    return row ? String(row.value) : null;
-  }
-
-  /** Deletes planned meals and library dishes (with their analyses) and forces clients to drop their copies. */
-  reset(): string {
-    const resetId = randomUUID();
+  /** Runs `work` in a single SQLite transaction; nested calls join the outer transaction. */
+  transaction<T>(work: () => T): T {
+    if (this.depth > 0) return work();
     this.db.exec('BEGIN IMMEDIATE');
+    this.depth++;
     try {
-      this.db.prepare("DELETE FROM records WHERE key LIKE 'meal:%' OR key LIKE 'dish:%'").run();
-      this.db.prepare('DELETE FROM analyses').run();
-      this.db.prepare("INSERT INTO meta (key, value) VALUES ('resetId', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-        .run(resetId);
+      const result = work();
       this.db.exec('COMMIT');
+      return result;
     } catch (error) {
       this.db.exec('ROLLBACK');
       throw error;
+    } finally { this.depth--; }
+  }
+
+  private tableExists(name: string) {
+    return Boolean(this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
+  }
+
+  /** Migration 1 → 2 : données par espace, comptes, sessions et invitations. Idempotente grâce à user_version. */
+  private migrate(now: Date) {
+    const version = Number(this.db.prepare('PRAGMA user_version').get()?.user_version ?? 0);
+    if (version >= 2) return;
+    const legacy = version === 1 || this.tableExists('records');
+    if (legacy && this.config.DATABASE_PATH !== ':memory:') {
+      const backup = join(dirname(resolve(this.config.DATABASE_PATH)), 'backups', `avant-auth-${now.toISOString().replace(/[:.]/g, '-')}.sqlite`);
+      mkdirSync(dirname(backup), { recursive: true });
+      this.db.prepare('VACUUM INTO ?').run(backup);
     }
+    this.transaction(() => {
+      this.db.exec(sharedSchema);
+      this.db.exec(authSchema);
+      if (legacy) {
+        const resetId = this.db.prepare("SELECT value FROM meta WHERE key = 'resetId'").get();
+        this.db.exec(`
+          ALTER TABLE records RENAME TO records_v1;
+          ${this.tableExists('analyses') ? 'ALTER TABLE analyses RENAME TO analyses_v1;' : 'CREATE TABLE analyses_v1 (dish_id TEXT PRIMARY KEY, data TEXT NOT NULL);'}
+          ${spaceRecordsSchema}
+          INSERT INTO records (space_id, key, data) SELECT 'common', key, data FROM records_v1;
+          INSERT INTO analyses (space_id, dish_id, data) SELECT 'common', dish_id, data FROM analyses_v1;
+          DROP TABLE records_v1;
+          DROP TABLE analyses_v1;
+        `);
+        if (this.tableExists('feature_requests')) {
+          this.db.exec(`
+            ALTER TABLE feature_requests ADD COLUMN space_id TEXT NOT NULL DEFAULT 'common';
+            ALTER TABLE feature_requests ADD COLUMN user_id TEXT;
+          `);
+        }
+        this.db.prepare("INSERT INTO spaces (id, kind, name, reset_id, created_at) VALUES ('common', 'common', 'Espace commun', ?, ?)")
+          .run(resetId ? String(resetId.value) : null, now.getTime());
+        this.db.prepare("DELETE FROM meta WHERE key = 'resetId'").run();
+      } else {
+        this.db.exec(spaceRecordsSchema);
+        this.db.prepare("INSERT INTO spaces (id, kind, name, reset_id, created_at) VALUES ('common', 'common', 'Espace commun', NULL, ?)")
+          .run(now.getTime());
+      }
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS feature_requests (
+          id TEXT PRIMARY KEY, text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'received',
+          note TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+          space_id TEXT NOT NULL DEFAULT 'common', user_id TEXT
+        );
+        PRAGMA user_version = 2;
+      `);
+    });
+  }
+
+  space(id: string): Space | undefined {
+    const row = this.db.prepare('SELECT * FROM spaces WHERE id = ?').get(id);
+    return row ? {
+      id: String(row.id), kind: row.kind as SpaceKind, name: String(row.name),
+      resetId: row.reset_id === null ? null : String(row.reset_id), createdAt: Number(row.created_at),
+    } : undefined;
+  }
+
+  createSpace(kind: SpaceKind, name: string): Space {
+    const space: Space = { id: randomUUID(), kind, name, resetId: null, createdAt: Date.now() };
+    this.transaction(() => {
+      this.db.prepare('INSERT INTO spaces (id, kind, name, reset_id, created_at) VALUES (?, ?, ?, NULL, ?)')
+        .run(space.id, kind, name, space.createdAt);
+      this.ensureSpaceSettings(space.id);
+    });
+    return space;
+  }
+
+  /** Creates the initial shared settings (version 0) of a space. */
+  ensureSpaceSettings(spaceId: string) {
+    if (this.get(spaceId, 'settings:global')) return;
+    this.put(spaceId, {
+      type: 'settings', id: 'global', model: this.config.OPENAI_MODEL,
+      household: { ...defaultHousehold }, avoid: '', cookingLevel: defaultCookingLevel,
+      modifiedAt: 0, mutationId: '00000000-0000-0000-0000-000000000000',
+    });
+  }
+
+  get(spaceId: string, key: string): RecordData | undefined {
+    const row = this.db.prepare('SELECT data FROM records WHERE space_id = ? AND key = ?').get(spaceId, key);
+    return row ? recordSchema.parse(JSON.parse(String(row.data))) : undefined;
+  }
+
+  records(spaceId: string): RecordData[] {
+    return this.db.prepare('SELECT data FROM records WHERE space_id = ? ORDER BY key').all(spaceId)
+      .map(row => recordSchema.parse(JSON.parse(String(row.data))));
+  }
+
+  analyses(spaceId: string): Analysis[] {
+    return this.db.prepare('SELECT data FROM analyses WHERE space_id = ? ORDER BY dish_id').all(spaceId)
+      .map(row => analysisSchema.parse(JSON.parse(String(row.data))));
+  }
+
+  analysis(spaceId: string, id: string): Analysis | undefined {
+    const row = this.db.prepare('SELECT data FROM analyses WHERE space_id = ? AND dish_id = ?').get(spaceId, id);
+    return row ? analysisSchema.parse(JSON.parse(String(row.data))) : undefined;
+  }
+
+  resetId(spaceId: string): string | null {
+    return this.space(spaceId)?.resetId ?? null;
+  }
+
+  /** Deletes planned meals and library dishes (with their analyses) of a space and forces its clients to drop their copies. */
+  reset(spaceId: string): string {
+    const resetId = randomUUID();
+    this.transaction(() => {
+      if (!this.space(spaceId)) throw new Error('Espace introuvable.');
+      this.db.prepare("DELETE FROM records WHERE space_id = ? AND (key LIKE 'meal:%' OR key LIKE 'dish:%')").run(spaceId);
+      this.db.prepare('DELETE FROM analyses WHERE space_id = ?').run(spaceId);
+      this.db.prepare('UPDATE spaces SET reset_id = ? WHERE id = ?').run(resetId, spaceId);
+    });
     return resetId;
   }
 
-  settings(): Settings {
-    const record = this.get('settings:global');
+  settings(spaceId: string): Settings {
+    const record = this.get(spaceId, 'settings:global');
     if (record?.type !== 'settings') throw new Error('Paramètres manquants dans la base.');
     return record;
   }
 
-  private put(record: RecordData) {
-    this.db.prepare('INSERT INTO records (key, data) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data')
-      .run(recordKey(record), JSON.stringify(record));
+  private put(spaceId: string, record: RecordData) {
+    this.db.prepare('INSERT INTO records (space_id, key, data) VALUES (?, ?, ?) ON CONFLICT(space_id, key) DO UPDATE SET data = excluded.data')
+      .run(spaceId, recordKey(record), JSON.stringify(record));
   }
 
-  private putAnalysis(analysis: Omit<Analysis, 'updatedAt'>) {
-    this.db.prepare('INSERT INTO analyses (dish_id, data) VALUES (?, ?) ON CONFLICT(dish_id) DO UPDATE SET data = excluded.data')
-      .run(analysis.dishId, JSON.stringify({ ...analysis, updatedAt: Date.now() }));
+  private putAnalysis(spaceId: string, analysis: Omit<Analysis, 'updatedAt'>) {
+    this.db.prepare('INSERT INTO analyses (space_id, dish_id, data) VALUES (?, ?, ?) ON CONFLICT(space_id, dish_id) DO UPDATE SET data = excluded.data')
+      .run(spaceId, analysis.dishId, JSON.stringify({ ...analysis, updatedAt: Date.now() }));
   }
 
-  merge(records: RecordData[]) {
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+  /** Copies an analysis as is (administration: moving data between spaces). */
+  copyAnalysis(spaceId: string, analysis: Analysis) {
+    this.db.prepare('INSERT INTO analyses (space_id, dish_id, data) VALUES (?, ?, ?) ON CONFLICT(space_id, dish_id) DO UPDATE SET data = excluded.data')
+      .run(spaceId, analysis.dishId, JSON.stringify(analysis));
+  }
+
+  merge(spaceId: string, records: RecordData[]) {
+    this.transaction(() => {
       for (const record of records) {
-        const previous = this.get(recordKey(record));
+        const previous = this.get(spaceId, recordKey(record));
         if (previous && compareVersions(record, previous) <= 0) continue;
-        this.put(record);
+        this.put(spaceId, record);
         if (record.type === 'dish') {
-          const current = this.analysis(record.id);
-          if (!current || current.analysisKey !== record.analysisKey) this.putAnalysis({
+          const current = this.analysis(spaceId, record.id);
+          if (!current || current.analysisKey !== record.analysisKey) this.putAnalysis(spaceId, {
             dishId: record.id, analysisKey: record.analysisKey,
             status: 'pending', details: null, error: null,
           });
         }
       }
-      this.db.exec('COMMIT');
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
+    });
   }
 
-  capabilities(now = new Date()): Capabilities {
+  dailyLimit(spaceId: string): number | null {
+    return this.db.prepare('SELECT 1 FROM ai_limit_exemptions WHERE space_id = ?').get(spaceId) ? null : dailyAiLimit;
+  }
+
+  setAiLimitExempt(spaceId: string, exempt: boolean) {
+    if (!this.space(spaceId)) throw new Error('Foyer introuvable.');
+    if (exempt) this.db.prepare('INSERT OR IGNORE INTO ai_limit_exemptions (space_id) VALUES (?)').run(spaceId);
+    else this.db.prepare('DELETE FROM ai_limit_exemptions WHERE space_id = ?').run(spaceId);
+  }
+
+  private quotaReached(spaceId: string, day: string) {
+    const calls = Number(this.db.prepare('SELECT calls FROM household_ai_usage WHERE space_id = ? AND day = ?').get(spaceId, day)?.calls ?? 0);
+    const limit = this.dailyLimit(spaceId);
+    return limit !== null && calls >= limit;
+  }
+
+  private recordCall(spaceId: string, day: string) {
+    this.db.prepare('INSERT INTO household_ai_usage (space_id, day, calls) VALUES (?, ?, 1) ON CONFLICT(space_id, day) DO UPDATE SET calls = calls + 1').run(spaceId, day);
+    this.db.prepare('INSERT INTO ai_usage (day, calls) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET calls = calls + 1').run(day);
+  }
+
+  capabilities(now = new Date(), spaceId?: string): Capabilities {
     const today = parisDate(now);
-    const daily = this.db.prepare('SELECT calls FROM ai_usage WHERE day = ?').get(today);
+    const table = spaceId ? 'household_ai_usage' : 'ai_usage';
+    const filter = spaceId ? ' AND space_id = ?' : '';
+    const params = spaceId ? [spaceId] : [];
+    const daily = this.db.prepare(`SELECT calls FROM ${table} WHERE day = ?${filter}`).get(today, ...params);
     const monthly = this.db.prepare(`
       SELECT COALESCE(SUM(calls), 0) AS calls, COALESCE(SUM(input_tokens), 0) AS input_tokens,
-      COALESCE(SUM(output_tokens), 0) AS output_tokens FROM ai_usage WHERE day LIKE ?
-    `).get(`${today.slice(0, 7)}%`)!;
+      COALESCE(SUM(output_tokens), 0) AS output_tokens FROM ${table} WHERE day LIKE ?${filter}
+    `).get(`${today.slice(0, 7)}%`, ...params)!;
     return {
       aiConfigured: Boolean(this.config.OPENAI_API_KEY),
       allowedModels: this.config.allowedModels,
@@ -140,76 +335,106 @@ export class Store {
       callsThisMonth: Number(monthly.calls),
       inputTokens: Number(monthly.input_tokens),
       outputTokens: Number(monthly.output_tokens),
+      dailyLimit: this.dailyLimit(spaceId ?? commonSpaceId),
     };
   }
 
-  claimAnalysis(): { dish: Dish; day: string } | undefined {
-    if (!this.config.OPENAI_API_KEY || !this.config.allowedModels.includes(this.settings().model)) return;
-    for (const analysis of this.analyses()) {
-      if (analysis.status !== 'pending') continue;
-      const dish = this.get(`dish:${analysis.dishId}`);
-      if (dish?.type !== 'dish' || dish.archived || dish.details || dish.analysisKey !== analysis.analysisKey) continue;
-      const day = parisDate();
-      this.db.exec('BEGIN IMMEDIATE');
-      try {
-        this.putAnalysis({ ...analysis, status: 'processing', error: null });
-        this.db.prepare('INSERT INTO ai_usage (day, calls) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET calls = calls + 1').run(day);
-        this.db.exec('COMMIT');
-      } catch (error) {
-        this.db.exec('ROLLBACK');
-        throw error;
+  /** Next pending analysis across all spaces, in a stable order; the worker uses the settings of the dish's space. */
+  claimAnalysis(): { spaceId: string; dish: Dish; day: string } | undefined {
+    if (!this.config.OPENAI_API_KEY) return;
+    return this.transaction(() => {
+      const allowed = new Map<string, boolean>();
+      for (const row of this.db.prepare('SELECT space_id, data FROM analyses ORDER BY space_id, dish_id').all()) {
+        const spaceId = String(row.space_id);
+        const analysis = analysisSchema.parse(JSON.parse(String(row.data)));
+        if (analysis.status !== 'pending') continue;
+        if (!allowed.has(spaceId)) {
+          const settings = this.get(spaceId, 'settings:global');
+          allowed.set(spaceId, settings?.type === 'settings' && this.config.allowedModels.includes(settings.model));
+        }
+        if (!allowed.get(spaceId)) continue;
+        const dish = this.get(spaceId, `dish:${analysis.dishId}`);
+        if (dish?.type !== 'dish' || dish.archived || dish.details || dish.analysisKey !== analysis.analysisKey) continue;
+        const day = parisDate();
+        if (this.quotaReached(spaceId, day)) {
+          if (!analysis.error) this.putAnalysis(spaceId, { ...analysis, error: new AiQuotaError().message });
+          continue;
+        }
+        this.putAnalysis(spaceId, { ...analysis, status: 'processing', error: null });
+        this.recordCall(spaceId, day);
+        return { spaceId, dish, day };
       }
-
-      return { dish, day };
-    }
+    });
   }
 
-  reserveGeneration(): string {
+  reserveGeneration(spaceId: string): string {
     if (!this.config.OPENAI_API_KEY) throw new Error('La génération IA nécessite une clé OpenAI configurée sur le serveur.');
-    if (!this.config.allowedModels.includes(this.settings().model)) throw new Error('Choisissez un modèle IA autorisé dans les paramètres.');
-    const day = parisDate();
-    this.db.prepare('INSERT INTO ai_usage (day, calls) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET calls = calls + 1').run(day);
-    return day;
+    if (!this.config.allowedModels.includes(this.settings(spaceId).model)) throw new Error('Choisissez un modèle IA autorisé dans les paramètres.');
+    return this.transaction(() => {
+      const day = parisDate();
+      if (this.quotaReached(spaceId, day)) throw new AiQuotaError();
+      this.recordCall(spaceId, day);
+      return day;
+    });
   }
 
-  finishAnalysis(dish: Dish, details: DishDetails | null, error: string | null) {
-    const current = this.get(`dish:${dish.id}`);
+  finishAnalysis(spaceId: string, dish: Dish, details: DishDetails | null, error: string | null) {
+    const current = this.get(spaceId, `dish:${dish.id}`);
     // An obsolete response must never replace a manual edit or a newer analysis.
     if (current?.type !== 'dish' || current.analysisKey !== dish.analysisKey || current.details) return;
-    const name = this.analysis(dish.id)?.name;
-    this.putAnalysis({
+    const name = this.analysis(spaceId, dish.id)?.name;
+    this.putAnalysis(spaceId, {
       dishId: dish.id, analysisKey: dish.analysisKey,
       status: error ? 'error' : 'ready', details, error,
       ...(name ? { name } : {}),
     });
   }
 
-  nameAnalysis(dish: Dish, name: string) {
-    const current = this.get(`dish:${dish.id}`);
-    const analysis = this.analysis(dish.id);
+  nameAnalysis(spaceId: string, dish: Dish, name: string) {
+    const current = this.get(spaceId, `dish:${dish.id}`);
+    const analysis = this.analysis(spaceId, dish.id);
     if (current?.type !== 'dish' || current.analysisKey !== dish.analysisKey || current.details || current.archived ||
       analysis?.analysisKey !== dish.analysisKey || analysis.status !== 'processing') return;
-    this.putAnalysis({ ...analysis, name });
+    this.putAnalysis(spaceId, { ...analysis, name });
   }
 
-  recordTokens(day: string, input: number, output: number) {
-    this.db.prepare('UPDATE ai_usage SET input_tokens = input_tokens + ?, output_tokens = output_tokens + ? WHERE day = ?')
-      .run(input, output, day);
+  recordTokens(day: string, input: number, output: number, spaceId: string) {
+    this.transaction(() => {
+      this.db.prepare('UPDATE ai_usage SET input_tokens = input_tokens + ?, output_tokens = output_tokens + ? WHERE day = ?')
+        .run(input, output, day);
+      this.db.prepare('UPDATE household_ai_usage SET input_tokens = input_tokens + ?, output_tokens = output_tokens + ? WHERE space_id = ? AND day = ?')
+        .run(input, output, spaceId, day);
+    });
   }
 
-  featureRequests(): FeatureRequest[] {
-    return this.db.prepare('SELECT * FROM feature_requests ORDER BY created_at DESC, id').all()
-      .map(row => featureRequestSchema.parse({
-        id: row.id, text: row.text, status: row.status, note: row.note ?? null,
-        createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
-      }));
+  private featureRequest(row: Record<string, unknown>): FeatureRequest {
+    return featureRequestSchema.parse({
+      id: row.id, text: row.text, status: row.status, note: row.note ?? null,
+      createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
+    });
   }
 
-  addFeatureRequest(text: string): FeatureRequest {
+  featureRequests(spaceId: string): FeatureRequest[] {
+    return this.db.prepare('SELECT * FROM feature_requests WHERE space_id = ? ORDER BY created_at DESC, id').all(spaceId)
+      .map(row => this.featureRequest(row));
+  }
+
+  /** Every request with the name of its space, for the administration command. */
+  allFeatureRequests(): { request: FeatureRequest; spaceId: string; spaceName: string | null }[] {
+    return this.db.prepare(`
+      SELECT feature_requests.*, spaces.name AS space_name FROM feature_requests
+      LEFT JOIN spaces ON spaces.id = feature_requests.space_id ORDER BY created_at DESC, feature_requests.id
+    `).all().map(row => ({
+      request: this.featureRequest(row), spaceId: String(row.space_id),
+      spaceName: row.space_name === null ? null : String(row.space_name),
+    }));
+  }
+
+  addFeatureRequest(spaceId: string, text: string, userId: string | null = null): FeatureRequest {
     const now = Date.now();
     const request = featureRequestSchema.parse({ id: randomUUID(), text, status: 'received', note: null, createdAt: now, updatedAt: now });
-    this.db.prepare('INSERT INTO feature_requests (id, text, status, note, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?)')
-      .run(request.id, request.text, request.status, now, now);
+    this.db.prepare('INSERT INTO feature_requests (id, text, status, note, created_at, updated_at, space_id, user_id) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)')
+      .run(request.id, request.text, request.status, now, now, spaceId, userId);
     return request;
   }
 

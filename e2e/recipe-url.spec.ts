@@ -24,7 +24,7 @@ test('URL de recette : nom précoce, quantités, source, relance et conservation
   const cell = page.locator(`[data-date="${today}"] .meal-cell`).first();
   await cell.click();
   await page.getByLabel('Votre idée du jour', { exact: true }).fill(url);
-  await page.getByRole('button', { name: 'Garder ce repas' }).click();
+  await page.getByRole('button', { name: 'Créer le repas' }).click();
   await expect(cell).toHaveText(url);
   await expect.poll(() => records.get(`meal:${today}:lunch`)).toMatchObject({ text: url });
   const dish = [...records.values()].find(record => record.type === 'dish');

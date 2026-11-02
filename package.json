@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.13.0" },
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "dev": "concurrently -k -n serveur,client \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "tsx watch --env-file-if-exists=.env server/index.ts",
@@ -11,21 +13,25 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
     "build": "node scripts/icons.mjs && npm run typecheck && vite build && tsc -p tsconfig.server.json",
     "start": "node --env-file-if-exists=.env dist/server/server/index.js",
+    "deploy": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy.ps1",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "backup": "node --env-file-if-exists=.env scripts/backup.mjs",
     "reset": "tsx --env-file-if-exists=.env server/reset.ts",
-    "requests": "tsx --env-file-if-exists=.env server/requests.ts"
+    "requests": "tsx --env-file-if-exists=.env server/requests.ts",
+    "admin": "tsx --env-file-if-exists=.env server/admin.ts"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.1.5",
     "@fastify/helmet": "^13.0.2",
     "@fastify/rate-limit": "^10.3.0",
     "@fastify/static": "^10.1.8",
-    "fastify": "^5.6.1",
     "cheerio": "^1.1.2",
-    "ipaddr.js": "^2.2.0",
+    "fastify": "^5.6.1",
     "idb": "^8.0.3",
+    "ipaddr.js": "^2.2.0",
     "lucide-react": "^0.468.0",
+    "openid-client": "^6.8.9",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "zod": "^4.6.7"

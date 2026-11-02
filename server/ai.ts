@@ -192,18 +192,20 @@ export class AiWorker {
       const job = this.store.claimAnalysis();
       if (!job) return;
       this.controller = new AbortController();
+      // Model, guests and foods to avoid come from the space that owns the dish.
+      const settings = this.store.settings(job.spaceId);
       try {
         const result = await analyzeDish(
-          job.dish, this.store.settings(), this.config, this.store.settings().model,
+          job.dish, settings, this.config, settings.model,
           AbortSignal.any([this.controller.signal, AbortSignal.timeout(job.dish.sourceUrl || recipeUrl(job.dish.name) ? 60_000 : 45_000)]),
-          this.request, this.loadPage, name => this.store.nameAnalysis(job.dish, name),
+          this.request, this.loadPage, name => this.store.nameAnalysis(job.spaceId, job.dish, name),
         );
-        this.store.recordTokens(job.day, result.inputTokens, result.outputTokens);
-        this.store.finishAnalysis(job.dish, result.details, null);
+        this.store.recordTokens(job.day, result.inputTokens, result.outputTokens, job.spaceId);
+        this.store.finishAnalysis(job.spaceId, job.dish, result.details, null);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Erreur inconnue pendant l’analyse IA.';
         this.logError(message);
-        this.store.finishAnalysis(job.dish, null, message);
+        this.store.finishAnalysis(job.spaceId, job.dish, null, message);
       }
     } catch (error) {
       this.logError(error instanceof Error ? error.message : 'Impossible de traiter la file IA.');

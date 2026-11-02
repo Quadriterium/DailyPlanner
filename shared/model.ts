@@ -129,6 +129,7 @@ export const capabilitiesSchema = z.object({
   callsThisMonth: z.number(),
   inputTokens: z.number(),
   outputTokens: z.number(),
+  dailyLimit: z.number().int().positive().nullable().default(20),
 });
 export type Capabilities = z.infer<typeof capabilitiesSchema>;
 export const syncRequestSchema = z.object({
@@ -161,6 +162,78 @@ export type FeatureRequest = z.infer<typeof featureRequestSchema>;
 export type FeatureRequestStatus = typeof featureRequestStatuses[number];
 export const createFeatureRequestSchema = z.object({ text: z.string().trim().min(3).max(1000) }).strict();
 export const featureRequestListSchema = z.object({ requests: z.array(featureRequestSchema) }).strict();
+
+/** Modèle OpenAI par défaut du serveur, aussi utilisé pour les réglages créés hors ligne en mode invité. */
+export const defaultOpenAiModel = 'gpt-6-luna';
+/** Identifiant fixe de l'espace commun utilisé quand l'authentification est désactivée. */
+export const commonSpaceId = 'common';
+export const authProviders = ['google'] as const;
+export type AuthProvider = typeof authProviders[number];
+export const authErrorCodes = ['auth_required', 'membership_revoked', 'confirmation_required', 'invitation_invalid'] as const;
+export type AuthErrorCode = typeof authErrorCodes[number];
+export const authCallbackReasons = ['cancelled', 'expired', 'invalid', 'invitation_invalid'] as const;
+export type AuthCallbackReason = typeof authCallbackReasons[number];
+export const spaceKinds = ['common', 'household'] as const;
+export const sessionUserSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  email: z.string().nullable(),
+  picture: z.string().nullable(),
+}).strict();
+export type SessionUser = z.infer<typeof sessionUserSchema>;
+export const sessionSpaceSchema = z.object({
+  id: z.string().min(1),
+  name: z.string(),
+  kind: z.enum(spaceKinds),
+}).strict();
+export type SessionSpace = z.infer<typeof sessionSpaceSchema>;
+export const authSessionSchema = z.object({
+  authEnabled: z.boolean(),
+  providers: z.array(z.enum(authProviders)),
+  user: sessionUserSchema.nullable(),
+  space: sessionSpaceSchema.nullable(),
+  defaultModel: z.string(),
+  sessionExpiresAt: z.number().nullable(),
+}).strict();
+export type AuthSession = z.infer<typeof authSessionSchema>;
+/** Jeton aléatoire de 32 octets encodé en base64url (session, transaction OAuth, invitation). */
+export const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+export const authStartRequestSchema = z.object({ invitation: tokenSchema.optional() }).strict();
+export const authStartResponseSchema = z.object({ url: z.string().url() }).strict();
+export const spaceNameSchema = z.string().trim().min(1).max(60);
+export const renameSpaceRequestSchema = z.object({ name: spaceNameSchema }).strict();
+export const spaceMemberSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  email: z.string().nullable(),
+  picture: z.string().nullable(),
+  joinedAt: z.number(),
+  isMe: z.boolean(),
+}).strict();
+export type SpaceMember = z.infer<typeof spaceMemberSchema>;
+export const spaceInvitationSchema = z.object({
+  id: z.string().uuid(),
+  createdBy: z.string(),
+  createdAt: z.number(),
+  expiresAt: z.number(),
+}).strict();
+export type SpaceInvitation = z.infer<typeof spaceInvitationSchema>;
+export const spaceDetailsSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  members: z.array(spaceMemberSchema),
+  invitations: z.array(spaceInvitationSchema),
+}).strict();
+export type SpaceDetails = z.infer<typeof spaceDetailsSchema>;
+export const createdInvitationSchema = z.object({ id: z.string().uuid(), url: z.string().url(), expiresAt: z.number() }).strict();
+export type CreatedInvitation = z.infer<typeof createdInvitationSchema>;
+export const revokeInvitationRequestSchema = z.object({ id: z.string().uuid() }).strict();
+export const removeMemberRequestSchema = z.object({ userId: z.string().uuid() }).strict();
+export const invitationPreviewRequestSchema = z.object({ token: tokenSchema }).strict();
+export const invitationPreviewSchema = z.object({ spaceName: z.string(), invitedBy: z.string(), expiresAt: z.number() }).strict();
+export type InvitationPreview = z.infer<typeof invitationPreviewSchema>;
+export const acceptInvitationRequestSchema = z.object({ token: tokenSchema, leaveCurrent: z.boolean() }).strict();
+export const apiErrorSchema = z.object({ error: z.string(), code: z.string().optional() });
 
 /** Records removed by a server-forced reset: planned meals and library dishes, never settings. */
 export function isResetScoped(record: Pick<RecordData, 'type'>): boolean {

@@ -5,7 +5,8 @@ import {
   type Capabilities, type CookingLevel, type FeatureRequest, type Household, type Settings as AppSettings,
 } from '../shared/model';
 import { LevelGauge } from './CookingLevel';
-import { errorMessage, loadFeatureRequests, save, submitFeatureRequest } from './store';
+import { errorMessage, loadFeatureRequests, save, serverFeaturesAvailable, signInHint, submitFeatureRequest, type AuthState } from './store';
+import { AccountCard } from './Account';
 import { pwaStatus, refreshApp } from './pwa';
 import { timePattern, type ThemeControl, type ThemePreference } from './theme';
 
@@ -23,20 +24,20 @@ function frenchTime(value: string) {
   return `${Number(hours)} h${minutes === '00' ? '' : ` ${minutes}`}`;
 }
 
-function FeatureRequests({ online }: { online: boolean }) {
+function FeatureRequests({ online, allowed }: { online: boolean; allowed: boolean }) {
   const [requests, setRequests] = useState<FeatureRequest[] | null>(null);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    if (!online) return;
+    if (!online || !allowed) return;
     let active = true;
     loadFeatureRequests()
       .then(list => { if (active) { setRequests(list); setError(null); } })
       .catch(cause => { if (active) setError(errorMessage(cause)); });
     return () => { active = false; };
-  }, [online]);
+  }, [online, allowed]);
   async function send() {
     setSending(true);
     setError(null);
@@ -58,10 +59,11 @@ function FeatureRequests({ online }: { online: boolean }) {
       placeholder="Ex. : pouvoir noter les repas, ajouter un goûter…"
       value={draft} onChange={event => { setDraft(event.target.value); setSent(false); }} />
     <div className="settings-actions">
-      <button className="secondary-button" disabled={!online || sending || draft.trim().length < 3} onClick={() => void send()}>
+      <button className="secondary-button" disabled={!online || !allowed || sending || draft.trim().length < 3} title={allowed ? undefined : signInHint} onClick={() => void send()}>
         <Send size={16} />Envoyer</button>
     </div>
-    {!online && <p className="field-hint">L’envoi et le suivi des demandes nécessitent le serveur.</p>}
+    {!allowed ? <p className="field-hint">{signInHint} : les demandes sont liées à votre foyer.</p>
+      : !online && <p className="field-hint">L’envoi et le suivi des demandes nécessitent le serveur.</p>}
     {sent && <p className="field-hint" role="status">Merci ! Votre demande est enregistrée.</p>}
     {error && <p className="inline-error" role="alert">{error}</p>}
     {requests && (requests.length
@@ -75,10 +77,13 @@ function FeatureRequests({ online }: { online: boolean }) {
   </div>;
 }
 
-export function Settings({ settings, capabilities, online, appearance, lastSync, pending, syncing, onSync, onInstall }: {
+export function Settings({ settings, capabilities, online, appearance, lastSync, pending, syncing, onSync, onInstall, auth, reachable, onNotice }: {
   settings?: AppSettings; capabilities: Capabilities | null; online: boolean; appearance: ThemeControl; lastSync: number | null;
   pending: number; syncing: boolean; onSync: () => void; onInstall: () => void;
+  auth: AuthState; reachable: boolean; onNotice: (title: string, text: string) => void;
 }) {
+  const allowed = serverFeaturesAvailable(auth);
+  const local = auth.mode === 'guest' || auth.mode === 'unknown';
   const [error, setError] = useState<string | null>(null);
   const [pendingModel, setPendingModel] = useState<string | null>(null);
   const [pendingHousehold, setPendingHousehold] = useState(false);
@@ -184,6 +189,7 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
   }
   return <section className="settings">
     <div className="section-heading"><div><p className="eyebrow">LES COULISSES DU CARNET</p><h2>À votre façon</h2></div><Sparkles size={23} strokeWidth={1.3} /></div>
+    <AccountCard auth={auth} reachable={reachable} pending={pending} onNotice={onNotice} />
     <div className="settings-card">
       <h3><SunMoon size={19} />Clair ou sombre</h3>
       <p>Une ambiance lumineuse pour la journée, plus feutrée pour le soir. Ce choix ne concerne que cet appareil.</p>
@@ -204,15 +210,16 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
     </div>
     <div className="settings-card">
       <h3><Cloud size={19} />Votre carnet, partout</h3>
-      <p>Les repas sont enregistrés sur cet appareil, puis partagés avec le serveur. En cas de conflit sur un même créneau ou une même fiche, la modification la plus récente l’emporte.</p>
-      <dl><div><dt>Connexion au serveur</dt><dd>{online ? 'Disponible' : 'Indisponible'}</dd></div>
+      <p>{local ? 'En mode invité, les repas sont enregistrés uniquement sur cet appareil. Connectez-vous pour les partager avec le serveur et votre foyer.'
+        : 'Les repas sont enregistrés sur cet appareil, puis partagés avec le serveur. En cas de conflit sur un même créneau ou une même fiche, la modification la plus récente l’emporte.'}</p>
+      <dl><div><dt>Connexion au serveur</dt><dd>{local ? 'Non utilisée (mode invité)' : online ? 'Disponible' : 'Indisponible'}</dd></div>
         <div><dt>Modifications à envoyer</dt><dd>{pending}</dd></div>
         <div><dt>Dernière synchronisation</dt><dd>{lastSync ? new Intl.DateTimeFormat('fr-FR', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Europe/Paris' }).format(lastSync) : 'Pas encore'}</dd></div>
         <div><dt>Application hors ligne</dt><dd>{pwa.error ? 'Indisponible sur cet appareil' : pwa.ready ? 'Prête sur cet appareil' : import.meta.env.DEV ? 'Après le build de production' : 'Préparation en cours'}</dd></div>
       </dl>
       {pwa.error && <p className="inline-error" role="alert">{pwa.error}</p>}
       {pwa.updateAvailable && <p className="info-box">Une nouvelle version est prête. Utilisez « Forcer la mise à jour » ou fermez tous les onglets et fenêtres de l’application, puis rouvrez-la. Vos modifications locales restent conservées.</p>}
-      <div className="settings-actions"><button className="secondary-button" disabled={syncing} onClick={onSync}><RefreshCw size={16} className={syncing ? 'spinning' : ''} />Synchroniser</button>
+      <div className="settings-actions"><button className="secondary-button" disabled={syncing || !allowed} onClick={onSync}><RefreshCw size={16} className={syncing ? 'spinning' : ''} />Synchroniser</button>
         <button className="secondary-button" disabled={updating || syncing || pendingModel !== null || pendingHousehold || pendingAvoid || pendingLevel !== null}
           onClick={() => void updateApp()}><RefreshCw size={16} className={updating ? 'spinning' : ''} />{updating ? 'Mise à jour…' : 'Forcer la mise à jour'}</button>
         <button className="text-button" onClick={onInstall}><Download size={16} />Installer l’application</button></div>
@@ -263,17 +270,18 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
     <div className="settings-card">
       <h3><Sparkles size={19} />Un petit coup de pouce de l’IA</h3>
       <p>Pour enrichir vos fiches et générer de nouvelles idées de saison, en tenant compte du carnet et des repas choisis de J−15 à J+15 autour d’aujourd’hui. L’enrichissement ne change pas les textes déjà saisis dans le planning.</p>
-      {!capabilities?.aiConfigured && <p className="info-box">L’analyse attend la configuration de la clé OpenAI sur le serveur. Vous pouvez déjà tout planifier.</p>}
+      {!allowed && <p className="info-box">{signInHint} : l’IA est réservée aux comptes connectés. Le choix au hasard dans le carnet reste disponible.</p>}
+      {allowed && !capabilities?.aiConfigured && <p className="info-box">L’analyse attend la configuration de la clé OpenAI sur le serveur. Vous pouvez déjà tout planifier.</p>}
       {settings && capabilities && !capabilities.allowedModels.includes(settings.model) &&
         <p className="inline-error" role="alert">Le modèle enregistré ({settings.model}) n’est plus autorisé par le serveur. Choisissez un modèle ci-dessous pour reprendre les analyses en attente.</p>}
-      <fieldset disabled={!online || pendingModel !== null || !capabilities}><legend className="field-label">Modèle OpenAI</legend>
+      <fieldset disabled={!online || !allowed || pendingModel !== null || !capabilities}><legend className="field-label">Modèle OpenAI</legend>
         <div className="model-options">{(capabilities?.allowedModels ?? []).map(model =>
           <label key={model} className={selectedModel === model ? 'selected' : ''}>
             <input type="radio" name="model" checked={selectedModel === model} onChange={() => void changeModel(model)} />
             <span>{model}</span>{selectedModel === model && <Check size={16} />}
           </label>)}</div>
       </fieldset>
-      {!online && <p className="field-hint">Le choix du modèle et la relance de l’IA nécessitent le serveur.</p>}
+      {allowed && !online && <p className="field-hint">Le choix du modèle et la relance de l’IA nécessitent le serveur.</p>}
       {modelSaved && <p className="field-hint" role="status">Choix enregistré localement ; il sera appliqué aux prochaines analyses et générations après synchronisation.</p>}
       {error && <p className="inline-error" role="alert">{error}</p>}
       {capabilities && <dl>
@@ -281,9 +289,13 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
         <div><dt>Appels IA ce mois-ci</dt><dd>{capabilities.callsThisMonth}</dd></div>
         <div><dt>Tokens comptabilisés ce mois-ci</dt><dd>{(capabilities.inputTokens + capabilities.outputTokens).toLocaleString('fr-FR')}</dd></div>
       </dl>}
-      <p className="field-hint">L’application ne limite pas le nombre d’appels IA. Les échecs comptent comme des tentatives et ne sont pas relancés automatiquement. Les compteurs ne sont pas une facture. Les limites de votre projet OpenAI restent applicables.</p>
+      <p className="field-hint">{capabilities?.dailyLimit === null
+        ? 'Votre foyer utilise l’IA sans limite quotidienne.'
+        : 'Votre foyer dispose de 20 requêtes IA par jour, renouvelées à minuit (heure de Paris). Générations et enrichissements partagent cette limite.'} Les échecs comptent comme des tentatives et ne sont pas relancés automatiquement. Les compteurs concernent votre foyer et ne sont pas une facture. Les limites de votre projet OpenAI restent applicables.</p>
     </div>
-    <FeatureRequests online={online} />
-    <div className="privacy-note"><ShieldCheck size={22} strokeWidth={1.4} /><p>Un carnet partagé, sans compte utilisateur. Toute personne ayant accès à cette adresse peut lire et modifier les repas. La clé OpenAI ne quitte jamais le serveur. L’analyse transmet le nom du repas, la composition du foyer et les repas et ingrédients à éviter à OpenAI ; la génération transmet aussi la saison du créneau, le niveau de cuisine demandé, les noms du carnet (archives comprises) et ceux des repas choisis de J−15 à J+15 autour d’aujourd’hui, sans leurs dates ni les recettes.</p></div>
+    <FeatureRequests online={online} allowed={allowed} />
+    <div className="privacy-note"><ShieldCheck size={22} strokeWidth={1.4} /><p>{auth.mode === 'disabled'
+      ? 'Un carnet partagé, sans compte utilisateur. Toute personne ayant accès à cette adresse peut lire et modifier les repas. '
+      : 'Chaque foyer a son propre carnet : seuls ses membres, connectés avec Google, peuvent le lire et le modifier. L’application ne reçoit ni votre mot de passe Google ni l’accès à vos autres données Google. '}La clé OpenAI ne quitte jamais le serveur. L’analyse transmet le nom du repas, la composition du foyer et les repas et ingrédients à éviter à OpenAI ; la génération transmet aussi la saison du créneau, le niveau de cuisine demandé, les noms du carnet (archives comprises) et ceux des repas choisis de J−15 à J+15 autour d’aujourd’hui, sans leurs dates ni les recettes.</p></div>
   </section>;
 }

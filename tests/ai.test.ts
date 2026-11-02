@@ -44,56 +44,56 @@ describe('Analyse IA asynchrone', () => {
     it('publie le nom avant la recette et conserve le lien, les versions et les quantités finales', async () => {
       const recipe = dish({ name: url, sourceUrl: url });
       const planned = meal({ text: url, dishId: recipe.id });
-      store.merge([recipe, planned]);
+      store.merge('common', [recipe, planned]);
       const request = vi.fn<typeof fetch>().mockImplementation(async () => {
-        expect(store.analysis(recipe.id)).toMatchObject({ status: 'processing', name: page.name, details: null });
-        expect(mealDisplayName(planned, recipe, store.analysis(recipe.id))).toBe(page.name);
+        expect(store.analysis('common', recipe.id)).toMatchObject({ status: 'processing', name: page.name, details: null });
+        expect(mealDisplayName(planned, recipe, store.analysis('common', recipe.id))).toBe(page.name);
         return success({ ...details, name: page.name, ingredients: ['1,2 kg de courge'] }, true);
       });
       const worker = new AiWorker(store, config, vi.fn(), request, vi.fn().mockResolvedValue(page));
       await worker.tick();
-      expect(store.analysis(recipe.id)).toMatchObject({ status: 'ready', details: { name: page.name, ingredients: ['1,2 kg de courge'] } });
-      expect(store.get(`dish:${recipe.id}`)).toEqual(recipe);
-      expect(store.get(`meal:${planned.id}`)).toEqual(planned);
+      expect(store.analysis('common', recipe.id)).toMatchObject({ status: 'ready', details: { name: page.name, ingredients: ['1,2 kg de courge'] } });
+      expect(store.get('common', `dish:${recipe.id}`)).toEqual(recipe);
+      expect(store.get('common', `meal:${planned.id}`)).toEqual(planned);
       expect(store.capabilities().callsToday).toBe(1);
     });
     it('garde le nom découvert si l’IA échoue, expose l’erreur et ne relance pas automatiquement', async () => {
       const recipe = dish({ name: url, sourceUrl: url });
-      store.merge([recipe]);
+      store.merge('common', [recipe]);
       const request = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 429 }));
       const log = vi.fn();
       const worker = new AiWorker(store, config, log, request, vi.fn().mockResolvedValue(page));
       await worker.tick();
       await worker.tick();
-      expect(store.analysis(recipe.id)).toMatchObject({ status: 'error', name: page.name, details: null });
-      expect(store.analysis(recipe.id)?.error).toContain('429');
+      expect(store.analysis('common', recipe.id)).toMatchObject({ status: 'error', name: page.name, details: null });
+      expect(store.analysis('common', recipe.id)?.error).toContain('429');
       expect(request).toHaveBeenCalledOnce();
       expect(log).toHaveBeenCalledOnce();
     });
     it('ne contacte pas OpenAI si la page est inaccessible et conserve le lien pour une relance', async () => {
       const recipe = dish({ name: url, sourceUrl: url });
-      store.merge([recipe]);
+      store.merge('common', [recipe]);
       const request = vi.fn<typeof fetch>();
       const worker = new AiWorker(store, config, vi.fn(), request, vi.fn().mockRejectedValue(new Error('Page inaccessible (HTTP 403).')));
       await worker.tick();
       expect(request).not.toHaveBeenCalled();
-      expect(store.analysis(recipe.id)?.error).toContain('403');
-      expect(store.get(`dish:${recipe.id}`)).toEqual(recipe);
+      expect(store.analysis('common', recipe.id)?.error).toContain('403');
+      expect(store.get('common', `dish:${recipe.id}`)).toEqual(recipe);
     });
     it('réutilise la source après renommage et ne remplace ni une correction manuelle ni une nouvelle analyse', async () => {
       const recipe = dish({ name: page.name, sourceUrl: url });
-      store.merge([recipe]);
+      store.merge('common', [recipe]);
       store.claimAnalysis();
       const corrected = { ...recipe, details, modifiedAt: recipe.modifiedAt + 1, mutationId: crypto.randomUUID() };
-      store.merge([corrected]);
-      store.nameAnalysis(recipe, page.name);
-      store.finishAnalysis(recipe, details, null);
-      expect(store.analysis(recipe.id)?.name).toBeUndefined();
+      store.merge('common', [corrected]);
+      store.nameAnalysis('common', recipe, page.name);
+      store.finishAnalysis('common', recipe, details, null);
+      expect(store.analysis('common', recipe.id)?.name).toBeUndefined();
       const newer = { ...corrected, details: null, analysisKey: crypto.randomUUID(), modifiedAt: corrected.modifiedAt + 1 };
-      store.merge([newer]);
-      store.nameAnalysis(recipe, page.name);
-      store.finishAnalysis(recipe, details, null);
-      expect(store.analysis(recipe.id)).toMatchObject({ status: 'pending', analysisKey: newer.analysisKey, details: null });
+      store.merge('common', [newer]);
+      store.nameAnalysis('common', recipe, page.name);
+      store.finishAnalysis('common', recipe, details, null);
+      expect(store.analysis('common', recipe.id)).toMatchObject({ status: 'pending', analysisKey: newer.analysisKey, details: null });
       const loadPage = vi.fn().mockResolvedValue(page);
       await analyzeDish(newer, preferences, config, config.OPENAI_MODEL, new AbortController().signal,
         vi.fn<typeof fetch>().mockResolvedValue(success(details, true)), loadPage);
@@ -253,12 +253,14 @@ describe('Analyse IA asynchrone', () => {
       } finally { vi.useRealTimers(); }
     });
   });
-  it('analyse au-delà des anciens plafonds sans concurrence ni nouvel appel pour une analyse terminée', async () => {
+  it('analyse sans quota pour un foyer exempté, sans concurrence ni relance des analyses terminées', async () => {
     const request = vi.fn<typeof fetch>().mockImplementation(async () => success());
     const log = vi.fn();
     const worker = new AiWorker(store, config, log, request);
     store.db.prepare('INSERT INTO ai_usage (day, calls) VALUES (?, 200)').run(parisDate());
-    store.merge([dish(), dish()]);
+    store.db.prepare('INSERT INTO household_ai_usage (space_id, day, calls) VALUES (?, ?, 200)').run('common', parisDate());
+    store.setAiLimitExempt('common', true);
+    store.merge('common', [dish(), dish()]);
     await Promise.all([worker.tick(), worker.tick()]);
     expect(request).toHaveBeenCalledTimes(1);
     await worker.tick();
@@ -267,8 +269,8 @@ describe('Analyse IA asynchrone', () => {
     expect(store.capabilities().callsToday).toBe(202);
     expect(store.capabilities().callsThisMonth).toBe(202);
     expect(store.capabilities().inputTokens).toBe(600);
-    expect(store.analyses().filter(item => item.status === 'ready')).toHaveLength(2);
-    expect(store.analyses().filter(item => item.status === 'pending')).toHaveLength(0);
+    expect(store.analyses('common').filter(item => item.status === 'ready')).toHaveLength(2);
+    expect(store.analyses('common').filter(item => item.status === 'pending')).toHaveLength(0);
     expect(log).not.toHaveBeenCalled();
   });
   it('expose les erreurs et ne boucle pas automatiquement sur une requête échouée', async () => {
@@ -276,13 +278,13 @@ describe('Analyse IA asynchrone', () => {
     const log = vi.fn();
     const worker = new AiWorker(store, config, log, request);
     const recipe = dish();
-    store.merge([recipe]);
+    store.merge('common', [recipe]);
     await worker.tick();
     await worker.tick();
     expect(request).toHaveBeenCalledTimes(1);
-    expect(store.analysis(recipe.id)?.status).toBe('error');
-    expect(store.analysis(recipe.id)?.error).toContain('429');
-    expect(store.get(`dish:${recipe.id}`)).toEqual(recipe);
+    expect(store.analysis('common', recipe.id)?.status).toBe('error');
+    expect(store.analysis('common', recipe.id)?.error).toContain('429');
+    expect(store.get('common', `dish:${recipe.id}`)).toEqual(recipe);
     expect(log).toHaveBeenCalledOnce();
   });
   it('refuse une sortie malformée au lieu de l’utiliser', async () => {
@@ -294,21 +296,21 @@ describe('Analyse IA asynchrone', () => {
   });
   it('laisse les analyses en attente sans clé et ignore les fiches archivées ou manuelles', async () => {
     const noKey = new Store({ ...config, OPENAI_API_KEY: '' });
-    noKey.merge([dish()]);
+    noKey.merge('common', [dish()]);
     expect(noKey.claimAnalysis()).toBeUndefined();
     noKey.close();
-    store.merge([dish({ archived: true }), dish({ details })]);
+    store.merge('common', [dish({ archived: true }), dish({ details })]);
     expect(store.claimAnalysis()).toBeUndefined();
     expect(store.capabilities().callsToday).toBe(0);
   });
   it('n’utilise jamais un modèle enregistré qui a été retiré de la liste autorisée', () => {
-    store.merge([dish(), {
+    store.merge('common', [dish(), {
       type: 'settings', id: 'global', model: 'retired-model',
       modifiedAt: 1, mutationId: crypto.randomUUID(),
     }]);
     expect(store.claimAnalysis()).toBeUndefined();
     expect(store.capabilities().callsToday).toBe(0);
-    store.merge([{
+    store.merge('common', [{
       type: 'settings', id: 'global', model: 'gpt-6-luna',
       modifiedAt: 2, mutationId: crypto.randomUUID(),
     }]);

@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
-import { addDays, parisDate, seasonForDate, type RecordData } from '../shared/model';
+import { addDays, parisDate, seasonForDate, type Analysis, type RecordData } from '../shared/model';
 import { details, dish, meal, snapshot } from '../tests/fixtures';
 
 const today = parisDate();
@@ -24,12 +24,94 @@ test.beforeEach(async ({ page }, testInfo) => {
   await expect(page.locator('.connection-indicator')).toHaveText('Carnet à jour');
 });
 
-test('paramètres : compteurs IA sans plafond applicatif', async ({ page }) => {
+test('paramètres : compteurs et quota IA du foyer', async ({ page }) => {
   await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
   for (const label of ['Appels IA aujourd’hui', 'Appels IA ce mois-ci']) {
     await expect(page.locator('dl > div').filter({ has: page.getByText(label, { exact: true }) }).locator('dd')).toHaveText('0');
   }
-  await expect(page.getByText('L’application ne limite pas le nombre d’appels IA.', { exact: false })).toBeVisible();
+  await expect(page.getByText('Votre foyer dispose de 20 requêtes IA par jour', { exact: false })).toBeVisible();
+});
+
+test('paramètres : exemption IA du foyer visible après synchronisation', async ({ page }) => {
+  await page.route('**/api/sync', route => {
+    const response = snapshot([unused, used]);
+    response.capabilities = { ...response.capabilities, callsToday: 25, dailyLimit: null };
+    return route.fulfill({ json: response });
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+  await expect(page.getByText('Votre foyer utilise l’IA sans limite quotidienne.', { exact: false })).toBeVisible();
+  await expect(page.locator('dl > div').filter({ has: page.getByText('Appels IA aujourd’hui', { exact: true }) }).locator('dd')).toHaveText('25');
+});
+
+test('quota atteint : refus explicite, fin du blocage et saisie manuelle toujours possible', async ({ page }) => {
+  await page.route('**/api/meals/generate', route => route.fulfill({
+    status: 429, json: { error: 'Limite de 20 requêtes IA atteinte pour ce foyer aujourd’hui. Réessayez demain.' },
+  }));
+  await slot(page).getByRole('button', { name: /générer/ }).click();
+  await expect(page.getByRole('dialog')).toContainText('Limite de 20 requêtes');
+  await expect(page.getByRole('dialog', { name: 'Création du repas en cours' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Fermer', exact: true }).click();
+  await expect(slot(page).locator('.meal-cell')).toContainText('Créer un repas');
+  await slot(page).locator('.meal-cell').click();
+  await page.getByLabel('Votre idée du jour', { exact: true }).fill('Mon plat sans IA');
+  await page.getByRole('button', { name: 'Créer le repas' }).click();
+  await expect(slot(page).locator('.meal-cell')).toHaveText('Mon plat sans IA');
+});
+
+test('carnet vide : autocomplétion au clavier et réutilisation de la recette, même hors saison', async ({ page }) => {
+  const existing = dish({ name: 'gratin brut', details: { ...details, name: 'Gratin retrouvé', seasons: [seasonForDate(today) === 'winter' ? 'summer' : 'winter'] } });
+  const archived = dish({ name: 'Gratin archivé', archived: true, details: { ...details, name: 'Gratin archivé' } });
+  const records = new Map<string, RecordData>([existing, archived].map(record => [`${record.type}:${record.id}`, record]));
+  let generationCalls = 0;
+  await page.route('**/api/meals/generate', route => { generationCalls++; return route.abort(); });
+  await page.route('**/api/sync', async route => {
+    for (const record of route.request().postDataJSON().mutations as RecordData[]) records.set(`${record.type}:${record.id}`, record);
+    await route.fulfill({ json: snapshot([...records.values()]) });
+  });
+  await page.reload();
+  await slot(page).locator('.meal-cell').click();
+  const idea = page.getByLabel('Votre idée du jour', { exact: true });
+  await idea.fill('gratin');
+  await expect(page.getByRole('option')).toHaveCount(1);
+  await expect(page.getByRole('option')).toContainText('Gratin retrouvé');
+  await idea.press('ArrowDown');
+  await idea.press('Enter');
+  await expect(idea).toHaveValue('Gratin retrouvé');
+  await expect(page.getByRole('listbox')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Créer le repas' }).click();
+  await expect(slot(page).locator('.meal-cell')).toHaveText('Gratin retrouvé');
+  await expect.poll(() => [...records.values()].filter(record => record.type === 'meal').length).toBe(1);
+  const planned = [...records.values()].find(record => record.type === 'meal');
+  expect(planned?.type === 'meal' && planned.dishId).toBe(existing.id);
+  expect([...records.values()].filter(record => record.type === 'dish')).toHaveLength(2);
+  expect(records.get(`dish:${existing.id}`)).toEqual(existing);
+  expect(generationCalls).toBe(0);
+  await page.reload();
+  await slot(page).locator('.meal-cell').click();
+  await expect(page.getByRole('region', { name: 'Recette du repas' })).toContainText(details.recipe);
+});
+
+test('une recette saisie par nom affiche la génération puis se met à jour sans intervention', async ({ page }) => {
+  const pendingDish = dish({ name: 'Plat en préparation' });
+  const planned = meal({ id: `${today}:lunch`, date: today, text: pendingDish.name, dishId: pendingDish.id });
+  let ready = false;
+  await page.route('**/api/sync', async route => {
+    const analysis: Analysis = {
+      dishId: pendingDish.id, analysisKey: pendingDish.analysisKey,
+      status: ready ? 'ready' : 'processing', details: ready ? details : null, error: null, updatedAt: Date.now(),
+    };
+    const response = snapshot([pendingDish, planned]);
+    response.capabilities = { ...response.capabilities, aiConfigured: true };
+    response.analyses = [analysis];
+    await route.fulfill({ json: response });
+  });
+  await page.reload();
+  await slot(page).locator('.meal-cell').click();
+  await expect(page.getByRole('status').filter({ hasText: 'Génération de la recette en cours' })).toBeVisible();
+  ready = true;
+  await expect(page.getByRole('region', { name: 'Recette du repas' })).toContainText(details.recipe, { timeout: 7000 });
+  await expect(page.getByText('Génération de la recette en cours', { exact: false })).toHaveCount(0);
 });
 
 test('tirage rapide sans doublon sur les sept jours affichés, puis repli et sauvegarde hors ligne', async ({ page }) => {
@@ -55,13 +137,13 @@ test('repas choisi : recette, modification du nom et suppression sans effacer la
   expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
   await dialog.getByRole('button', { name: 'Modifier le repas', exact: true }).click();
   await page.getByLabel('Votre idée du jour', { exact: true }).fill('Mon repas renommé');
-  await page.getByRole('button', { name: 'Garder ce repas' }).click();
+  await page.getByRole('button', { name: 'Créer le repas' }).click();
   await expect(slot(page).locator('.meal-cell')).toHaveText('Mon repas renommé');
   await page.reload();
   await slot(page).locator('.meal-cell').click();
-  await expect(page.getByRole('dialog')).toContainText('La recette n’est pas encore disponible');
+  await expect(page.getByRole('dialog')).toContainText('Recette en attente');
   await page.getByRole('button', { name: 'Vider', exact: true }).click();
-  await expect(slot(page).locator('.meal-cell')).toContainText('À imaginer');
+  await expect(slot(page).locator('.meal-cell')).toContainText('Créer un repas');
   await page.getByRole('button', { name: 'Mon carnet', exact: true }).click();
   await expect(page.getByRole('button', { name: /Mon repas renommé/ })).toBeVisible();
 });
@@ -86,10 +168,19 @@ test('repas choisi : proposition IA, attente et recette persistante', async ({ p
   await page.getByRole('dialog').getByRole('button', { name: 'Générer avec l’IA', exact: true }).click();
   await expect.poll(() => Boolean(pending)).toBe(true);
   await expect(page.getByRole('button', { name: 'Génération…', exact: true })).toBeDisabled();
+  const progress = page.getByRole('dialog', { name: 'Création du repas en cours', exact: true });
+  await expect(progress).toBeVisible();
+  await expect(progress.getByRole('button', { name: 'Fermer' })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(progress).toBeVisible();
+  await page.mouse.click(1, 1);
+  await expect(progress).toBeVisible();
   await expect(slot(page).locator('.meal-cell')).toHaveText(unused.name);
   await pending!.fulfill({ json: { details: { ...details, name: 'Nouvelle proposition' } } });
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(slot(page).locator('.meal-cell')).toHaveText('Nouvelle proposition');
+  await expect(slot(page).locator('.meal-just-added')).toHaveCount(1);
+  expect(await page.evaluate(() => document.body.style.overflow)).not.toBe('hidden');
   await page.reload();
   await slot(page).locator('.meal-cell').click();
   await expect(page.getByRole('region', { name: 'Recette du repas' })).toContainText(details.recipe);
@@ -121,7 +212,7 @@ test('repas choisi : une proposition IA ne remplace pas une modification dans un
   await slot(other).locator('.meal-cell').click();
   await other.getByRole('button', { name: 'Modifier le repas', exact: true }).click();
   await other.getByLabel('Votre idée du jour', { exact: true }).fill('Un autre choix');
-  await other.getByRole('button', { name: 'Garder ce repas' }).click();
+  await other.getByRole('button', { name: 'Créer le repas' }).click();
   await expect(slot(other).locator('.meal-cell')).toHaveText('Un autre choix');
   await pending!.fulfill({ json: { details: { ...details, name: 'Proposition obsolète' } } });
   await expect(page.getByRole('dialog').getByRole('alert')).toContainText('modifié pendant la génération');
@@ -173,7 +264,7 @@ test('la génération attend l’envoi des choix locaux et du modèle au serveur
   await page.getByRole('button', { name: 'Mon planning', exact: true }).click();
   await slot(page, today, 'dinner').locator('.meal-cell').click();
   await page.getByLabel('Votre idée du jour', { exact: true }).fill('Repas local en attente');
-  await page.getByRole('button', { name: 'Garder ce repas' }).click();
+  await page.getByRole('button', { name: 'Créer le repas' }).click();
   await expect(slot(page, today, 'dinner').locator('.meal-cell')).toHaveText('Repas local en attente');
   await expect(page.locator('.connection-indicator')).toContainText('Hors ligne');
   await page.unroute('**/api/sync', offline);
@@ -205,7 +296,7 @@ test('erreur IA visible et créneau inchangé', async ({ page }) => {
   await slot(page).getByRole('button', { name: /générer/ }).click();
   await expect(page.getByRole('dialog')).toContainText('Service IA indisponible');
   await page.getByRole('button', { name: 'Fermer', exact: true }).click();
-  await expect(slot(page).locator('.meal-cell')).toContainText('À imaginer');
+  await expect(slot(page).locator('.meal-cell')).toContainText('Créer un repas');
   await expect(slot(page).getByRole('button', { name: /générer/ })).toBeEnabled();
 });
 
@@ -222,7 +313,7 @@ test('carnet vide : explication et boutons accessibles sur petit écran', async 
   await slot(page).getByRole('button', { name: /piocher/ }).click();
   await expect(page.getByRole('dialog')).toContainText('Aucun repas de saison');
   await page.getByRole('button', { name: 'Fermer', exact: true }).click();
-  await expect(slot(page).locator('.meal-cell')).toContainText('À imaginer');
+  await expect(slot(page).locator('.meal-cell')).toContainText('Créer un repas');
 });
 
 test('une génération en cours ne remplace pas un choix fait dans un autre onglet', async ({ page, context }) => {
@@ -235,7 +326,7 @@ test('une génération en cours ne remplace pas un choix fait dans un autre ongl
   await other.goto('/');
   await slot(other).locator('.meal-cell').click();
   await other.getByLabel('Votre idée du jour', { exact: true }).fill('Mon choix manuel');
-  await other.getByRole('button', { name: 'Garder ce repas' }).click();
+  await other.getByRole('button', { name: 'Créer le repas' }).click();
   await expect(slot(other).locator('.meal-cell')).toHaveText('Mon choix manuel');
   await pending!.fulfill({ json: { details: { ...details, name: 'Idée IA devenue obsolète' } } });
   await expect(page.getByRole('dialog')).toContainText('modifié pendant la génération');

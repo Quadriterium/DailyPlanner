@@ -21,6 +21,7 @@ export const details: DishDetails = {
 export const capabilities: Capabilities = {
   aiConfigured: false, allowedModels: ['gpt-6-luna', 'gpt-6-sol', 'gpt-5.6-luna', 'gpt-5.6-terra'],
   callsToday: 0, callsThisMonth: 0, inputTokens: 0, outputTokens: 0,
+  dailyLimit: 20,
 };
 export function snapshot(records: RecordData[] = []): SyncResponse {
   return { resetId: null, records, analyses: [], serverTime: Date.now(), capabilities };

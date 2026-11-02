@@ -20,6 +20,63 @@ beforeEach(async () => {
 afterEach(async () => { await app.close(); store.close(); });
 
 describe('API et stockage partagé', () => {
+  it('limite à exactement 20 appels par jour, même avec des générations concurrentes', async () => {
+    await app.close();
+    const aiRequest = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({
+      status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ ...details, seasons: ['autumn'] }) }] }],
+      usage: { input_tokens: 10, output_tokens: 5 },
+    })));
+    app = await buildApp(store, config, { logger: false, aiRequest });
+    const responses = await Promise.all(Array.from({ length: 21 }, () =>
+      app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30' } })));
+    expect(responses.filter(response => response.statusCode === 200)).toHaveLength(20);
+    const refused = responses.filter(response => response.statusCode === 429);
+    expect(refused).toHaveLength(1);
+    expect(refused[0].json().error).toContain('20 requêtes');
+    expect(aiRequest).toHaveBeenCalledTimes(20);
+    const sync = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [] } });
+    expect(sync.json().capabilities).toMatchObject({ dailyLimit: 20, callsToday: 20, inputTokens: 200, outputTokens: 100 });
+  });
+  it('partage le quota entre worker et génération, sans bloquer les autres foyers ou la synchronisation', async () => {
+    for (let i = 0; i < 19; i++) store.reserveGeneration('common');
+    const first = dish();
+    store.merge('common', [first]);
+    expect(store.claimAnalysis()?.dish.id).toBe(first.id);
+    store.finishAnalysis('common', first, null, 'Échec simulé');
+    expect(() => store.reserveGeneration('common')).toThrow('20 requêtes');
+    const pending = dish();
+    store.merge('common', [pending]);
+    expect(store.claimAnalysis()).toBeUndefined();
+    expect(store.analysis('common', pending.id)).toMatchObject({ status: 'pending', error: expect.stringContaining('20 requêtes') });
+    const other = store.createSpace('household', 'Autre foyer');
+    const otherDish = dish();
+    store.merge(other.id, [otherDish]);
+    expect(store.claimAnalysis()?.spaceId).toBe(other.id);
+    expect(store.capabilities(new Date(), other.id)).toMatchObject({ callsToday: 1, dailyLimit: 20 });
+    expect(store.capabilities(new Date(), 'common').callsToday).toBe(20);
+    expect((await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [] } })).statusCode).toBe(200);
+    store.setAiLimitExempt('common', true);
+    expect(store.claimAnalysis()?.dish.id).toBe(pending.id);
+    expect(store.analysis('common', pending.id)?.error).toBeNull();
+    expect(store.capabilities(new Date(), 'common')).toMatchObject({ dailyLimit: null, callsToday: 21 });
+    store.setAiLimitExempt('common', false);
+    expect(() => store.reserveGeneration('common')).toThrow('20 requêtes');
+    expect(() => store.setAiLimitExempt('inconnu', true)).toThrow('introuvable');
+  });
+  it('renouvelle le quota à minuit à Paris et reprend les analyses en attente', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-11-02T22:59:00Z'));
+      for (let i = 0; i < 20; i++) store.reserveGeneration('common');
+      const recipe = dish();
+      store.merge('common', [recipe]);
+      expect(store.claimAnalysis()).toBeUndefined();
+      vi.setSystemTime(new Date('2026-11-02T23:01:00Z'));
+      expect(store.claimAnalysis()?.dish.id).toBe(recipe.id);
+      expect(store.capabilities(new Date(), 'common')).toMatchObject({ callsToday: 1, callsThisMonth: 21 });
+      expect(store.analysis('common', recipe.id)).toMatchObject({ status: 'processing', error: null });
+    } finally { vi.useRealTimers(); }
+  });
   it('partage les convives par créneau, sans toucher au foyer ni à la fiche', async () => {
     const recipe = dish({ details });
     const planned = meal({ dishId: recipe.id, household: { adults: 2, teenagers: 0, children: 0 } });
@@ -31,7 +88,7 @@ describe('API et stockage partagé', () => {
     expect(records).toContainEqual(planned);
     expect(records).toContainEqual(dinner);
     expect(records).toContainEqual(recipe);
-    expect(store.settings().household).toEqual(defaultHousehold);
+    expect(store.settings('common').household).toEqual(defaultHousehold);
     const reset = { ...planned, household: null, modifiedAt: planned.modifiedAt + 1, mutationId: randomUUID() };
     const restored = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [reset] } });
     expect(restored.statusCode).toBe(200);
@@ -45,7 +102,7 @@ describe('API et stockage partagé', () => {
     expect(syncResponseSchema.parse(response.json()).records).toEqual(expect.arrayContaining([first, second]));
     const invalid = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [{ ...second, id: `${first.id}:3`, index: 2 }] } });
     expect(invalid.statusCode).toBe(400);
-    expect(store.records().filter(record => record.type === 'meal')).toHaveLength(2);
+    expect(store.records('common').filter(record => record.type === 'meal')).toHaveLength(2);
   });
   it('synchronise les liens longs et le nom découvert sans réécrire les records utilisateur', async () => {
     const url = `https://example.org/gratin?source=${'a'.repeat(500)}`;
@@ -54,7 +111,7 @@ describe('API et stockage partagé', () => {
     const response = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [recipe, planned] } });
     expect(response.statusCode).toBe(200);
     expect(store.claimAnalysis()?.dish).toEqual(recipe);
-    store.nameAnalysis(recipe, 'Gratin de courge');
+    store.nameAnalysis('common', recipe, 'Gratin de courge');
     const synchronized = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [] } });
     const body = syncResponseSchema.parse(synchronized.json());
     expect(body.records).toContainEqual(recipe);
@@ -72,7 +129,7 @@ describe('API et stockage partagé', () => {
       expect(response.statusCode).toBe(200);
       const body = syncResponseSchema.parse(response.json());
       expect(body.capabilities.allowedModels).toContain(model);
-      expect(store.settings().model).toBe(model);
+      expect(store.settings('common').model).toBe(model);
     }
     expect(readConfig({ OPENAI_ALLOWED_MODELS: 'gpt-6-luna' }).allowedModels).toEqual(['gpt-6-luna']);
   });
@@ -82,10 +139,10 @@ describe('API et stockage partagé', () => {
     const date = addDays(today, 90);
     const recipe = dish({ name: 'Soupe maison', details: { ...details, name: 'Soupe corrigée' } });
     const archived = dish({ name: 'Ancien gratin', archived: true });
-    store.merge([recipe, archived, ...[-16, -15, 15, 16].map(offset => meal({
+    store.merge('common', [recipe, archived, ...[-16, -15, 15, 16].map(offset => meal({
       id: `${addDays(today, offset)}:lunch`, date: addDays(today, offset), text: `Choix ${offset}`,
       dishId: offset === -15 ? recipe.id : null,
-    })), { ...store.settings(), model: 'gpt-6-sol', modifiedAt: Date.now(), mutationId: randomUUID() }]);
+    })), { ...store.settings('common'), model: 'gpt-6-sol', modifiedAt: Date.now(), mutationId: randomUUID() }]);
     const aiRequest = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
       status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text',
         text: JSON.stringify({ ...details, name: 'Nouvelle idée', seasons: [seasonForDate(date)] }),
@@ -114,7 +171,7 @@ describe('API et stockage partagé', () => {
         text: JSON.stringify({ ...details, name: 'Nouvelle idée', seasons: ['autumn'] }),
       }] }], usage: { input_tokens: 123, output_tokens: 45 },
     })));
-    store.merge([{ ...store.settings(), household, modifiedAt: Date.now(), mutationId: randomUUID() }]);
+    store.merge('common', [{ ...store.settings('common'), household, modifiedAt: Date.now(), mutationId: randomUUID() }]);
     app = await buildApp(store, config, { logger: false, aiRequest });
     const response = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30' } });
     expect(response.statusCode).toBe(200);
@@ -123,7 +180,7 @@ describe('API et stockage partagé', () => {
   });
   it('génère au niveau de cuisine partagé par défaut, ou au niveau choisi pour ce repas', async () => {
     const shared = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [{
-      ...store.settings(), cookingLevel: 4, modifiedAt: Date.now(), mutationId: randomUUID(),
+      ...store.settings('common'), cookingLevel: 4, modifiedAt: Date.now(), mutationId: randomUUID(),
     }] } });
     expect(syncResponseSchema.parse(shared.json()).records).toContainEqual(expect.objectContaining({ type: 'settings', cookingLevel: 4 }));
     await app.close();
@@ -142,7 +199,7 @@ describe('API et stockage partagé', () => {
       expect(response.json().details.level).toBe(level);
       expect(JSON.parse(JSON.parse(String(aiRequest.mock.lastCall?.[1]?.body)).input).niveauDemande).toBe(level);
     }
-    expect(store.settings().cookingLevel).toBe(4);
+    expect(store.settings('common').cookingLevel).toBe(4);
   });
   it('signale un niveau IA différent de la demande sans enregistrer de plat ni relancer', async () => {
     await app.close();
@@ -156,16 +213,16 @@ describe('API et stockage partagé', () => {
     expect(response.statusCode).toBe(502);
     expect(response.json().error).toContain('niveau de cuisine demandé');
     expect(response.json()).not.toHaveProperty('details');
-    expect(store.records().map(record => record.type)).toEqual(['settings']);
-    expect(store.analyses()).toEqual([]);
-    expect(store.settings().cookingLevel).toBe(2);
+    expect(store.records('common').map(record => record.type)).toEqual(['settings']);
+    expect(store.analyses('common')).toEqual([]);
+    expect(store.settings('common').cookingLevel).toBe(2);
     expect(store.capabilities().callsToday).toBe(1);
     expect(aiRequest).toHaveBeenCalledOnce();
   });
   it('refuse un doublon proposé par l’IA sans sauvegarder ni relancer automatiquement', async () => {
     await app.close();
     const recipe = dish({ name: 'Gratin de courge' });
-    store.merge([recipe]);
+    store.merge('common', [recipe]);
     const aiRequest = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
       status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text',
         text: JSON.stringify({ ...details, name: 'GRATIN  DE COURGE', seasons: ['autumn'] }),
@@ -176,7 +233,7 @@ describe('API et stockage partagé', () => {
     const response = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30' } });
     expect(response.statusCode).toBe(502);
     expect(response.json().error).toContain('déjà créé ou déjà choisi');
-    expect(store.records()).toHaveLength(2);
+    expect(store.records('common')).toHaveLength(2);
     expect(store.capabilities().callsToday).toBe(1);
     expect(aiRequest).toHaveBeenCalledOnce();
   });
@@ -192,8 +249,8 @@ describe('API et stockage partagé', () => {
     expect(response.json().details.name).toBe(details.name);
     expect(store.capabilities().callsToday).toBe(1);
     expect(store.capabilities().inputTokens).toBe(123);
-    expect(store.records()).toHaveLength(1);
-    expect(store.analyses()).toEqual([]);
+    expect(store.records('common')).toHaveLength(1);
+    expect(store.analyses('common')).toEqual([]);
     expect(response.headers['cache-control']).toBe('no-store');
     expect(aiRequest).toHaveBeenCalledOnce();
   });
@@ -209,7 +266,7 @@ describe('API et stockage partagé', () => {
     }
     expect(store.capabilities().callsToday).toBe(0);
   });
-  it('génère au-delà des anciens plafonds sans limite par minute, même avec les anciennes variables', async () => {
+  it('autorise les foyers exemptés à dépasser le quota, indépendamment des anciennes variables', async () => {
     await app.close();
     store.close();
     const legacyConfig = readConfig({
@@ -218,6 +275,8 @@ describe('API et stockage partagé', () => {
     });
     store = new Store(legacyConfig);
     store.db.prepare('INSERT INTO ai_usage (day, calls) VALUES (?, 200)').run(parisDate());
+    store.db.prepare('INSERT INTO household_ai_usage (space_id, day, calls) VALUES (?, ?, 200)').run('common', parisDate());
+    store.setAiLimitExempt('common', true);
     const generated = { ...details, seasons: ['autumn'] };
     const aiRequest = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({
       status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(generated) }] }],
@@ -233,7 +292,7 @@ describe('API et stockage partagé', () => {
     const response = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [] } });
     const { capabilities } = syncResponseSchema.parse(response.json());
     expect(capabilities).toMatchObject({ callsToday: 211, callsThisMonth: 211, inputTokens: 1353, outputTokens: 495 });
-    expect(response.json().capabilities).not.toHaveProperty('dailyLimit');
+    expect(response.json().capabilities.dailyLimit).toBeNull();
     expect(response.json().capabilities).not.toHaveProperty('monthlyLimit');
   });
   it('compte les échecs de génération sans bloquer les appels suivants ni le worker', async () => {
@@ -245,7 +304,7 @@ describe('API et stockage partagé', () => {
     expect(failed.statusCode).toBe(502);
     expect(failed.json().error).toContain('503');
     expect((await generate()).statusCode).toBe(502);
-    store.merge([dish()]);
+    store.merge('common', [dish()]);
     expect(store.claimAnalysis()).toBeDefined();
     expect(aiRequest).toHaveBeenCalledTimes(2);
     expect(store.capabilities().callsToday).toBe(3);
@@ -257,7 +316,7 @@ describe('API et stockage partagé', () => {
     ] as const) {
       const isolated = new Store({ ...config, ...overrides, allowedModels: 'allowedModels' in overrides ? [] : config.allowedModels });
       try {
-        expect(() => isolated.reserveGeneration()).toThrow(message);
+        expect(() => isolated.reserveGeneration('common')).toThrow(message);
       } finally { isolated.close(); }
     }
   });
@@ -275,83 +334,88 @@ describe('API et stockage partagé', () => {
     const entry = meal({ dishId: recipe.id });
     const response = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [recipe, entry] } });
     expect(response.statusCode).toBe(200);
-    expect(store.get(`meal:${entry.id}`)).toEqual(entry);
-    expect(store.analysis(recipe.id)?.status).toBe('pending');
+    expect(store.get('common', `meal:${entry.id}`)).toEqual(entry);
+    expect(store.analysis('common', recipe.id)?.status).toBe('pending');
     expect(store.capabilities().callsToday).toBe(0);
   });
   it('résout les conflits par créneau et indépendamment de l’ordre d’arrivée', () => {
     const old = meal({ modifiedAt: 1, text: 'Ancien' });
     const newer = meal({ modifiedAt: 3, text: 'Nouveau' });
     const evening = meal({ modifiedAt: 2, id: '2026-10-30:dinner', slot: 'dinner', text: 'Soupe' });
-    store.merge([newer, evening, old]);
-    expect(store.get(`meal:${old.id}`)).toEqual(newer);
-    expect(store.get(`meal:${evening.id}`)).toEqual(evening);
-    store.merge([newer]);
-    expect(store.records()).toHaveLength(3);
+    store.merge('common', [newer, evening, old]);
+    expect(store.get('common', `meal:${old.id}`)).toEqual(newer);
+    expect(store.get('common', `meal:${evening.id}`)).toEqual(evening);
+    store.merge('common', [newer]);
+    expect(store.records('common')).toHaveLength(3);
   });
   it('conserve les suppressions pour éviter la résurrection par un appareil hors ligne', () => {
     const old = meal({ modifiedAt: 1 });
     const cleared = { ...old, modifiedAt: 2, mutationId: randomUUID(), text: '', dishId: null };
-    store.merge([old, cleared]);
-    store.merge([old]);
-    expect(store.get(`meal:${old.id}`)).toEqual(cleared);
+    store.merge('common', [old, cleared]);
+    store.merge('common', [old]);
+    expect(store.get('common', `meal:${old.id}`)).toEqual(cleared);
   });
   it('ne modifie pas les menus lors du nettoyage IA ou de l’archivage', () => {
     const recipe = dish();
     const entry = meal({ dishId: recipe.id, text: 'poulet frite' });
-    store.merge([recipe, entry]);
+    store.merge('common', [recipe, entry]);
     const job = store.claimAnalysis()!;
-    store.finishAnalysis(job.dish, details, null);
-    expect(store.analysis(recipe.id)?.details?.name).toBe('Poulet-frites');
-    expect(store.get(`meal:${entry.id}`)).toEqual(entry);
-    store.merge([{ ...recipe, archived: true, modifiedAt: recipe.modifiedAt + 1, mutationId: randomUUID() }]);
-    expect(store.get(`meal:${entry.id}`)).toEqual(entry);
+    store.finishAnalysis('common', job.dish, details, null);
+    expect(store.analysis('common', recipe.id)?.details?.name).toBe('Poulet-frites');
+    expect(store.get('common', `meal:${entry.id}`)).toEqual(entry);
+    store.merge('common', [{ ...recipe, archived: true, modifiedAt: recipe.modifiedAt + 1, mutationId: randomUUID() }]);
+    expect(store.get('common', `meal:${entry.id}`)).toEqual(entry);
   });
   it('ignore une analyse devenue obsolète ou concurrencée par une correction manuelle', () => {
     const recipe = dish();
-    store.merge([recipe]);
+    store.merge('common', [recipe]);
     store.claimAnalysis();
     const changed = { ...recipe, analysisKey: randomUUID(), modifiedAt: recipe.modifiedAt + 1, mutationId: randomUUID() };
-    store.merge([changed]);
-    store.finishAnalysis(recipe, details, null);
-    expect(store.analysis(recipe.id)?.status).toBe('pending');
+    store.merge('common', [changed]);
+    store.finishAnalysis('common', recipe, details, null);
+    expect(store.analysis('common', recipe.id)?.status).toBe('pending');
     const job = store.claimAnalysis()!;
-    store.merge([{ ...changed, details: { ...details, name: 'Ma recette' }, modifiedAt: changed.modifiedAt + 1, mutationId: randomUUID() }]);
-    store.finishAnalysis(job.dish, details, null);
-    const result = store.get(`dish:${recipe.id}`);
+    store.merge('common', [{ ...changed, details: { ...details, name: 'Ma recette' }, modifiedAt: changed.modifiedAt + 1, mutationId: randomUUID() }]);
+    store.finishAnalysis('common', job.dish, details, null);
+    const result = store.get('common', `dish:${recipe.id}`);
     expect(result?.type === 'dish' && result.details?.name).toBe('Ma recette');
   });
   it('refuse atomiquement les lots invalides et les horloges trop avancées', async () => {
     for (const invalid of [
       meal({ text: 'a'.repeat(241) }),
       meal({ modifiedAt: Date.now() + 10 * 60_000 }),
-      { type: 'settings', id: 'global', model: 'not-allowed', modifiedAt: Date.now(), mutationId: randomUUID() },
     ]) {
       const response = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [dish(), invalid] } });
       expect(response.statusCode).toBe(400);
-      expect(store.records()).toHaveLength(1);
+      expect(store.records('common')).toHaveLength(1);
     }
+  });
+  it('remplace un modèle qui n’est plus autorisé par le modèle par défaut du serveur', async () => {
+    const settings = { ...store.settings('common'), model: 'not-allowed', cookingLevel: 3 as const, modifiedAt: Date.now(), mutationId: randomUUID() };
+    const response = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [settings] } });
+    expect(response.statusCode).toBe(200);
+    expect(store.settings('common')).toEqual({ ...settings, model: config.OPENAI_MODEL });
   });
   it('réinitialise les repas et ignore ceux des appareils qui ne l’ont pas encore appliquée, sans bloquer les paramètres', async () => {
     const recipe = dish();
-    store.merge([recipe, meal({ dishId: recipe.id })]);
-    const model = store.settings().model;
-    const resetId = store.reset();
-    expect(store.records().map(record => record.type)).toEqual(['settings']);
-    expect(store.analyses()).toEqual([]);
-    expect(store.settings().model).toBe(model);
+    store.merge('common', [recipe, meal({ dishId: recipe.id })]);
+    const model = store.settings('common').model;
+    const resetId = store.reset('common');
+    expect(store.records('common').map(record => record.type)).toEqual(['settings']);
+    expect(store.analyses('common')).toEqual([]);
+    expect(store.settings('common').model).toBe(model);
     for (const payload of [{ mutations: [recipe] }, { mutations: [recipe], resetId: null }, { mutations: [recipe], resetId: randomUUID() }]) {
       const response = await app.inject({ method: 'POST', url: '/api/sync', payload });
       expect(response.statusCode).toBe(200);
       expect(syncResponseSchema.parse(response.json()).resetId).toBe(resetId);
-      expect(store.records()).toHaveLength(1);
+      expect(store.records('common')).toHaveLength(1);
     }
     const household = { adults: 3, teenagers: 0, children: 1 };
     await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [
-      meal({ text: 'Ancien' }), { ...store.settings(), household, modifiedAt: Date.now(), mutationId: randomUUID() },
+      meal({ text: 'Ancien' }), { ...store.settings('common'), household, modifiedAt: Date.now(), mutationId: randomUUID() },
     ] } });
-    expect(store.records().map(record => record.type)).toEqual(['settings']);
-    expect(store.settings().household).toEqual(household);
+    expect(store.records('common').map(record => record.type)).toEqual(['settings']);
+    expect(store.settings('common').household).toEqual(household);
     const accepted = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [dish()], resetId } });
     expect(accepted.json().records).toHaveLength(2);
   });
@@ -377,7 +441,7 @@ describe('API et stockage partagé', () => {
       headers: { origin: 'https://other.invalid', 'sec-fetch-site': 'cross-site' },
     });
     expect(response.statusCode).toBe(403);
-    expect(store.records()).toHaveLength(1);
+    expect(store.records('common')).toHaveLength(1);
   });
   it('limite la synchronisation sans bloquer la disponibilité des autres routes', async () => {
     for (let i = 0; i < 180; i++) {
@@ -394,15 +458,61 @@ describe('API et stockage partagé', () => {
     const persistentConfig = { ...config, DATABASE_PATH: join(folder, 'planner.sqlite') };
     const recipe = dish();
     const first = new Store(persistentConfig);
-    first.merge([recipe, meal()]);
+    first.merge('common', [recipe, meal()]);
     first.claimAnalysis();
+    const exempt = first.createSpace('household', 'Sans limite');
+    first.setAiLimitExempt(exempt.id, true);
+    for (let i = 0; i < 20; i++) first.reserveGeneration(exempt.id);
     first.close();
     const second = new Store(persistentConfig);
     try {
-      expect(second.records()).toHaveLength(3);
-      expect(second.capabilities().callsToday).toBe(1);
-      expect(second.analysis(recipe.id)?.status).toBe('error');
+      expect(second.records('common')).toHaveLength(3);
+      expect(second.capabilities().callsToday).toBe(21);
+      expect(second.capabilities(new Date(), 'common').callsToday).toBe(1);
+      expect(second.capabilities(new Date(), exempt.id)).toMatchObject({ callsToday: 20, dailyLimit: null });
+      expect(() => second.reserveGeneration(exempt.id)).not.toThrow();
+      expect(second.analysis('common', recipe.id)?.status).toBe('error');
     } finally { second.close(); rmSync(folder, { recursive: true }); }
+  });
+  it('migre les compteurs v2 sans perte et ne les copie pas à nouveau au redémarrage', () => {
+    const folder = mkdtempSync(join(tmpdir(), 'a-table-quota-migration-'));
+    const persistentConfig = { ...config, DATABASE_PATH: join(folder, 'planner.sqlite') };
+    const legacy = new Store(persistentConfig);
+    legacy.merge('common', [meal()]);
+    for (let i = 0; i < 20; i++) legacy.reserveGeneration('common');
+    legacy.db.exec('DROP TABLE household_ai_usage; DROP TABLE ai_limit_exemptions; PRAGMA user_version = 2;');
+    legacy.close();
+    try {
+      for (let i = 0; i < 2; i++) {
+        const migrated = new Store(persistentConfig);
+        try {
+          expect(migrated.records('common').filter(record => record.type === 'meal')).toHaveLength(1);
+          expect(migrated.capabilities(new Date(), 'common')).toMatchObject({ callsToday: 20, dailyLimit: 20 });
+          expect(() => migrated.reserveGeneration('common')).toThrow('20 requêtes');
+        } finally { migrated.close(); }
+      }
+    } finally { rmSync(folder, { recursive: true }); }
+  });
+  it('permet à la commande administrateur de désactiver puis de rétablir le quota d’un foyer', () => {
+    const folder = mkdtempSync(join(tmpdir(), 'a-table-quota-admin-'));
+    const path = join(folder, 'planner.sqlite');
+    const admin = (...args: string[]) => spawnSync(process.execPath, ['--import', 'tsx', 'server/admin.ts', ...args], {
+      env: { ...process.env, DATABASE_PATH: path, AUTH_ENABLED: 'false' }, encoding: 'utf8',
+    });
+    try {
+      const unlimited = admin('ai-limit', '--space', 'common', '--mode', 'unlimited');
+      expect(unlimited.status, unlimited.stderr).toBe(0);
+      expect(unlimited.stdout).toContain('sans limite');
+      const spaces = admin('spaces');
+      expect(spaces.status, spaces.stderr).toBe(0);
+      expect(spaces.stdout).toContain('IA : sans limite');
+      const restored = admin('ai-limit', '--space', 'common', '--mode', 'default');
+      expect(restored.status, restored.stderr).toBe(0);
+      expect(restored.stdout).toContain('20 requêtes par jour');
+      const invalid = admin('ai-limit', '--space', 'inconnu', '--mode', 'unlimited');
+      expect(invalid.status).toBe(1);
+      expect(invalid.stderr).toContain('Foyer introuvable');
+    } finally { rmSync(folder, { recursive: true }); }
   });
   it('sauvegarde à chaud une base WAL et refuse d’écraser la sauvegarde', () => {
     const folder = mkdtempSync(join(tmpdir(), 'a-table-backup-'));
@@ -411,12 +521,12 @@ describe('API et stockage partagé', () => {
     const target = join(folder, 'backup.sqlite');
     let restored: Store | undefined;
     try {
-      running.merge([dish(), meal()]);
+      running.merge('common', [dish(), meal()]);
       const options = { env: { ...process.env, DATABASE_PATH: persistentConfig.DATABASE_PATH }, encoding: 'utf8' as const };
       const backup = spawnSync(process.execPath, ['scripts/backup.mjs', target], options);
       expect(backup.status, backup.stderr).toBe(0);
       restored = new Store({ ...config, DATABASE_PATH: target });
-      expect(restored.records()).toEqual(running.records());
+      expect(restored.records('common')).toEqual(running.records('common'));
       const second = spawnSync(process.execPath, ['scripts/backup.mjs', target], options);
       expect(second.status).not.toBe(0);
       expect(second.stderr).toContain('existe déjà');

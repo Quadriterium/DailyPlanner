@@ -176,7 +176,7 @@ test('convives : serveur inaccessible, remplacement du plat et remise à zéro a
   await expect(guests(page)).toContainText('2 adultes');
   await page.getByRole('button', { name: 'Modifier le repas', exact: true }).click();
   await page.getByLabel('Votre idée du jour', { exact: true }).fill('Mon autre plat');
-  await page.getByRole('button', { name: 'Garder ce repas' }).click();
+  await page.getByRole('button', { name: 'Créer le repas' }).click();
   await cell(page).click();
   await expect(guests(page)).toContainText('2 adultes');
   await page.getByRole('button', { name: 'Choisir au hasard', exact: true }).click();
@@ -185,7 +185,7 @@ test('convives : serveur inaccessible, remplacement du plat et remise à zéro a
   await page.getByRole('button', { name: 'Vider', exact: true }).click();
   await cell(page).click();
   await page.getByLabel('Votre idée du jour', { exact: true }).fill(recipe.name);
-  await page.getByRole('button', { name: 'Garder ce repas' }).click();
+  await page.getByRole('button', { name: 'Créer le repas' }).click();
   await cell(page).click();
   await expect(guests(page)).toContainText(householdSummary(household));
   await expect(guests(page)).toContainText('Selon vos paramètres');
@@ -205,7 +205,7 @@ test('convives : une modification dans un autre onglet ne se fait pas écraser',
   await cell(other).click();
   await other.getByRole('button', { name: 'Modifier le repas', exact: true }).click();
   await other.getByLabel('Votre idée du jour', { exact: true }).fill('Repas modifié ailleurs');
-  await other.getByRole('button', { name: 'Garder ce repas' }).click();
+  await other.getByRole('button', { name: 'Créer le repas' }).click();
   await guests(page).getByRole('button', { name: 'Enregistrer les convives' }).click();
   await expect(guests(page).getByRole('alert')).toContainText('Ce créneau a été modifié');
   await expect(cell(page)).toHaveText('Repas modifié ailleurs');
@@ -227,7 +227,7 @@ test('deux plats : convives indépendants, case inchangée, choix rapide et vida
   await addDish(page, slot);
   await expect(page.getByRole('dialog')).toContainText('Deuxième plat');
   await page.getByLabel('Votre idée du jour', { exact: true }).fill('Soupe de courge');
-  await page.getByRole('button', { name: 'Garder ce repas' }).click();
+  await page.getByRole('button', { name: 'Créer le repas' }).click();
   await expect(slot.locator('.meal-cell')).toHaveCount(2);
   await expect(slot.getByRole('button', { name: /ajouter un deuxième plat/ })).toHaveCount(0);
   await second.click();
@@ -280,7 +280,7 @@ test('deux plats : convives indépendants, case inchangée, choix rapide et vida
   await expect(second).toHaveText(secondName);
   await addDish(page, slot);
   await page.getByLabel('Votre idée du jour', { exact: true }).fill('Filet mignon sauce champignon');
-  await page.getByRole('button', { name: 'Garder ce repas' }).click();
+  await page.getByRole('button', { name: 'Créer le repas' }).click();
   await first.click();
   await expect(guests(page)).toContainText(householdSummary(household));
   await page.getByRole('button', { name: 'Fermer', exact: true }).click();
@@ -303,7 +303,7 @@ test('deux plats : partage réel entre appareils et convives conservés hors lig
     const modify = page.getByRole('button', { name: 'Modifier le repas', exact: true });
     if (await modify.isVisible()) await modify.click();
     await page.getByLabel('Votre idée du jour', { exact: true }).fill('Filet mignon sauce champignon');
-    await page.getByRole('button', { name: 'Garder ce repas' }).click();
+    await page.getByRole('button', { name: 'Créer le repas' }).click();
     await first(page).click();
     await editGuests(page);
     await fillGuests(page, custom);
@@ -311,7 +311,7 @@ test('deux plats : partage réel entre appareils et convives conservés hors lig
     await page.getByRole('button', { name: 'Fermer', exact: true }).click();
     await addDish(page, slot(page));
     await page.getByLabel('Votre idée du jour', { exact: true }).fill('Soupe de courge');
-    await page.getByRole('button', { name: 'Garder ce repas' }).click();
+    await page.getByRole('button', { name: 'Créer le repas' }).click();
     await second(page).click();
     await editGuests(page);
     await fillGuests(page, { adults: 0, teenagers: 0, children: 2 });
@@ -406,7 +406,7 @@ test('ajout adaptatif : nom pleine largeur sur téléphone, raccourci intégré 
   await expect(page.getByLabel('Votre idée du jour', { exact: true })).toHaveValue('');
   expect(await page.evaluate(() => document.body.style.overflow)).toBe('hidden');
   await page.getByLabel('Votre idée du jour', { exact: true }).fill('Soupe pour les enfants');
-  await page.getByRole('button', { name: 'Garder ce repas' }).click();
+  await page.getByRole('button', { name: 'Créer le repas' }).click();
   await expect(slot.locator('.meal-cell')).toHaveCount(2);
   await expect(slot.locator('.meal-cell').first()).toContainText(recipe.name);
 });

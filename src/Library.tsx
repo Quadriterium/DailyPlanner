@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Archive, ArrowUpRight, Check, Leaf, RotateCcw, Search, Sparkles } from 'lucide-react';
+import { Archive, ArrowUpRight, Check, Leaf, LoaderCircle, RotateCcw, Search, Sparkles } from 'lucide-react';
 import {
   cookingLevelHints, cookingLevelLabels, cookingLevels, dishDetails, recipeUrl, seasonLabels, seasons,
   type Analysis, type CookingLevel, type Dish, type Season,
 } from '../shared/model';
 import { EmptyState, Modal } from './components';
 import { LevelGauge, LevelTag } from './CookingLevel';
-import { errorMessage, save } from './store';
+import { errorMessage, save, signInHint, useServerFeatures } from './store';
 import { newId } from './id';
 
 export function Library({ dishes, analyses, online, onSaved }: {
@@ -36,7 +36,8 @@ export function Library({ dishes, analyses, online, onSaved }: {
       {entries.map(({ dish, details }) => {
         const analysis = analysisMap.get(dish.id);
         const status = dish.details ? 'À votre façon' : analysis?.status === 'ready' ? 'Recette enrichie'
-          : analysis?.status === 'error' ? 'Analyse à relancer' : 'Analyse en attente';
+          : analysis?.status === 'error' ? 'Analyse à relancer' : analysis?.error ? 'Quota atteint · en attente'
+            : analysis?.status === 'processing' ? 'Génération en cours…' : 'Analyse en attente';
         return <button className="recipe-card" key={dish.id} onClick={() => setSelected(dish.id)}>
           <div className="recipe-card-top"><span className="recipe-leaf"><Leaf size={24} strokeWidth={1.2} /></span><ArrowUpRight size={17} /></div>
           <h3>{details.name}</h3>
@@ -58,6 +59,7 @@ function DishEditor({ dish, analysis, online, onClose, onSaved }: {
   dish: Dish; analysis?: Analysis; online: boolean; onClose: () => void; onSaved: () => void;
 }) {
   const initial = dishDetails(dish, analysis);
+  const serverFeatures = useServerFeatures();
   const [name, setName] = useState(initial.name);
   const [selectedSeasons, setSelectedSeasons] = useState(initial.seasons);
   const [ingredients, setIngredients] = useState(initial.ingredients.join('\n'));
@@ -105,6 +107,14 @@ function DishEditor({ dish, analysis, online, onClose, onSaved }: {
     <p className="modal-subtitle">Modifier cette fiche ne change pas les textes déjà inscrits au planning.</p>
     {dish.sourceUrl && <p className="field-hint"><a href={dish.sourceUrl} target="_blank" rel="noopener noreferrer">Voir la recette d’origine</a></p>}
     {!dish.details && analysis?.error && <p className="inline-error" role="alert">{analysis.error}</p>}
+    {!dish.details && !analysis?.error && (!analysis || analysis.analysisKey !== dish.analysisKey ||
+      analysis.status === 'pending' || analysis.status === 'processing') && <p className="analysis-progress" role="status">
+      {online && serverFeatures && <LoaderCircle size={18} className="spinning" aria-hidden="true" />}
+      {!serverFeatures ? 'Recette en attente. Connectez-vous pour utiliser l’IA.'
+        : !online ? 'Recette en attente de connexion ou de configuration IA.'
+          : analysis?.status === 'processing' ? 'Génération de la recette en cours… Elle s’affichera automatiquement ici.'
+            : 'Recette en attente de génération… Elle s’affichera automatiquement ici après synchronisation.'}
+    </p>}
     <form onChange={() => setDirty(true)} onSubmit={event => { event.preventDefault(); void persist('edit'); }}>
       <label className="field-label" htmlFor="dish-name">Nom du repas</label>
       <input id="dish-name" value={name} onChange={event => setName(event.target.value)} maxLength={recipeUrl(name) ? 2048 : 240} required />
@@ -130,8 +140,8 @@ function DishEditor({ dish, analysis, online, onClose, onSaved }: {
       <button className="text-button" disabled={busy} onClick={() => void persist('archive')}>
         {dish.archived ? <RotateCcw size={16} /> : <Archive size={16} />}{dish.archived ? 'Restaurer ce repas' : 'Archiver ce repas'}
       </button>
-      <button className="text-button" disabled={busy || !online || !name.trim() || dish.archived}
-        title="Remplace les informations de cette fiche par une nouvelle analyse ; les menus ne changent pas."
+      <button className="text-button" disabled={busy || !online || !serverFeatures || !name.trim() || dish.archived}
+        title={serverFeatures ? 'Remplace les informations de cette fiche par une nouvelle analyse ; les menus ne changent pas.' : signInHint}
         onClick={() => void persist('analyze')}><Sparkles size={16} />Relancer l’IA</button>
     </div>
     <p className="field-hint">Relancer l’IA remplace les informations de la fiche. L’archivage conserve les anciens menus.</p>
