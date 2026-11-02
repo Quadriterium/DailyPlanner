@@ -44,7 +44,10 @@ description: "Comprendre et diagnostiquer la synchronisation À table ! : Indexe
 
 - Une base IndexedDB par contexte : `a-table-v1` (carnet commun, `AUTH_ENABLED=false`),
   `a-table-guest` (mode invité, jamais synchronisée) et `a-table-u-<user>-s-<space>`
-  (un compte dans un foyer). `localStorage` `a-table-auth` mémorise le dernier
+  (un compte dans un foyer). `a-table-catalog` est un cache du catalogue commun
+  partagé par tous les contextes de l'appareil : lecture seule, sans outbox,
+  synchronisé par curseur (`syncCatalog`, à l'initialisation et à chaque
+  synchronisation), réinitialisé si `catalogId` change, erreurs ignorées. `localStorage` `a-table-auth` mémorise le dernier
   compte pour ouvrir sa base hors ligne avant la vérification de session.
 - Changer de base passe par `switchSpace` (sérialisé, avec époque) : une réponse
   de synchronisation d'une ancienne base est ignorée. Les onglets suivent via

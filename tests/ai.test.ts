@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readConfig } from '../server/config';
 import { Store } from '../server/database';
 import { AiWorker, analyzeDish, generateMeal, mealGenerationContext } from '../server/ai';
-import { addDays, defaultHousehold, mealDisplayName, parisDate, type DishDetails } from '../shared/model';
+import { addDays, defaultHousehold, mealDisplayName, parisDate, type DishDetails, type Ingredient } from '../shared/model';
 import { dish, details, meal } from './fixtures';
 
 const config = readConfig({ DATABASE_PATH: ':memory:', OPENAI_API_KEY: 'test-only' });
@@ -10,7 +10,7 @@ const preferences = { household: defaultHousehold, avoid: '' };
 let store: Store;
 beforeEach(() => { store = new Store(config); });
 afterEach(() => store.close());
-function success(value: DishDetails = details, identified?: boolean) {
+function success(value: Omit<DishDetails, 'ingredients'> & { ingredients: (string | Ingredient)[] } = details, identified?: boolean) {
   return new Response(JSON.stringify({
     status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text',
       text: JSON.stringify({ ...value, ...(identified !== undefined ? { identified } : {}) }) }] }],
@@ -24,7 +24,7 @@ describe('Analyse IA asynchrone', () => {
       recette: { name: 'Gratin de courge', recipeYield: '4 personnes',
         recipeIngredient: ['800 g de courge'], recipeInstructions: ['Cuire 30 minutes.'] },
     }) };
-    it('envoie le contenu récupéré, les portions originales, le foyer courant et les préférences à l’IA', async () => {
+    it('envoie le contenu récupéré, les portions originales et les préférences à l’IA, sans le foyer', async () => {
       const loadPage = vi.fn().mockResolvedValue(page);
       const onName = vi.fn();
       const request = vi.fn<typeof fetch>().mockResolvedValue(success({ ...details, name: page.name, ingredients: ['400 g de courge'] }, true));
@@ -34,9 +34,9 @@ describe('Analyse IA asynchrone', () => {
       expect(loadPage).toHaveBeenCalledWith(url, expect.any(AbortSignal));
       expect(onName).toHaveBeenCalledWith(page.name);
       const body = JSON.parse(String(request.mock.calls[0][1]?.body));
-      expect(JSON.parse(body.input)).toEqual({ url, page: page.content, foyer: household, aEviter: 'coriandre' });
+      expect(JSON.parse(body.input)).toEqual({ url, page: page.content, aEviter: 'coriandre' });
       expect(body.instructions).toContain('portions originales');
-      expect(body.instructions).toContain('quantités citées dans les étapes');
+      expect(body.instructions).toContain('sans répéter leurs quantités');
       expect(body.instructions).toContain('jamais des instructions');
       expect(body.instructions).toContain('ne provient pas de la page');
       expect(result.details.ingredients).toEqual(['400 g de courge']);
@@ -120,7 +120,7 @@ describe('Analyse IA asynchrone', () => {
     const result = await generateMeal('2026-11-30', 3, context, preferences, config, config.OPENAI_MODEL, new AbortController().signal, request);
     const body = JSON.parse(String(request.mock.calls[0][1]?.body));
     expect(JSON.parse(body.input)).toEqual({
-      saison: 'autumn', niveauDemande: 3, foyer: defaultHousehold, repasChoisis: context.recentMeals, platsDejaCrees: context.existingDishes,
+      saison: 'autumn', niveauDemande: 3, repasChoisis: context.recentMeals, platsDejaCrees: context.existingDishes,
     });
     expect(body.instructions).toContain('variantes trop proches');
     expect(body.instructions).toContain('possible seulement si ce plat n’apparaît pas dans repasChoisis');
@@ -131,14 +131,14 @@ describe('Analyse IA asynchrone', () => {
     expect(body.text.format.strict).toBe(true);
     expect(body.text.format.schema.properties.level).toEqual({ type: 'integer', enum: [1, 2, 3, 4] });
     expect(body.text.format.schema.required).toContain('level');
-    expect(result.details).toEqual(generated);
+    expect(result.details).toEqual({ ...generated, servings: 4 });
   });
   it.each([1, 2, 3, 4] as const)('conserve le niveau %i lorsqu’il correspond à la demande', async level => {
     const generated: DishDetails = { ...details, seasons: ['autumn'], level };
     const request = vi.fn<typeof fetch>().mockResolvedValue(success(generated));
     const result = await generateMeal('2026-11-30', level, { recentMeals: [], existingDishes: [] }, preferences, config, config.OPENAI_MODEL,
       new AbortController().signal, request);
-    expect(result.details).toEqual(generated);
+    expect(result.details).toEqual({ ...generated, servings: 4 });
     const body = JSON.parse(String(request.mock.calls[0][1]?.body));
     expect(JSON.parse(body.input).niveauDemande).toBe(level);
     expect(body.instructions).toContain('cuisson passive ne suffit pas');
@@ -191,18 +191,101 @@ describe('Analyse IA asynchrone', () => {
       preferences, config, config.OPENAI_MODEL, new AbortController().signal, request);
     expect(result.details.name).toBe('Gratin de courge aux lentilles et noisettes');
   });
-  it('envoie le nom et le foyer, sans planning, avec un schéma strict et un plafond de tokens', async () => {
+  it('envoie le nom sans foyer ni planning, avec un schéma strict et un plafond de tokens', async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(success());
     const result = await analyzeDish(dish(), preferences, config, 'gpt-6-luna', new AbortController().signal, request);
     const [, options] = request.mock.calls[0];
     const body = JSON.parse(String(options?.body));
     expect(body.model).toBe('gpt-6-luna');
     expect(body.store).toBe(false);
-    expect(body.max_output_tokens).toBe(1400);
+    expect(body.max_output_tokens).toBe(1800);
     expect(body.text.format.strict).toBe(true);
-    expect(JSON.parse(body.input)).toEqual({ nomDuRepas: 'poulet frite', foyer: defaultHousehold });
-    expect(body.instructions).toContain('quantité et une unité');
-    expect(result.details).toEqual(details);
+    expect(JSON.parse(body.input)).toEqual({ nomDuRepas: 'poulet frite' });
+    expect(body.instructions).toContain('pour 4 portions adultes');
+    expect(body.instructions).toContain('Le nombre de portions n’est pas le nombre d’animaux');
+    expect(body.text.format.schema.properties.ingredients.items.required).toEqual(['name', 'quantity', 'unit']);
+    expect(body.text.format.schema.required).toContain('tags');
+    expect(result.details).toEqual({ ...details, servings: 4 });
+  });
+  it('sépare les ingrédients structurés pour 4 portions et garde les étiquettes en minuscules', async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(success({
+      ...details, ingredients: [
+        { name: 'blancs de poulet', quantity: 600, unit: 'g' }, { name: 'oignons', quantity: 2, unit: '' },
+        { name: 'huile d’olive', quantity: 2, unit: 'c. à soupe' }, { name: 'sel', quantity: null, unit: '' },
+      ], tags: ['Volaille', 'volaille', 'poulet'],
+    }));
+    const result = await analyzeDish(dish(), preferences, config, 'gpt-6-luna', new AbortController().signal, request);
+    expect(result.details).toMatchObject({
+      servings: 4, tags: ['volaille', 'poulet'],
+      ingredients: ['600 g de blancs de poulet', '2 oignons', '2 c. à soupe d’huile d’olive', 'sel'],
+      items: [{ name: 'blancs de poulet', quantity: 600, unit: 'g' }, { name: 'oignons', quantity: 2, unit: '' },
+        { name: 'huile d’olive', quantity: 2, unit: 'c. à soupe' }, { name: 'sel', quantity: null, unit: '' }],
+    });
+  });
+  it.each([
+    { name: 'poulet', quantity: 4, unit: '' },
+    { name: 'Poulets', quantity: 4, unit: 'pièces' },
+    { name: 'bœuf', quantity: 4, unit: '' },
+    { name: 'veau', quantity: 2, unit: 'unités' },
+    '4 poulet',
+    '4 unités de poulet',
+  ])('refuse une quantité de viande ambiguë : %j', async ingredient => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(success({ ...details, ingredients: [ingredient] }));
+    await expect(analyzeDish(dish(), preferences, config, config.OPENAI_MODEL, new AbortController().signal, request))
+      .rejects.toThrow('Quantité de viande ambiguë');
+    expect(request).toHaveBeenCalledOnce();
+  });
+  it.each([
+    { name: 'poulet', quantity: 1200, unit: 'g' },
+    { name: 'poulet', quantity: 1.2, unit: 'kg' },
+    { name: 'cuisses de poulet', quantity: 4, unit: '' },
+    { name: 'filets de poulet', quantity: 4, unit: '' },
+    { name: 'poulet entier', quantity: 1, unit: '' },
+    { name: 'œufs', quantity: 4, unit: '' },
+    '1,2 kg de poulet',
+    '4 cuisses de poulet',
+  ])('conserve les poids et les unités explicites : %j', async ingredient => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(success({ ...details, ingredients: [ingredient] }));
+    const result = await analyzeDish(dish(), preferences, config, config.OPENAI_MODEL, new AbortController().signal, request);
+    if (typeof ingredient === 'string') {
+      expect(result.details.ingredients).toEqual([ingredient]);
+      expect(result.details.items).toBeUndefined();
+    } else {
+      expect(result.details.items).toEqual([ingredient]);
+    }
+  });
+  it('applique le contrôle à la génération et aux imports URL', async () => {
+    const invalid: Omit<DishDetails, 'ingredients'> & { ingredients: Ingredient[] } = {
+      ...details, seasons: ['autumn'], ingredients: [{ name: 'poulet', quantity: 4, unit: '' }],
+    };
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(success(invalid))
+      .mockResolvedValueOnce(success(invalid, true));
+    await expect(generateMeal('2026-10-30', 2, { recentMeals: [], existingDishes: [] }, preferences,
+      config, config.OPENAI_MODEL, new AbortController().signal, request)).rejects.toThrow('Quantité de viande ambiguë');
+    const url = 'https://example.org/poulet';
+    await expect(analyzeDish(dish({ name: url }), preferences, config, config.OPENAI_MODEL,
+      new AbortController().signal, request, vi.fn().mockResolvedValue({ url, content: 'Poulet-frites pour 4 personnes' })))
+      .rejects.toThrow('Quantité de viande ambiguë');
+  });
+  it('signale une quantité ambiguë sans publier de recette ni alimenter le catalogue ni relancer', async () => {
+    const recipe = dish();
+    store.merge('common', [recipe]);
+    const request = vi.fn<typeof fetch>().mockImplementation(async () => success({
+      ...details, ingredients: [{ name: 'poulet', quantity: 4, unit: '' }],
+    }));
+    const log = vi.fn();
+    const addToCatalog = vi.spyOn(store, 'addToCatalog');
+    const worker = new AiWorker(store, config, log, request);
+    await worker.tick();
+    await worker.tick();
+    expect(store.analysis('common', recipe.id)).toMatchObject({
+      status: 'error', details: null, error: expect.stringContaining('Quantité de viande ambiguë'),
+    });
+    expect(store.get('common', `dish:${recipe.id}`)).toEqual(recipe);
+    expect(addToCatalog).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledOnce();
   });
 
   describe('Contexte de génération', () => {
@@ -242,15 +325,17 @@ describe('Analyse IA asynchrone', () => {
       expect(JSON.stringify(context)).not.toContain(manual.id);
       expect(JSON.stringify(context)).not.toContain(details.recipe);
     });
-    it('utilise aujourd’hui à Paris par défaut, pas le jour UTC', () => {
-      vi.useFakeTimers();
-      try {
-        vi.setSystemTime(new Date('2026-12-31T23:30:00Z'));
-        expect(mealGenerationContext([
-          meal({ date: '2026-12-17', text: 'Borne française' }),
-          meal({ date: '2026-12-16', text: 'Hors période française' }),
-        ], []).recentMeals).toEqual(['Borne française']);
-      } finally { vi.useRealTimers(); }
+    it('compte les jours autour de la date du repas, aux changements d’année', () => {
+      expect(mealGenerationContext([
+        meal({ date: '2026-12-17', text: 'Borne basse' }),
+        meal({ date: '2026-12-16', text: 'Hors période' }),
+        meal({ date: '2027-01-16', text: 'Borne haute' }),
+        meal({ date: '2027-01-17', text: 'Hors période après' }),
+      ], [], '2027-01-01').recentMeals).toEqual(['Borne basse', 'Borne haute']);
+    });
+    it('ajoute au contexte les noms du catalogue commun comparables', () => {
+      expect(mealGenerationContext([dish({ name: 'Gratin' })], [], '2026-10-30', ['Velouté de potimarron', 'gratin']).existingDishes)
+        .toEqual(['gratin', 'Velouté de potimarron']);
     });
   });
   it('analyse sans quota pour un foyer exempté, sans concurrence ni relance des analyses terminées', async () => {

@@ -16,6 +16,21 @@ function slot(page: Page, time = 'lunch') {
 function longPress(page: Page, locator: ReturnType<Page['locator']>) {
   return locator.click({ delay: 800 });
 }
+function randomButton(page: Page) {
+  return page.getByRole('button', { name: 'Choisir au hasard', exact: true });
+}
+async function openSlot(page: Page, time = 'lunch') {
+  await slot(page, time).locator('.meal-cell').click();
+  await expect(randomButton(page)).toBeVisible();
+}
+async function pickRandom(page: Page, time = 'lunch') {
+  await openSlot(page, time);
+  await randomButton(page).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+}
+async function manage(page: Page) {
+  await page.getByRole('button', { name: 'Modifier le repas', exact: true }).click();
+}
 
 test.beforeEach(async ({ page }) => {
   sent = [];
@@ -35,7 +50,7 @@ test.beforeEach(async ({ page }) => {
 
 test('niveau de cuisine : le tirage court suit le niveau des paramètres', async ({ page }) => {
   for (const time of ['lunch', 'dinner']) {
-    await slot(page, time).getByRole('button', { name: /piocher/ }).click();
+    await pickRandom(page, time);
     await expect(slot(page, time).locator('.meal-cell')).toHaveText(byLevel[2].name);
   }
   await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
@@ -49,14 +64,16 @@ test('niveau de cuisine : le tirage court suit le niveau des paramètres', async
   await expect(page.getByRole('radio', { name: /Toque affûtée/ })).toBeChecked();
   await page.getByRole('button', { name: 'Mon planning', exact: true }).click();
   await page.locator(`[data-date="${today}"] .meal-cell`).first().click();
-  await page.getByRole('button', { name: 'Vider', exact: true }).click();
-  await slot(page).getByRole('button', { name: /piocher/ }).click();
+  await manage(page);
+  await page.getByRole('button', { name: 'Supprimer', exact: true }).click();
+  await pickRandom(page, 'lunch');
   await expect(slot(page).locator('.meal-cell')).toHaveText(byLevel[3].name);
 });
 
-test('niveau de cuisine : appui long sur le tirage rapide pour choisir un autre niveau', async ({ page }) => {
-  await longPress(page, slot(page).getByRole('button', { name: /piocher/ }));
-  const menu = page.getByRole('dialog', { name: 'Piocher au hasard' });
+test('niveau de cuisine : appui long sur Choisir au hasard pour choisir un autre niveau', async ({ page }) => {
+  await openSlot(page);
+  await longPress(page, randomButton(page));
+  const menu = page.getByRole('dialog', { name: 'Choisir au hasard' });
   await expect(menu).toBeVisible();
   await expect(slot(page).locator('.meal-cell')).toContainText('Créer un repas');
   await expect(menu.getByRole('button', { name: /Popote du quotidien/ })).toContainText('Votre niveau');
@@ -65,7 +82,7 @@ test('niveau de cuisine : appui long sur le tirage rapide pour choisir un autre 
   await page.keyboard.press('Escape');
   await expect(menu).toHaveCount(0);
   await expect(slot(page).locator('.meal-cell')).toContainText('Créer un repas');
-  await longPress(page, slot(page).getByRole('button', { name: /piocher/ }));
+  await longPress(page, randomButton(page));
   await menu.getByRole('button', { name: /Tablier tout neuf/ }).click();
   await expect(menu).toHaveCount(0);
   await expect(slot(page).locator('.meal-cell')).toHaveText(byLevel[1].name);
@@ -93,7 +110,8 @@ test('niveau de cuisine : anciens paramètres locaux sans niveau et serveur inac
     };
   }), byLevel[2].id);
   await page.reload();
-  await slot(page).getByRole('button', { name: /piocher/ }).click();
+  await openSlot(page);
+  await randomButton(page).click();
   await expect(page.getByRole('alert')).toContainText('Aucun repas de saison de niveau « Popote du quotidien »');
   await expect(slot(page).locator('.meal-cell')).toContainText('Créer un repas');
 });
@@ -110,8 +128,9 @@ test('niveau de cuisine : appui long au doigt, sans tap parasite au relâchement
     await page.waitForTimeout(hold);
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   };
-  const button = await center(slot(page).getByRole('button', { name: /piocher/ }));
-  const menu = page.getByRole('dialog', { name: 'Piocher au hasard' });
+  await openSlot(page);
+  const button = await center(randomButton(page));
+  const menu = page.getByRole('dialog', { name: 'Choisir au hasard' });
   await touch(button, 1500);
   await page.waitForTimeout(300);
   await expect(menu).toBeVisible();
@@ -119,7 +138,8 @@ test('niveau de cuisine : appui long au doigt, sans tap parasite au relâchement
   await touch(await center(menu.getByRole('button', { name: /Toque affûtée/ })), 50);
   await expect(menu).toHaveCount(0);
   await expect(slot(page).locator('.meal-cell')).toHaveText(byLevel[3].name);
-  await touch(await center(slot(page, 'dinner').getByRole('button', { name: /piocher/ })), 50);
+  await openSlot(page, 'dinner');
+  await touch(await center(randomButton(page)), 50);
   await expect(slot(page, 'dinner').locator('.meal-cell')).toHaveText(byLevel[2].name);
 });
 
@@ -146,7 +166,7 @@ test('niveau de cuisine : menu par appui long ou clic droit dans le dialogue du 
   let level: CookingLevel | undefined;
   await page.route('**/api/meals/generate', async route => {
     level = (route.request().postDataJSON() as { level: CookingLevel }).level;
-    await route.fulfill({ json: { details: { ...details, name: 'Croque du soir', seasons: [seasonForDate(today)], level: 1 } } });
+    await route.fulfill({ json: { details: { ...details, name: level === 1 ? 'Croque du soir' : 'Nouveau plat mijoté', seasons: [seasonForDate(today)], level } } });
   });
   await slot(page).locator('.meal-cell').click();
   const editor = page.getByRole('dialog', { name: 'Qu’est-ce qu’on mange ?' });
@@ -159,10 +179,12 @@ test('niveau de cuisine : menu par appui long ou clic droit dans le dialogue du 
   await slot(page).locator('.meal-cell').click();
   const meal = page.getByRole('dialog', { name: 'Votre repas' });
   await expect(meal.getByRole('region', { name: 'Recette du repas' })).toContainText('Tablier tout neuf');
-  await longPress(page, meal.getByRole('button', { name: 'Choisir au hasard', exact: true }));
-  await page.getByRole('dialog', { name: 'Choisir au hasard' }).getByRole('button', { name: /Toque affûtée/ }).click();
+  await manage(page);
+  await longPress(page, page.getByRole('dialog', { name: 'Modifier le repas', exact: true }).getByRole('button', { name: 'Générer un nouveau plat', exact: true }));
+  await page.getByRole('dialog', { name: 'Générer un nouveau plat' }).getByRole('button', { name: /Toque affûtée/ }).click();
   await expect(meal).toHaveCount(0);
-  await expect(slot(page).locator('.meal-cell')).toHaveText(byLevel[3].name);
+  expect(level).toBe(3);
+  await expect(slot(page).locator('.meal-cell')).toHaveText('Nouveau plat mijoté');
 });
 
 test('niveau de cuisine : visible et modifiable dans le carnet', async ({ page }) => {

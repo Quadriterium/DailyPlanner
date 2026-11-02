@@ -415,3 +415,13 @@ describe('migration de la base', () => {
     expect(() => readConfig({ ...baseEnv, NODE_ENV: 'production' })).toThrow('réservé aux tests');
   });
 });
+
+describe('catalogue commun avec authentification', () => {
+  it('reste lisible sans session pour le mode invité, mais la génération exige un foyer', async () => {
+    const catalog = await app.inject({ method: 'GET', url: '/api/catalog' });
+    expect(catalog.statusCode).toBe(200);
+    expect(catalog.json()).toMatchObject({ catalogId: store.catalogId(), entries: [], removed: [], more: false });
+    const generate = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30' } });
+    expect(generate.statusCode).toBe(401);
+  });
+});

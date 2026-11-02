@@ -3,13 +3,14 @@ import { mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
-  analysisSchema, commonSpaceId, compareVersions, defaultCookingLevel, defaultHousehold, featureRequestSchema, parisDate, recordKey, recordSchema,
-  type Analysis, type Capabilities, type Dish, type DishDetails, type FeatureRequest, type FeatureRequestStatus,
+  analysisSchema, catalogEntrySchema, commonSpaceId, compareVersions, defaultCookingLevel, defaultHousehold, featureRequestSchema, normalizedName,
+  parisDate, recordKey, recordSchema,
+  type Analysis, type Capabilities, type CatalogEntry, type CatalogResponse, type Dish, type DishDetails, type FeatureRequest, type FeatureRequestStatus,
   type RecordData, type Settings,
 } from '../shared/model.js';
 import type { Config } from './config.js';
 
-export const schemaVersion = 3;
+export const schemaVersion = 4;
 export const dailyAiLimit = 20;
 export class AiQuotaError extends Error {
   constructor() {
@@ -115,6 +116,19 @@ export class Store {
         CREATE TABLE ai_limit_exemptions (space_id TEXT PRIMARY KEY REFERENCES spaces(id) ON DELETE CASCADE);
         PRAGMA user_version = 3;
       `);
+    });
+    this.transaction(() => {
+      if (Number(this.db.prepare('PRAGMA user_version').get()?.user_version) >= 4) return;
+      // Catalogue commun : seq croît à chaque ajout, correction ou retrait pour la synchronisation incrémentale des clients.
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS catalog (
+          id TEXT PRIMARY KEY, seq INTEGER NOT NULL UNIQUE, name_key TEXT NOT NULL,
+          deleted INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL, space_id TEXT, created_at INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS catalog_name ON catalog(name_key) WHERE deleted = 0;
+      `);
+      this.db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('catalogId', ?)").run(randomUUID());
+      this.db.exec('PRAGMA user_version = 4;');
     });
     this.ensureSpaceSettings(commonSpaceId);
     for (const row of this.db.prepare('SELECT space_id, data FROM analyses').all()) {
@@ -404,6 +418,97 @@ export class Store {
         .run(input, output, day);
       this.db.prepare('UPDATE household_ai_usage SET input_tokens = input_tokens + ?, output_tokens = output_tokens + ? WHERE space_id = ? AND day = ?')
         .run(input, output, spaceId, day);
+    });
+  }
+
+  catalogId(): string {
+    return String(this.db.prepare("SELECT value FROM meta WHERE key = 'catalogId'").get()!.value);
+  }
+
+  private nextCatalogSeq(): number {
+    return Number(this.db.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM catalog').get()!.seq);
+  }
+
+  private catalogRow(row: Record<string, unknown>): CatalogEntry & { deleted: boolean; seq: number; spaceId: string | null; createdAt: number } {
+    return {
+      ...catalogEntrySchema.parse(JSON.parse(String(row.data))), deleted: Boolean(row.deleted), seq: Number(row.seq),
+      spaceId: row.space_id === null ? null : String(row.space_id), createdAt: Number(row.created_at),
+    };
+  }
+
+  /**
+   * Adds an AI recipe to the shared catalogue. Only structured recipes (ingredient quantities and level) are accepted,
+   * and an existing entry with the same normalized name is kept as is.
+   */
+  addToCatalog(details: DishDetails, sourceUrl: string | undefined, spaceId: string | null): CatalogEntry | undefined {
+    if (!details.items?.length || !details.level || !details.servings) return;
+    return this.transaction(() => {
+      const nameKey = normalizedName(details.name);
+      if (this.db.prepare('SELECT 1 FROM catalog WHERE name_key = ? AND deleted = 0').get(nameKey)) return;
+      const entry = catalogEntrySchema.parse({ id: randomUUID(), details, ...(sourceUrl ? { sourceUrl } : {}) });
+      this.db.prepare('INSERT INTO catalog (id, seq, name_key, deleted, data, space_id, created_at) VALUES (?, ?, ?, 0, ?, ?, ?)')
+        .run(entry.id, this.nextCatalogSeq(), nameKey, JSON.stringify(entry), spaceId, Date.now());
+      return entry;
+    });
+  }
+
+  /** Active entries of the shared catalogue, oldest first. */
+  catalog(): CatalogEntry[] {
+    return this.db.prepare('SELECT data FROM catalog WHERE deleted = 0 ORDER BY seq').all()
+      .map(row => catalogEntrySchema.parse(JSON.parse(String(row.data))));
+  }
+
+  /** Changes after `cursor`, in order: new or corrected entries, and identifiers removed by the administrator. */
+  catalogChanges(cursor: number, limit = 200): CatalogResponse {
+    const rows = this.db.prepare('SELECT * FROM catalog WHERE seq > ? ORDER BY seq LIMIT ?').all(cursor, limit + 1);
+    const page = rows.slice(0, limit).map(row => this.catalogRow(row));
+    return {
+      catalogId: this.catalogId(),
+      cursor: page.at(-1)?.seq ?? cursor,
+      more: rows.length > limit,
+      entries: page.filter(entry => !entry.deleted).map(({ id, details, sourceUrl }) => ({ id, details, ...(sourceUrl ? { sourceUrl } : {}) })),
+      removed: page.filter(entry => entry.deleted).map(entry => entry.id),
+    };
+  }
+
+  /** Administration: entries whose name contains `search` (all when empty), including removed ones if asked. */
+  catalogEntries(search = '', withRemoved = false) {
+    return this.db.prepare(`SELECT * FROM catalog${withRemoved ? '' : ' WHERE deleted = 0'} ORDER BY seq`).all()
+      .map(row => this.catalogRow(row))
+      .filter(entry => normalizedName(entry.details.name).includes(normalizedName(search)));
+  }
+
+  /** Finds a single catalogue entry from its identifier or a unique prefix of it. */
+  catalogEntry(idOrPrefix: string) {
+    const matches = this.db.prepare('SELECT * FROM catalog WHERE id LIKE ?').all(`${idOrPrefix.replace(/[%_]/g, '')}%`);
+    if (matches.length !== 1) throw new Error(matches.length ? 'Plusieurs fiches correspondent : précisez l’identifiant.' : 'Fiche du catalogue introuvable.');
+    return this.catalogRow(matches[0]);
+  }
+
+  /** Administration: removes an entry (or restores it) for every client at their next catalogue synchronization. */
+  setCatalogRemoved(idOrPrefix: string, removed: boolean): CatalogEntry {
+    return this.transaction(() => {
+      const entry = this.catalogEntry(idOrPrefix);
+      if (!removed && this.db.prepare('SELECT 1 FROM catalog WHERE name_key = ? AND deleted = 0 AND id != ?')
+        .get(normalizedName(entry.details.name), entry.id)) throw new Error('Une autre fiche active porte déjà ce nom.');
+      this.db.prepare('UPDATE catalog SET deleted = ?, seq = ? WHERE id = ?').run(removed ? 1 : 0, this.nextCatalogSeq(), entry.id);
+      return entry;
+    });
+  }
+
+  /** Administration: replaces the details of an entry, keeping its identifier. */
+  correctCatalogEntry(idOrPrefix: string, details: DishDetails, sourceUrl?: string | null): CatalogEntry {
+    return this.transaction(() => {
+      const current = this.catalogEntry(idOrPrefix);
+      const nameKey = normalizedName(details.name);
+      if (this.db.prepare('SELECT 1 FROM catalog WHERE name_key = ? AND deleted = 0 AND id != ?').get(nameKey, current.id)) {
+        throw new Error('Une autre fiche active porte déjà ce nom.');
+      }
+      const url = sourceUrl === null ? undefined : sourceUrl ?? current.sourceUrl;
+      const entry = catalogEntrySchema.parse({ id: current.id, details, ...(url ? { sourceUrl: url } : {}) });
+      this.db.prepare('UPDATE catalog SET data = ?, name_key = ?, seq = ? WHERE id = ?')
+        .run(JSON.stringify(entry), nameKey, this.nextCatalogSeq(), entry.id);
+      return entry;
     });
   }
 

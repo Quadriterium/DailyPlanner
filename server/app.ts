@@ -5,8 +5,12 @@ import rateLimit from '@fastify/rate-limit';
 import staticFiles from '@fastify/static';
 import type { FastifyRequest } from 'fastify';
 import { existsSync } from 'node:fs';
+import { randomInt } from 'node:crypto';
 import { join, resolve, sep } from 'node:path';
-import { createFeatureRequestSchema, generateMealRequestSchema, isResetScoped, syncRequestSchema } from '../shared/model.js';
+import {
+  catalogCandidates, catalogDrawThreshold, catalogRequestSchema, createFeatureRequestSchema, generateMealRequestSchema, isResetScoped,
+  recentMealNames, syncRequestSchema,
+} from '../shared/model.js';
 import { generateMeal, mealGenerationContext } from './ai.js';
 import type { Store } from './database.js';
 import { AiQuotaError } from './database.js';
@@ -66,7 +70,20 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     if (!spaceId) return reply;
     const parsed = generateMealRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Date du repas ou niveau de cuisine invalide.' });
-    const context = mealGenerationContext(store.records(spaceId), store.analyses(spaceId));
+    const { date } = parsed.data;
+    const settings = store.settings(spaceId);
+    const level = parsed.data.level ?? settings.cookingLevel;
+    const records = store.records(spaceId);
+    const analyses = store.analyses(spaceId);
+    const catalog = store.catalog();
+    // Enough suitable shared recipes: draw one instead of paying for a new AI proposal.
+    const candidates = catalogCandidates(catalog, { date, level, avoid: settings.avoid, excludedNames: recentMealNames(records, analyses, date) });
+    if (candidates.length >= catalogDrawThreshold) {
+      const entry = candidates[randomInt(candidates.length)];
+      return { details: entry.details, source: 'catalog', ...(entry.sourceUrl ? { sourceUrl: entry.sourceUrl } : {}) };
+    }
+    const comparable = catalogCandidates(catalog, { date, level, avoid: '', excludedNames: [] }).map(entry => entry.details.name);
+    const context = mealGenerationContext(records, analyses, date, comparable);
     let day: string;
     try { day = store.reserveGeneration(spaceId); }
     catch (error) {
@@ -74,17 +91,23 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
       return reply.code(error instanceof AiQuotaError ? 429 : 409).send({ error: error instanceof Error ? error.message : 'Génération IA indisponible.' });
     }
     try {
-      const settings = store.settings(spaceId);
       const result = await generateMeal(
-        parsed.data.date, parsed.data.level ?? settings.cookingLevel, context, settings, config, settings.model,
+        date, level, context, settings, config, settings.model,
         AbortSignal.timeout(45_000), options.aiRequest,
       );
       store.recordTokens(day, result.inputTokens, result.outputTokens, spaceId);
-      return { details: result.details };
+      store.addToCatalog(result.details, undefined, spaceId);
+      return { details: result.details, source: 'ai' };
     } catch (error) {
       request.log.error(error);
       return reply.code(502).send({ error: error instanceof Error ? error.message : 'La génération IA a échoué.' });
     }
+  });
+  // Read-only and without session: the cached catalogue also serves autocompletion and random draws in guest mode.
+  app.get('/api/catalog', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (request, reply) => {
+    const parsed = catalogRequestSchema.safeParse(request.query);
+    if (!parsed.success) return reply.code(400).send({ error: 'Position du catalogue invalide.' });
+    return store.catalogChanges(parsed.data.after);
   });
   app.get('/api/feature-requests', async (request, reply) => {
     const spaceId = requireSpace(request, reply);

@@ -8,6 +8,7 @@ import { EmptyState, Modal } from './components';
 import { LevelGauge, LevelTag } from './CookingLevel';
 import { errorMessage, save, signInHint, useServerFeatures } from './store';
 import { newId } from './id';
+import { recipeServings } from '../shared/recipe';
 
 export function Library({ dishes, analyses, online, onSaved }: {
   dishes: Dish[]; analyses: Analysis[]; online: boolean; onSaved: () => void;
@@ -65,6 +66,7 @@ function DishEditor({ dish, analysis, online, onClose, onSaved }: {
   const [ingredients, setIngredients] = useState(initial.ingredients.join('\n'));
   const [recipe, setRecipe] = useState(initial.recipe);
   const [level, setLevel] = useState<CookingLevel | undefined>(initial.level);
+  const [servings, setServings] = useState(String(recipeServings(initial) ?? ''));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -77,6 +79,7 @@ function DishEditor({ dish, analysis, online, onClose, onSaved }: {
     setIngredients(updated.ingredients.join('\n'));
     setRecipe(updated.recipe);
     setLevel(updated.level);
+    setServings(String(recipeServings(updated) ?? ''));
   }, [dish, analysis, dirty]);
 
   async function persist(action: 'edit' | 'archive' | 'analyze') {
@@ -90,6 +93,11 @@ function DishEditor({ dish, analysis, online, onClose, onSaved }: {
             name: name.trim(), seasons: selectedSeasons,
             ingredients: ingredients.split('\n').map(item => item.trim()).filter(Boolean), recipe,
             ...(level ? { level } : {}),
+            ...(servings.trim() ? { servings: Number(servings) } : {}),
+            // Structured quantities stay valid only while ingredients and their base are unchanged.
+            ...(initial.items && ingredients === initial.ingredients.join('\n') && servings === String(recipeServings(initial) ?? '')
+              ? { items: initial.items } : {}),
+            ...(initial.tags ? { tags: initial.tags } : {}),
           } }]);
       onSaved();
       onClose();
@@ -128,6 +136,10 @@ function DishEditor({ dish, analysis, online, onClose, onSaved }: {
       </div>
       {!level && <p className="field-hint">Sans niveau, ce repas n’est pas proposé par le choix au hasard. Choisissez-en un, ou relancez l’IA pour l’évaluer.</p>}
       </fieldset>
+      <label className="field-label" htmlFor="recipe-servings">Nombre de portions de la recette d’origine</label>
+      <input id="recipe-servings" type="number" min="0.5" max="60" step="0.5" value={servings}
+        onChange={event => setServings(event.target.value)} />
+      <p className="field-hint">Base des quantités ci-dessous, pas le foyer actuel (une portion par adulte, une demi-portion par enfant). Nécessaire pour les recalculer automatiquement dans le planning. Laissez vide si vous ne la connaissez pas.</p>
       <label className="field-label" htmlFor="ingredients">Ingrédients et quantités <small>(un par ligne, 30 maximum)</small></label>
       <textarea id="ingredients" value={ingredients} onChange={event => setIngredients(event.target.value)} maxLength={3600} rows={4} />
       <label className="field-label" htmlFor="recipe">Une petite recette</label>

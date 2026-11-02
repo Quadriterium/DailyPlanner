@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type UIEvent } from 'react';
-import { ArrowDown, ArrowUp, CalendarDays, Leaf, LoaderCircle, Moon, Plus, Shuffle, Sparkles, Sun, Users } from 'lucide-react';
+import { ArrowDown, ArrowUp, CalendarDays, Leaf, LoaderCircle, Moon, Plus, Sparkles, Sun, Users } from 'lucide-react';
 import { addDays, formatDate, householdSummary, isoWeekday, mealDisplayName, mealId, seasonForDate, seasonLabels, type Analysis, type CookingLevel, type Dish, type Meal, type Slot } from '../shared/model';
 import { GenerationProgress, Modal } from './components';
-import { LevelButton, seasonalLevelCounts } from './CookingLevel';
+import { LevelButton } from './CookingLevel';
 import { errorMessage, fillMeal, signInHint, useServerFeatures } from './store';
 
 export function Planner({ today, meals, dishes, analyses, cookingLevel, recentMeal, onSelect, onSaved }: {
@@ -70,13 +70,13 @@ export function Planner({ today, meals, dishes, analyses, cookingLevel, recentMe
     setVisibleDay(today);
   }
 
-  async function fill(date: string, slot: Slot, mode: 'ai' | 'random', level?: CookingLevel) {
+  async function fill(date: string, slot: Slot, level?: CookingLevel) {
     if (filling.current) return;
     filling.current = true;
     setBusy(`${date}:${slot}`);
-    setGenerating(mode === 'ai');
+    setGenerating(true);
     try {
-      await fillMeal(date, slot, visibleDay, mode, undefined, undefined, level);
+      await fillMeal(date, slot, visibleDay, 'ai', undefined, undefined, level);
       onSaved(mealId(date, slot));
     } catch (cause) {
       setError(errorMessage(cause));
@@ -136,13 +136,7 @@ export function Planner({ today, meals, dishes, analyses, cookingLevel, recentMe
                   title={serverFeatures ? 'Générer un repas de saison avec l’IA (appui long : choisir le niveau)' : signInHint}
                   aria-label={`${label} : générer un repas de saison avec l’IA`}
                   menuTitle="Générer avec l’IA" menuSubtitle={`Pour le ${label} : choisissez le niveau de cuisine de ce repas. Celui des paramètres ne change pas.`}
-                  onPress={() => void fill(date, slot, 'ai')} onLevel={level => void fill(date, slot, 'ai', level)}><Sparkles size={16} /></LevelButton>
-                <LevelButton className="meal-quick-button" disabled={Boolean(busy)} preferred={cookingLevel}
-                  title="Piocher un repas de saison dans le carnet (appui long : choisir le niveau)"
-                  aria-label={`${label} : piocher un repas de saison dans le carnet`}
-                  menuTitle="Piocher au hasard" menuSubtitle={`Pour le ${label} : tirage parmi les plats de saison du carnet au niveau choisi.`}
-                  levelCounts={() => seasonalLevelCounts(dishes, analyses, date)}
-                  onPress={() => void fill(date, slot, 'random')} onLevel={level => void fill(date, slot, 'random', level)}><Shuffle size={16} /></LevelButton>
+                  onPress={() => void fill(date, slot)} onLevel={level => void fill(date, slot, level)}><Sparkles size={16} /></LevelButton>
               </div>}
             </div>;
           })}

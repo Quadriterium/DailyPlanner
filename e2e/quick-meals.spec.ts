@@ -10,6 +10,16 @@ function slot(page: Page, date = today, time = 'lunch') {
   return page.locator(`[data-date="${date}"] .meal-slot`).nth(time === 'lunch' ? 0 : 1);
 }
 
+async function pickRandom(page: Page, target = slot(page)) {
+  await target.locator('.meal-cell').click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Choisir au hasard', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+}
+
+async function manage(page: Page) {
+  await page.getByRole('dialog').getByRole('button', { name: 'Modifier le repas', exact: true }).click();
+}
+
 test.beforeEach(async ({ page }, testInfo) => {
   const initial = testInfo.title.includes('carnet vide') ? [] : [unused, used, meal({
     id: `${addDays(today, 6)}:dinner`, date: addDays(today, 6), slot: 'dinner', text: used.name, dishId: used.id,
@@ -115,12 +125,12 @@ test('une recette saisie par nom affiche la génération puis se met à jour san
 });
 
 test('tirage rapide sans doublon sur les sept jours affichés, puis repli et sauvegarde hors ligne', async ({ page }) => {
-  await slot(page).getByRole('button', { name: /piocher/ }).click();
+  await pickRandom(page);
   await expect(slot(page).locator('.meal-cell')).toHaveText(unused.name);
   await expect(slot(page).locator('.meal-quick-actions')).toHaveCount(0);
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await page.route('**/api/sync', route => route.abort());
-  await slot(page, today, 'dinner').getByRole('button', { name: /piocher/ }).click();
+  await pickRandom(page, slot(page, today, 'dinner'));
   await expect(slot(page, today, 'dinner').locator('.meal-cell')).toHaveText(/Gratin de saison|Soupe de saison/);
   await page.reload();
   await expect(slot(page).locator('.meal-cell')).toHaveText(unused.name);
@@ -128,44 +138,49 @@ test('tirage rapide sans doublon sur les sept jours affichés, puis repli et sau
 });
 
 test('repas choisi : recette, modification du nom et suppression sans effacer la fiche', async ({ page }) => {
-  await slot(page).getByRole('button', { name: /piocher/ }).click();
+  await pickRandom(page);
   await slot(page).locator('.meal-cell').click();
   const dialog = page.getByRole('dialog', { name: 'Votre repas', exact: true });
   await expect(dialog.getByRole('heading', { name: unused.name, exact: true })).toBeVisible();
   await expect(dialog.getByRole('region', { name: 'Recette du repas' })).toContainText(details.recipe);
   for (const ingredient of details.ingredients) await expect(dialog.getByRole('list')).toContainText(ingredient);
   expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-  await dialog.getByRole('button', { name: 'Modifier le repas', exact: true }).click();
+  await manage(page);
+  await page.getByRole('dialog', { name: 'Modifier le repas', exact: true }).getByRole('button', { name: 'Changer le plat', exact: true }).click();
   await page.getByLabel('Votre idée du jour', { exact: true }).fill('Mon repas renommé');
   await page.getByRole('button', { name: 'Créer le repas' }).click();
   await expect(slot(page).locator('.meal-cell')).toHaveText('Mon repas renommé');
   await page.reload();
   await slot(page).locator('.meal-cell').click();
   await expect(page.getByRole('dialog')).toContainText('Recette en attente');
-  await page.getByRole('button', { name: 'Vider', exact: true }).click();
+  await manage(page);
+  await page.getByRole('button', { name: 'Supprimer', exact: true }).click();
   await expect(slot(page).locator('.meal-cell')).toContainText('Créer un repas');
   await page.getByRole('button', { name: 'Mon carnet', exact: true }).click();
   await expect(page.getByRole('button', { name: /Mon repas renommé/ })).toBeVisible();
 });
 
-test('repas choisi : remplacement au hasard hors ligne et conservation au rechargement', async ({ page }) => {
-  await slot(page).getByRole('button', { name: /piocher/ }).click();
+test('repas choisi : remplacement depuis le carnet hors ligne et conservation au rechargement', async ({ page }) => {
+  await pickRandom(page);
   await page.route('**/api/sync', route => route.abort());
   await slot(page).locator('.meal-cell').click();
-  await page.getByRole('button', { name: 'Choisir au hasard', exact: true }).click();
+  await manage(page);
+  await page.getByRole('button', { name: 'Changer le plat', exact: true }).click();
+  await page.getByRole('button', { name: new RegExp(`^${used.name}`) }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  await expect(slot(page).locator('.meal-cell')).toHaveText(/Gratin de saison|Soupe de saison/);
+  await expect(slot(page).locator('.meal-cell')).toHaveText(used.name);
   const chosen = await slot(page).locator('.meal-cell').textContent();
   await page.reload();
   await expect(slot(page).locator('.meal-cell')).toHaveText(chosen!);
 });
 
 test('repas choisi : proposition IA, attente et recette persistante', async ({ page }) => {
-  await slot(page).getByRole('button', { name: /piocher/ }).click();
+  await pickRandom(page);
   let pending: Route | undefined;
   await page.route('**/api/meals/generate', route => { pending = route; });
   await slot(page).locator('.meal-cell').click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Générer avec l’IA', exact: true }).click();
+  await manage(page);
+  await page.getByRole('dialog').getByRole('button', { name: 'Générer un nouveau plat', exact: true }).click();
   await expect.poll(() => Boolean(pending)).toBe(true);
   await expect(page.getByRole('button', { name: 'Génération…', exact: true })).toBeDisabled();
   const progress = page.getByRole('dialog', { name: 'Création du repas en cours', exact: true });
@@ -187,36 +202,41 @@ test('repas choisi : proposition IA, attente et recette persistante', async ({ p
 });
 
 test('repas choisi : erreur IA sans perte du repas ni de la recette', async ({ page }) => {
-  await slot(page).getByRole('button', { name: /piocher/ }).click();
+  await pickRandom(page);
   await page.route('**/api/meals/generate', route => route.fulfill({ status: 502, json: { error: 'Service IA indisponible.' } }));
   await slot(page).locator('.meal-cell').click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Générer avec l’IA', exact: true }).click();
+  await manage(page);
+  await page.getByRole('dialog').getByRole('button', { name: 'Générer un nouveau plat', exact: true }).click();
   await expect(page.getByRole('dialog').getByRole('alert')).toHaveText('Service IA indisponible.');
   await expect(page.getByRole('region', { name: 'Recette du repas' })).toContainText(details.recipe);
-  await expect(page.getByRole('button', { name: 'Choisir au hasard', exact: true })).toBeEnabled();
-  await page.getByRole('button', { name: 'Fermer', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Générer un nouveau plat', exact: true })).toBeEnabled();
+  await page.getByRole('dialog', { name: 'Modifier le repas', exact: true }).getByRole('button', { name: 'Fermer', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Votre repas', exact: true }).getByRole('button', { name: 'Fermer', exact: true }).click();
   await page.reload();
   await expect(slot(page).locator('.meal-cell')).toHaveText(unused.name);
 });
 
 test('repas choisi : une proposition IA ne remplace pas une modification dans un autre onglet', async ({ page, context }) => {
-  await slot(page).getByRole('button', { name: /piocher/ }).click();
+  await pickRandom(page);
   let pending: Route | undefined;
   await page.route('**/api/meals/generate', route => { pending = route; });
   await slot(page).locator('.meal-cell').click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Générer avec l’IA', exact: true }).click();
+  await manage(page);
+  await page.getByRole('dialog').getByRole('button', { name: 'Générer un nouveau plat', exact: true }).click();
   await expect.poll(() => Boolean(pending)).toBe(true);
   const other = await context.newPage();
   await other.route('**/api/sync', route => route.abort());
   await other.goto('/');
   await slot(other).locator('.meal-cell').click();
   await other.getByRole('button', { name: 'Modifier le repas', exact: true }).click();
+  await other.getByRole('button', { name: 'Changer le plat', exact: true }).click();
   await other.getByLabel('Votre idée du jour', { exact: true }).fill('Un autre choix');
   await other.getByRole('button', { name: 'Créer le repas' }).click();
   await expect(slot(other).locator('.meal-cell')).toHaveText('Un autre choix');
   await pending!.fulfill({ json: { details: { ...details, name: 'Proposition obsolète' } } });
   await expect(page.getByRole('dialog').getByRole('alert')).toContainText('modifié pendant la génération');
-  await page.getByRole('button', { name: 'Fermer', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Modifier le repas', exact: true }).getByRole('button', { name: 'Fermer', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Votre repas', exact: true }).getByRole('button', { name: 'Fermer', exact: true }).click();
   await expect(slot(page).locator('.meal-cell')).toHaveText('Un autre choix');
   await other.close();
 });
@@ -310,7 +330,8 @@ test('carnet vide : explication et boutons accessibles sur petit écran', async 
     });
   });
   expect(contained).toBe(true);
-  await slot(page).getByRole('button', { name: /piocher/ }).click();
+  await slot(page).locator('.meal-cell').click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Choisir au hasard', exact: true }).click();
   await expect(page.getByRole('dialog')).toContainText('Aucun repas de saison');
   await page.getByRole('button', { name: 'Fermer', exact: true }).click();
   await expect(slot(page).locator('.meal-cell')).toContainText('Créer un repas');

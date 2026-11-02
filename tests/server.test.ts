@@ -133,16 +133,17 @@ describe('API et stockage partagé', () => {
     }
     expect(readConfig({ OPENAI_ALLOWED_MODELS: 'gpt-6-luna' }).allowedModels).toEqual(['gpt-6-luna']);
   });
-  it('construit le contexte serveur autour d’aujourd’hui même pour un créneau lointain, avec le modèle choisi', async () => {
+  it('construit le contexte serveur autour de la date du repas, avec le modèle choisi', async () => {
     await app.close();
     const today = parisDate();
     const date = addDays(today, 90);
     const recipe = dish({ name: 'Soupe maison', details: { ...details, name: 'Soupe corrigée' } });
     const archived = dish({ name: 'Ancien gratin', archived: true });
     store.merge('common', [recipe, archived, ...[-16, -15, 15, 16].map(offset => meal({
-      id: `${addDays(today, offset)}:lunch`, date: addDays(today, offset), text: `Choix ${offset}`,
+      id: `${addDays(date, offset)}:lunch`, date: addDays(date, offset), text: `Choix ${offset}`,
       dishId: offset === -15 ? recipe.id : null,
-    })), { ...store.settings('common'), model: 'gpt-6-sol', modifiedAt: Date.now(), mutationId: randomUUID() }]);
+    })), meal({ id: `${today}:lunch`, date: today, text: 'Repas d’aujourd’hui' }),
+    { ...store.settings('common'), model: 'gpt-6-sol', modifiedAt: Date.now(), mutationId: randomUUID() }]);
     const aiRequest = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
       status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text',
         text: JSON.stringify({ ...details, name: 'Nouvelle idée', seasons: [seasonForDate(date)] }),
@@ -157,13 +158,12 @@ describe('API et stockage partagé', () => {
     expect(JSON.parse(body.input)).toEqual({
       saison: seasonForDate(date),
       niveauDemande: 2,
-      foyer: defaultHousehold,
       repasChoisis: ['Choix -15', recipe.name, recipe.details!.name, 'Choix 15'],
       platsDejaCrees: expect.arrayContaining([recipe.name, recipe.details!.name, archived.name]),
     });
     expect(JSON.parse(body.input).platsDejaCrees).toHaveLength(3);
   });
-  it('partage la composition du foyer et la transmet à la génération', async () => {
+  it('partage la composition du foyer sans la transmettre à la génération, qui reste sur 4 portions', async () => {
     await app.close();
     const household = { adults: 1, teenagers: 3, children: 0 };
     const aiRequest = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
@@ -176,7 +176,9 @@ describe('API et stockage partagé', () => {
     const response = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30' } });
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(String(aiRequest.mock.calls[0][1]?.body));
-    expect(JSON.parse(body.input).foyer).toEqual(household);
+    expect(JSON.parse(body.input)).not.toHaveProperty('foyer');
+    expect(store.settings('common').household).toEqual(household);
+    expect(response.json().details.servings).toBe(4);
   });
   it('génère au niveau de cuisine partagé par défaut, ou au niveau choisi pour ce repas', async () => {
     const shared = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [{
@@ -286,7 +288,7 @@ describe('API et stockage partagé', () => {
     for (let i = 0; i < 11; i++) {
       const response = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30' } });
       expect(response.statusCode, response.body).toBe(200);
-      expect(response.json().details).toEqual(generated);
+      expect(response.json().details).toEqual({ ...generated, servings: 4 });
     }
     expect(aiRequest).toHaveBeenCalledTimes(11);
     const response = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [] } });
