@@ -137,7 +137,11 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     // A client that has not yet applied the latest reset must not resurrect deleted meals or dishes.
     const stale = (parsed.data.resetId ?? null) !== resetId;
     store.merge(spaceId, stale ? mutations.filter(record => !isResetScoped(record)) : mutations);
-    return { resetId, records: store.records(spaceId), analyses: store.analyses(spaceId), serverTime: Date.now(), capabilities: store.capabilities(new Date(), spaceId) };
+    return {
+      ...(config.CLIENT_UPDATE_ID ? { forceClientUpdate: config.CLIENT_UPDATE_ID } : {}),
+      resetId, records: store.records(spaceId), analyses: store.analyses(spaceId),
+      serverTime: Date.now(), capabilities: store.capabilities(new Date(), spaceId),
+    };
   });
   const staticRoot = options.staticRoot ?? resolve('dist/client');
   if (existsSync(staticRoot)) {

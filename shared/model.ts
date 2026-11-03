@@ -72,12 +72,12 @@ export type Ingredient = z.infer<typeof ingredientSchema>;
 export const detailsSchema = z.object({
   name: z.string().trim().min(1).max(240),
   seasons: z.array(seasonSchema).min(1).max(5),
-  ingredients: z.array(z.string().trim().min(1).max(120)).max(30),
+  ingredients: z.array(z.string().trim().min(1).max(120)),
   recipe: z.string().max(4000),
   level: cookingLevelSchema.optional(),
   servings: z.number().min(0.5).max(60).multipleOf(0.5).optional(),
   /** Version structurée de `ingredients`, pour `servings` portions. */
-  items: z.array(ingredientSchema).max(30).optional(),
+  items: z.array(ingredientSchema).optional(),
   /** Ingrédients et familles d'aliments (poisson, porc, gluten…) servant à écarter les repas à éviter. */
   tags: z.array(z.string().trim().min(1).max(60)).max(40).optional(),
 }).strict();
@@ -187,6 +187,7 @@ export const syncRequestSchema = z.object({
   resetId: z.string().uuid().nullable().optional(),
 }).strict();
 export const syncResponseSchema = z.object({
+  forceClientUpdate: z.string().trim().min(1).max(200).optional(),
   // Changed by the server to force every client to discard its local copy.
   resetId: z.string().uuid().nullable(),
   records: z.array(recordSchema),

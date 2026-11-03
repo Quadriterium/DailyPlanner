@@ -25,6 +25,13 @@ describe('Dates et saisons françaises', () => {
   });
 });
 describe('Contrats et versions', () => {
+  it('accepte plus de trente ingrédients et quantités structurées sans retirer la validation de chaque ligne', () => {
+    const ingredients = Array.from({ length: 60 }, (_, index) => `100 g de légume ${index}`);
+    const items = ingredients.map((_, index) => ({ name: `Légume ${index}`, quantity: 100, unit: 'g' }));
+    const recipe = dish({ details: { ...details, ingredients, items } });
+    expect(recordSchema.parse(recipe)).toEqual(recipe);
+    expect(recordSchema.safeParse(dish({ details: { ...details, ingredients: ['a'.repeat(121)] } })).success).toBe(false);
+  });
   it('accepte les liens longs, sans augmenter la limite des noms et des recettes enrichies', () => {
     const url = `https://example.org/recipe?tracking=${'a'.repeat(500)}`;
     expect(recordSchema.parse(dish({ name: url, sourceUrl: url })).name).toBe(url);

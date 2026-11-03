@@ -10,8 +10,9 @@ import { errorMessage, save, signInHint, useServerFeatures } from './store';
 import { newId } from './id';
 import { recipeServings } from '../shared/recipe';
 
-export function Library({ dishes, analyses, online, onSaved }: {
+export function Library({ dishes, analyses, online, onSaved, onSignInRequired }: {
   dishes: Dish[]; analyses: Analysis[]; online: boolean; onSaved: () => void;
+  onSignInRequired: () => void;
 }) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Season | 'any'>('any');
@@ -52,12 +53,13 @@ export function Library({ dishes, analyses, online, onSaved }: {
       {dishes.length ? 'Essayez un autre filtre ou une autre recherche.' : 'Commencez par remplir une case du planning. Vos idées seront conservées ici, sans rien avoir à faire de plus.'}
     </EmptyState>}
     {selectedDish && <DishEditor key={selectedDish.id} dish={selectedDish} analysis={analysisMap.get(selectedDish.id)} online={online}
-      onClose={() => setSelected(null)} onSaved={onSaved} />}
+      onClose={() => setSelected(null)} onSaved={onSaved} onSignInRequired={onSignInRequired} />}
   </section>;
 }
 
-function DishEditor({ dish, analysis, online, onClose, onSaved }: {
+function DishEditor({ dish, analysis, online, onClose, onSaved, onSignInRequired }: {
   dish: Dish; analysis?: Analysis; online: boolean; onClose: () => void; onSaved: () => void;
+  onSignInRequired: () => void;
 }) {
   const initial = dishDetails(dish, analysis);
   const serverFeatures = useServerFeatures();
@@ -83,6 +85,7 @@ function DishEditor({ dish, analysis, online, onClose, onSaved }: {
   }, [dish, analysis, dirty]);
 
   async function persist(action: 'edit' | 'archive' | 'analyze') {
+    if (action === 'analyze' && !serverFeatures) { onSignInRequired(); return; }
     setBusy(true);
     setError(null);
     try {
@@ -139,12 +142,10 @@ function DishEditor({ dish, analysis, online, onClose, onSaved }: {
       <label className="field-label" htmlFor="recipe-servings">Nombre de portions de la recette d’origine</label>
       <input id="recipe-servings" type="number" min="0.5" max="60" step="0.5" value={servings}
         onChange={event => setServings(event.target.value)} />
-      <p className="field-hint">Base des quantités ci-dessous, pas le foyer actuel (une portion par adulte, une demi-portion par enfant). Nécessaire pour les recalculer automatiquement dans le planning. Laissez vide si vous ne la connaissez pas.</p>
-      <label className="field-label" htmlFor="ingredients">Ingrédients et quantités <small>(un par ligne, 30 maximum)</small></label>
-      <textarea id="ingredients" value={ingredients} onChange={event => setIngredients(event.target.value)} maxLength={3600} rows={4} />
+      <label className="field-label" htmlFor="ingredients">Ingrédients et quantités <small>(un par ligne)</small></label>
+      <textarea id="ingredients" value={ingredients} onChange={event => setIngredients(event.target.value)} rows={4} />
       <label className="field-label" htmlFor="recipe">Une petite recette</label>
       <textarea id="recipe" value={recipe} onChange={event => setRecipe(event.target.value)} maxLength={4000} rows={5} />
-      <p className="field-hint">Les ingrédients, quantités et recette proposés par l’IA sont indicatifs. Vérifiez la composition réelle et la cuisson ; ils ne garantissent pas l’absence d’allergènes.</p>
       {error && <p className="inline-error" role="alert">{error}</p>}
       <div className="editor-actions"><button className="primary-button" disabled={busy || !name.trim() || !selectedSeasons.length}><Check size={17} />Enregistrer la fiche</button></div>
     </form>
@@ -152,10 +153,9 @@ function DishEditor({ dish, analysis, online, onClose, onSaved }: {
       <button className="text-button" disabled={busy} onClick={() => void persist('archive')}>
         {dish.archived ? <RotateCcw size={16} /> : <Archive size={16} />}{dish.archived ? 'Restaurer ce repas' : 'Archiver ce repas'}
       </button>
-      <button className="text-button" disabled={busy || !online || !serverFeatures || !name.trim() || dish.archived}
+      <button className="text-button" disabled={busy || (serverFeatures && !online) || !name.trim() || dish.archived}
         title={serverFeatures ? 'Remplace les informations de cette fiche par une nouvelle analyse ; les menus ne changent pas.' : signInHint}
         onClick={() => void persist('analyze')}><Sparkles size={16} />Relancer l’IA</button>
     </div>
-    <p className="field-hint">Relancer l’IA remplace les informations de la fiche. L’archivage conserve les anciens menus.</p>
   </Modal>;
 }

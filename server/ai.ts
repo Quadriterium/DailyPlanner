@@ -179,7 +179,7 @@ async function requestDetails(config: Config, model: string, signal: AbortSignal
 const aiDetailsSchema = detailsSchema.pick({ name: true, seasons: true, recipe: true }).extend({
   level: cookingLevelSchema,
   // Plain lines are still accepted from older answers; they are displayed but cannot feed the catalogue.
-  ingredients: z.array(z.union([ingredientSchema, z.string().trim().min(1).max(120)])).max(30),
+  ingredients: z.array(z.union([ingredientSchema, z.string().trim().min(1).max(120)])),
   tags: z.array(z.string().trim().min(1).max(60)).max(40).optional(),
 }).strict();
 

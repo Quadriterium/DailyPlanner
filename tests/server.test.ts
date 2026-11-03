@@ -20,6 +20,25 @@ beforeEach(async () => {
 afterEach(async () => { await app.close(); store.close(); });
 
 describe('API et stockage partagé', () => {
+  it('ne demande pas de mise à jour client par défaut', async () => {
+    const response = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [] } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).not.toHaveProperty('forceClientUpdate');
+    expect(syncResponseSchema.safeParse(response.json()).success).toBe(true);
+  });
+  it('signale la mise à jour obligatoire sans réinitialiser les repas', async () => {
+    await app.close();
+    const updateConfig = readConfig({ DATABASE_PATH: ':memory:', CLIENT_UPDATE_ID: ' breaking-v2 ' });
+    app = await buildApp(store, updateConfig, { logger: false, staticRoot: join(tmpdir(), randomUUID()) });
+    const planned = meal();
+    const response = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [planned] } });
+    const result = syncResponseSchema.parse(response.json());
+    expect(result.forceClientUpdate).toBe('breaking-v2');
+    expect(result.resetId).toBeNull();
+    expect(result.records).toContainEqual(planned);
+    expect((await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [] } })).json().forceClientUpdate).toBe('breaking-v2');
+    expect(() => readConfig({ CLIENT_UPDATE_ID: 'x'.repeat(201) })).toThrow('Configuration invalide');
+  });
   it('limite à exactement 20 appels par jour, même avec des générations concurrentes', async () => {
     await app.close();
     const aiRequest = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({

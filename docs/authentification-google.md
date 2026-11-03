@@ -729,8 +729,11 @@ nettoyer l'URL, appeler `POST /api/invitations/preview`, puis :
 
 ### 10.5 Fonctions serveur en mode invité
 
-Boutons IA (étincelles, génération dans les dialogues), import de recette par URL et demandes
-d'évolution : désactivés avec l'info-bulle « Connectez-vous pour utiliser cette fonction ».
+Les boutons IA (étincelles du planning, génération dans les dialogues et relance du carnet)
+ouvrent une fenêtre « Connexion requise » : seules les personnes connectées peuvent utiliser
+l’IA. Elle propose « Se connecter avec Google », désactivé sans réseau ou serveur joignable.
+Aucune génération ni relance n’est lancée, et les saisies en cours sont conservées.
+L’import de recette par URL et les demandes d’évolution restent réservés aux comptes connectés.
 Le tirage au hasard, la saisie et le carnet restent actifs. Une URL saisie en invité est
 conservée telle quelle comme nom de repas ; son analyse démarrera après import.
 
@@ -804,7 +807,7 @@ Dans [tests/](../tests) — utiliser le fournisseur simulé, jamais Google réel
 
 Avec le fournisseur simulé sur la base mémoire de [playwright.config.ts](../playwright.config.ts) :
 
-- arrivée invitée : bandeau visible, IA désactivée, tirage et saisie possibles, aucune requête
+- arrivée invitée : bandeau visible, actions IA ouvrant la connexion Google sans lancer l’IA, tirage et saisie possibles, aucune requête
   `/api/sync` ;
 - connexion : import puis données visibles sur un second contexte du même compte ;
 - invitation entre deux comptes : partage réel des repas ;

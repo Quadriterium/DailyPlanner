@@ -15,7 +15,7 @@ import { scaleRecipe } from '../shared/recipe';
 
 interface Completion { dish?: Dish; entry?: CatalogEntry; details: DishDetails }
 
-export function MealEditor({ date, slot, start, index, meal, today, dishes, analyses, aiConfigured, household = defaultHousehold, cookingLevel, onAddDish, onClose, onSaved }: {
+export function MealEditor({ date, slot, start, index, meal, today, dishes, analyses, aiConfigured, household = defaultHousehold, cookingLevel, onAddDish, onClose, onSaved, onSignInRequired }: {
   date: string; slot: Slot; start: string; meal?: Meal; today: string; dishes: Dish[]; analyses: Analysis[];
   aiConfigured: boolean;
   index?: 1;
@@ -23,6 +23,7 @@ export function MealEditor({ date, slot, start, index, meal, today, dishes, anal
   cookingLevel?: CookingLevel;
   onAddDish?: () => void;
   onClose: () => void; onSaved: () => void;
+  onSignInRequired: () => void;
 }) {
   const [text, setText] = useState(meal?.text ?? '');
   const [chosenDish, setChosenDish] = useState<Dish>();
@@ -147,6 +148,7 @@ export function MealEditor({ date, slot, start, index, meal, today, dishes, anal
 
   async function replace(mode: 'ai' | 'random', level?: CookingLevel) {
     if (busy) return;
+    if (mode === 'ai' && !serverFeatures) { onSignInRequired(); return; }
     setBusy(true);
     setFilling(mode);
     setError(null);
@@ -163,7 +165,7 @@ export function MealEditor({ date, slot, start, index, meal, today, dishes, anal
 
   function levelButtons(disabled: boolean, replacement = false) {
     return <>
-      <LevelButton className={`secondary-button${replacement ? ' wide' : ''}`} disabled={disabled || !serverFeatures} preferred={cookingLevel}
+      <LevelButton className={`secondary-button${replacement ? ' wide' : ''}`} disabled={disabled} preferred={cookingLevel}
         title={serverFeatures ? 'Appui long : choisir le niveau de cuisine' : signInHint}
         menuTitle={replacement ? 'Générer un nouveau plat' : 'Générer avec l’IA'} menuSubtitle="Choisissez le niveau de cuisine de ce repas. Celui des paramètres ne change pas."
         onPress={() => void replace('ai')} onLevel={level => void replace('ai', level)}>
@@ -275,7 +277,6 @@ export function MealEditor({ date, slot, start, index, meal, today, dishes, anal
               {preview.unscaled > 0 && <p className="field-hint">{preview.unscaled} ingrédient(s) sans quantité reconnue, à ajuster si nécessaire.</p>}
               <details><summary>Voir la recette adaptée</summary><p className="recipe-text">{preview.recipe}</p></details>
             </> : <p className="inline-error">Nombre de portions d’origine inconnu : renseignez-le dans le carnet pour activer le recalcul. Les quantités restent celles de la fiche.</p>}
-            <p className="field-hint">Recalcul local : une portion par adulte ou adolescent, une demi-portion par enfant. Seules les quantités reconnues sont adaptées ; vérifiez les autres mentions. Les temps et températures ne changent pas.</p>
           </div>}
           {guestError && <p className="inline-error" role="alert">{guestError}</p>}
           <div className="action-grid">
@@ -300,8 +301,6 @@ export function MealEditor({ date, slot, start, index, meal, today, dishes, anal
         {currentDetails && currentDetails.ingredients.length > 0 && <>
           <h4>Ingrédients principaux</h4>
           {currentDetails.base ? <>
-            <p className="field-hint">Quantités pour {guestCount} {guestCount > 1 ? 'personnes' : 'personne'} ({formatPortions(guestPortions)}) · fiche d’origine pour {formatPortions(currentDetails.base)}. Recalcul local : une portion par adulte ou adolescent, une demi-portion par enfant.</p>
-            {currentDetails.base !== guestPortions && <p className="field-hint">Seules les quantités reconnues sont adaptées dans les ingrédients et les étapes. Vérifiez les autres mentions et les arrondis ; temps et températures inchangés.</p>}
             {currentDetails.unscaled > 0 && <p className="field-hint" role="status">{currentDetails.unscaled} ingrédient(s) sans quantité reconnue, à ajuster si nécessaire.</p>}
           </> : <p className="inline-error" role="status">Nombre de portions d’origine inconnu : renseignez-le dans le carnet pour activer le recalcul. Les quantités restent celles de la fiche, pas nécessairement celles de ce repas.</p>}
           <ul>{currentDetails.ingredients.map((ingredient, index) => <li key={index}>{ingredient}</li>)}</ul>
@@ -314,7 +313,6 @@ export function MealEditor({ date, slot, start, index, meal, today, dishes, anal
               ? 'La recette n’est pas encore disponible. L’enrichissement se fait en arrière-plan après synchronisation.'
               : 'Aucune recette disponible pour ce repas.'}</p>}
         {analysisError && <p className="inline-error" role="alert">{analysisError}</p>}
-        <p className="field-hint">Les ingrédients et la recette sont indicatifs. Vérifiez la composition réelle et la cuisson ; ils ne garantissent pas l’absence d’allergènes.</p>
       </section>
       <div className="action-grid meal-main-actions" aria-busy={busy}>
         <button ref={manageButton} className={`secondary-button ${meal?.text && onAddDish ? '' : 'wide'}`}

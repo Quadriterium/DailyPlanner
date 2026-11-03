@@ -56,6 +56,101 @@ test.beforeEach(async ({ page }) => {
   await expect(indicator(page)).toHaveText('Sur cet appareil uniquement');
 });
 
+test('les actions IA invitées ouvrent une connexion Google sans modifier le carnet', async ({ page }) => {
+  const generationRequests: string[] = [];
+  page.on('request', request => {
+    if (request.url().includes('/api/meals/generate')) generationRequests.push(request.url());
+  });
+  const dialog = page.getByRole('dialog', { name: 'Connexion requise', exact: true });
+  async function checkPrompt() {
+    await expect(dialog).toContainText('Seules les personnes connectées peuvent utiliser l’IA.');
+    await expect(dialog.getByRole('button', { name: 'Se connecter avec Google' })).toBeEnabled();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+  }
+  await page.locator(`[data-date="${today}"] .meal-quick-button`).first().click();
+  await checkPrompt();
+  await dialog.getByRole('button', { name: 'Compris' }).click();
+
+  await cell(page).click();
+  const editor = page.getByRole('dialog', { name: 'Qu’est-ce qu’on mange ?', exact: true });
+  await editor.getByRole('button', { name: 'Générer avec l’IA', exact: true }).click();
+  await checkPrompt();
+  await dialog.getByRole('button', { name: 'Fermer', exact: true }).click();
+  await expect(editor.getByRole('button', { name: 'Générer avec l’IA', exact: true })).toBeFocused();
+  const text = unique('Soupe sans IA');
+  await editor.getByLabel('Votre idée du jour', { exact: true }).fill(text);
+  await editor.getByRole('button', { name: 'Créer le repas' }).click();
+
+  await cell(page).click();
+  await page.getByRole('button', { name: 'Modifier le repas', exact: true }).click();
+  const actions = page.getByRole('dialog', { name: 'Modifier le repas', exact: true });
+  await actions.getByRole('button', { name: 'Générer un nouveau plat', exact: true }).click();
+  await checkPrompt();
+  await dialog.getByRole('button', { name: 'Compris' }).click();
+  await actions.getByRole('button', { name: 'Fermer', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Votre repas', exact: true }).getByRole('button', { name: 'Fermer', exact: true }).click();
+  await expect(cell(page)).toHaveText(text);
+
+  await page.getByRole('button', { name: 'Mon carnet', exact: true }).click();
+  await page.getByRole('button', { name: text }).click();
+  const sheet = page.getByRole('dialog', { name: 'Une page du carnet', exact: true });
+  await sheet.getByLabel('Nom du repas', { exact: true }).fill('Modification non enregistrée');
+  await sheet.getByRole('button', { name: 'Relancer l’IA', exact: true }).click();
+  await checkPrompt();
+  await dialog.getByRole('button', { name: 'Compris' }).click();
+  await expect(sheet.getByLabel('Nom du repas', { exact: true })).toHaveValue('Modification non enregistrée');
+  await expect(sheet.getByRole('button', { name: 'Relancer l’IA', exact: true })).toBeFocused();
+  expect(generationRequests).toEqual([]);
+  await sheet.getByRole('button', { name: 'Relancer l’IA', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Se connecter avec Google' }).click();
+  await authorize(page, unique('popup').replace(' ', '-'), 'Connexion Popup');
+  await closeNotice(page, /Connecté/);
+  await expect(cell(page)).toHaveText(text);
+});
+
+test('le carnet conserve plus de trente ingrédients et plus de 3600 caractères après connexion', async ({ page }) => {
+  const text = unique('Recette complète');
+  const ingredients = Array.from({ length: 45 }, (_, index) => `100 g de légume ${index} ${'frais '.repeat(14).trim()}`).join('\n');
+  expect(ingredients.length).toBeGreaterThan(3600);
+  await writeMeal(page, text);
+  await page.getByRole('button', { name: 'Mon carnet', exact: true }).click();
+  await page.getByRole('button', { name: text }).click();
+  const sheet = page.getByRole('dialog', { name: 'Une page du carnet', exact: true });
+  await expect(sheet).not.toContainText('Base des quantités ci-dessous');
+  await expect(sheet).not.toContainText('ils ne garantissent pas l’absence d’allergènes');
+  await expect(sheet).not.toContainText('Relancer l’IA remplace les informations de la fiche');
+  await expect(sheet).not.toContainText('30 maximum');
+  await sheet.getByLabel('Ingrédients et quantités').fill(ingredients);
+  await sheet.getByRole('button', { name: 'Enregistrer la fiche' }).click();
+  await expect(sheet).toHaveCount(0);
+  await page.reload();
+  await signIn(page, unique('ingredients').replace(' ', '-'));
+  await page.getByRole('button', { name: 'Mon carnet', exact: true }).click();
+  await page.getByRole('button', { name: text }).click();
+  await expect(sheet.getByLabel('Ingrédients et quantités')).toHaveValue(ingredients);
+});
+
+test('la fenêtre IA reste accessible à 320 px en sombre et explique les échecs de connexion', async ({ page, context }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.setViewportSize({ width: 320, height: 700 });
+  await context.setOffline(true);
+  const quickAction = page.locator(`[data-date="${today}"] .meal-quick-button`).first();
+  await quickAction.click();
+  const dialog = page.getByRole('dialog', { name: 'Connexion requise', exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Se connecter avec Google' })).toBeDisabled();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+  await dialog.getByRole('button', { name: 'Compris' }).click();
+  await context.setOffline(false);
+  await page.route('**/api/auth/google/start', route => route.abort('connectionrefused'));
+  await quickAction.click();
+  await dialog.getByRole('button', { name: 'Se connecter avec Google' }).click();
+  const error = page.getByRole('dialog', { name: 'Connexion impossible', exact: true });
+  await expect(error).toContainText('Serveur inaccessible');
+  await error.getByRole('button', { name: 'Compris' }).click();
+  await expect(quickAction).toBeFocused();
+});
+
 test('mode invité puis connexion : les repas saisis sont importés dans le foyer', async ({ page, browser }) => {
   await expect(page.getByRole('region', { name: 'Mode invité' })).toBeVisible();
   const text = unique('Tarte invitée');
