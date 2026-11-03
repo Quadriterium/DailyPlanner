@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { BookOpen, CalendarDays, Check, CircleAlert, CloudOff, Download, Leaf, RefreshCw, Settings2 } from 'lucide-react';
+import { BookOpen, CalendarDays, Check, CircleAlert, CloudOff, Download, Leaf, Settings2 } from 'lucide-react';
 import { mealId, parisDate, type InvitationPreview, type Slot } from '../shared/model';
 import { Modal } from './components';
 import { Planner } from './Planner';
@@ -18,7 +18,7 @@ interface InstallEvent extends Event {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 }
-type Notice = { title: string; text: string; kind: 'success' | 'error' | 'info' };
+type Notice = { title: string; text: string; kind: 'success' | 'error' | 'info'; signIn?: boolean };
 type InvitationDialog = { token: string; preview: InvitationPreview; kind: 'guest' | 'confirm' };
 
 const authErrors: Record<string, string> = {
@@ -39,6 +39,7 @@ export function App() {
   const [today, setToday] = useState(parisDate());
   const [selected, setSelected] = useState<{ date: string; slot: Slot; start: string; index?: 1 } | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const signInTrigger = useRef<HTMLElement | null>(null);
   const [toast, setToast] = useState(false);
   const [recentMeal, setRecentMeal] = useState<string | null>(null);
   const [, updatePwa] = useState(0);
@@ -53,6 +54,15 @@ export function App() {
   const otherSelectedMeal = selected ? meals.find(meal =>
     meal.date === selected.date && meal.slot === selected.slot &&
     meal.id !== mealId(selected.date, selected.slot, selected.index) && meal.text.trim()) : undefined;
+  function requestAiSignIn() {
+    signInTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setNotice({ kind: 'info', title: 'Connexion requise', text: 'Seules les personnes connectées peuvent utiliser l’IA.', signIn: true });
+  }
+  useEffect(() => {
+    if (notice || !signInTrigger.current) return;
+    signInTrigger.current.focus({ preventScroll: true });
+    signInTrigger.current = null;
+  }, [notice]);
   const pwa = pwaStatus();
   const enriching = Boolean(state.capabilities?.aiConfigured) && dishes.some(dish => {
     const analysis = state.analyses.find(item => item.dishId === dish.id && item.analysisKey === dish.analysisKey);
@@ -235,8 +245,8 @@ export function App() {
         {state.error ? <><CircleAlert /><h2>Impossible d’ouvrir le stockage local</h2><p>{state.error}</p><p>Vérifiez les permissions de stockage et l’espace disponible. Aucune saisie ne sera acceptée tant qu’elle ne peut pas être sauvegardée.</p></> : <><Leaf className="spinning" /><p>On met la table…</p></>}
       </div> : <>
         {state.error && <div className="connection-banner" role="status"><CloudOff size={17} /><span>{state.error}</span></div>}
-        {tab === 'planner' && <Planner key={today} today={today} meals={meals} dishes={dishes} analyses={state.analyses} cookingLevel={settings?.cookingLevel} recentMeal={recentMeal} onSelect={(date, slot, start, index) => setSelected({ date, slot, start, index })} onSaved={mealSaved} />}
-        {tab === 'library' && <Library dishes={dishes} analyses={state.analyses} online={state.connection === 'online' && Boolean(state.capabilities?.aiConfigured)} onSaved={() => setToast(true)} />}
+        {tab === 'planner' && <Planner key={today} today={today} meals={meals} dishes={dishes} analyses={state.analyses} cookingLevel={settings?.cookingLevel} recentMeal={recentMeal} onSelect={(date, slot, start, index) => setSelected({ date, slot, start, index })} onSaved={mealSaved} onSignInRequired={requestAiSignIn} />}
+        {tab === 'library' && <Library dishes={dishes} analyses={state.analyses} online={state.connection === 'online' && Boolean(state.capabilities?.aiConfigured)} onSaved={() => setToast(true)} onSignInRequired={requestAiSignIn} />}
         {tab === 'settings' && <Settings settings={settings} capabilities={state.capabilities} online={state.connection === 'online'} appearance={appearance}
           lastSync={state.lastSync} pending={state.pending} syncing={state.syncing} onSync={() => void forceSync()} onInstall={() => void install()}
           auth={state.auth} reachable={state.reachable} onNotice={(title, text) => setNotice({ kind: 'info', title, text })} />}
@@ -255,13 +265,11 @@ export function App() {
       <p><strong>Vous ne faites plus partie de ce foyer.</strong></p>
       <button className="secondary-button" onClick={() => setTab('settings')}>Voir</button>
     </div>}
-    <footer className="app-footer"><span className={`connection-indicator ${state.connection}`} aria-live="polite">
-      {state.syncing ? <RefreshCw size={12} className="spinning" /> : <span className="status-dot" />}{connectionText}</span>
-      <span className="footer-signature">Le plaisir des choses simples</span>
-    </footer>
+    <span className="connection-indicator sr-only" role="status">{connectionText}</span>
     {pwa.error && tab !== 'settings' && <p className="pwa-warning" role="alert">Mode hors ligne : {pwa.error}</p>}
     {selected && <MealEditor key={mealId(selected.date, selected.slot, selected.index)} {...selected} today={today} dishes={dishes} analyses={state.analyses}
       aiConfigured={Boolean(state.capabilities?.aiConfigured)}
+      onSignInRequired={requestAiSignIn}
       household={settings?.household} cookingLevel={settings?.cookingLevel}
       meal={meals.find(meal => meal.id === mealId(selected.date, selected.slot, selected.index))}
       onAddDish={!otherSelectedMeal ? () => setSelected({ ...selected, index: selected.index === 1 ? undefined : 1 }) : undefined}
@@ -301,6 +309,8 @@ export function App() {
     {notice && <Modal title={notice.title} onClose={() => setNotice(null)}>
       <div className={`notice-icon ${notice.kind}`}>{notice.kind === 'error' ? <CloudOff size={27} /> : notice.kind === 'success' ? <Check size={27} /> : <Leaf size={27} />}</div>
       <p className="notice-text">{notice.text}</p>
+      {notice.signIn && <div className="confirm-actions"><GoogleButton reachable={state.reachable}
+        onError={text => setNotice({ kind: 'error', title: 'Connexion impossible', text })} /></div>}
       <button className="primary-button notice-button" onClick={() => setNotice(null)}>Compris</button>
     </Modal>}
   </div>;

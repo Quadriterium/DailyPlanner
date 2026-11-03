@@ -9,6 +9,7 @@ const envSchema = z.object({
   HOST: z.string().default('127.0.0.1'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   DATABASE_PATH: z.string().default('./data/planner.sqlite'),
+  CLIENT_UPDATE_ID: z.string().trim().max(200).default(''),
   OPENAI_API_KEY: z.string().default(''),
   OPENAI_MODEL: z.string().default(defaultOpenAiModel),
   OPENAI_ALLOWED_MODELS: z.string().default('gpt-6-luna,gpt-6-sol,gpt-5.6-luna,gpt-5.6-terra'),

@@ -81,12 +81,16 @@ test('bannière compacte et sept jours occupant la page', async ({ page }) => {
     return {
       gridBottom: grid.bottom,
       arrowsBottom: arrows.bottom,
-      footerTop: document.querySelector('.app-footer')!.getBoundingClientRect().top,
+      footerPresent: Boolean(document.querySelector('.app-footer')),
       pageWidth: document.documentElement.scrollWidth,
     };
   });
   expect(shortLayout.arrowsBottom).toBeLessThanOrEqual(shortLayout.gridBottom);
-  expect(shortLayout.footerTop).toBeGreaterThanOrEqual(shortLayout.arrowsBottom);
+  expect(shortLayout.footerPresent).toBe(false);
+  await expect(page.getByText('Le plaisir des choses simples')).toHaveCount(0);
+  await expect(page.locator('.connection-indicator')).toHaveCSS('clip-path', 'inset(50%)');
+  await expect(page.locator('.connection-indicator')).toHaveCSS('width', '1px');
+  await expect(page.locator('.connection-indicator')).toHaveCSS('height', '1px');
   expect(shortLayout.pageWidth).toBeLessThanOrEqual(320);
   await page.getByRole('button', { name: 'Voir les sept jours suivants' }).click();
   await expect(page.locator('.section-heading h2')).toContainText(formatDate(addDays(today, 7), { day: 'numeric', month: 'long' }));
@@ -230,6 +234,72 @@ test('paramètres : mise à jour forcée sans service worker', async ({ browser,
     await expect(cell(page)).toHaveText(text);
     await awaitSynced(page);
     expect(await page.evaluate(() => navigator.serviceWorker.controller)).toBeNull();
+  } finally { await context.close(); }
+});
+
+test('signal serveur : mise à jour avant validation du format, sans boucle ni perte locale', async ({ page, context }) => {
+  await page.evaluate(async () => { await navigator.serviceWorker.ready; });
+  await page.reload();
+  await awaitSynced(page);
+  await context.setOffline(true);
+  const text = name('mise à jour obligatoire');
+  await writeMeal(page, text);
+  const id = name('breaking');
+  let signalled = false;
+  await context.route('**/api/sync', async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    // The first response deliberately uses a format the current client cannot parse.
+    await route.fulfill({ response, json: signalled ? { ...body, forceClientUpdate: id } : { forceClientUpdate: id } });
+    signalled = true;
+  });
+  let loads = 0;
+  page.on('domcontentloaded', () => { loads += 1; });
+  const reloaded = page.waitForEvent('domcontentloaded');
+  await context.setOffline(false);
+  await reloaded;
+  await awaitSynced(page);
+  await expect(cell(page)).toHaveText(text);
+  expect(await page.evaluate(() => sessionStorage.getItem('a-table-client-update'))).toBe(id);
+  await forceSync(page);
+  await expect(page.getByRole('dialog', { name: 'Tout est à jour' })).toBeVisible();
+  expect(loads).toBe(1);
+});
+
+test('signal serveur : échec visible et nouvelle tentative sans perdre la file locale, sans PWA', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL, serviceWorkers: 'block' });
+  try {
+    const page = await context.newPage();
+    await page.goto('/');
+    await awaitSynced(page);
+    await context.setOffline(true);
+    const text = name('mise à jour à réessayer');
+    await writeMeal(page, text);
+    let downloadFails = true;
+    const batches: { text?: string }[][] = [];
+    await context.route('**/api/sync', async route => {
+      batches.push(route.request().postDataJSON().mutations);
+      const response = await route.fetch();
+      await route.fulfill({ response, json: { ...await response.json(), forceClientUpdate: 'retry-v2' } });
+    });
+    await context.route('**/', route => route.request().resourceType() === 'fetch' && downloadFails
+      ? route.fulfill({ status: 503, body: 'Indisponible' }) : route.continue());
+    let loads = 0;
+    page.on('domcontentloaded', () => { loads += 1; });
+    await context.setOffline(false);
+    await expect(page.locator('.connection-banner')).toContainText('Mise à jour requise impossible');
+    await expect(cell(page)).toHaveText(text);
+    expect(await page.evaluate(() => sessionStorage.getItem('a-table-client-update'))).toBeNull();
+    expect(loads).toBe(0);
+    downloadFails = false;
+    const reloaded = page.waitForEvent('domcontentloaded');
+    await forceSync(page);
+    await reloaded;
+    await awaitSynced(page);
+    await expect(cell(page)).toHaveText(text);
+    expect(batches[0].some(record => record.text === text)).toBe(true);
+    expect(batches[1].some(record => record.text === text)).toBe(true);
+    expect(loads).toBe(1);
   } finally { await context.close(); }
 });
 

@@ -5,10 +5,11 @@ import { GenerationProgress, Modal } from './components';
 import { LevelButton } from './CookingLevel';
 import { errorMessage, fillMeal, signInHint, useServerFeatures } from './store';
 
-export function Planner({ today, meals, dishes, analyses, cookingLevel, recentMeal, onSelect, onSaved }: {
+export function Planner({ today, meals, dishes, analyses, cookingLevel, recentMeal, onSelect, onSaved, onSignInRequired }: {
   today: string; meals: Meal[]; dishes: Dish[]; analyses: Analysis[]; cookingLevel?: CookingLevel;
   recentMeal: string | null;
   onSelect: (date: string, slot: Slot, start: string, index?: 1) => void; onSaved: (id: string) => void;
+  onSignInRequired: () => void;
 }) {
   const [range, setRange] = useState({ start: -7, end: 20 });
   const serverFeatures = useServerFeatures();
@@ -72,6 +73,7 @@ export function Planner({ today, meals, dishes, analyses, cookingLevel, recentMe
 
   async function fill(date: string, slot: Slot, level?: CookingLevel) {
     if (filling.current) return;
+    if (!serverFeatures) { onSignInRequired(); return; }
     filling.current = true;
     setBusy(`${date}:${slot}`);
     setGenerating(true);
@@ -132,7 +134,7 @@ export function Planner({ today, meals, dishes, analyses, cookingLevel, recentMe
                   : <><Plus size={16} strokeWidth={1.8} /><span className="placeholder">Créer un repas</span></>}
               </button>}
               {!choices.length && <div className="meal-quick-actions">
-                <LevelButton className="meal-quick-button" disabled={Boolean(busy) || !serverFeatures} preferred={cookingLevel}
+                <LevelButton className="meal-quick-button" disabled={Boolean(busy)} preferred={cookingLevel}
                   title={serverFeatures ? 'Générer un repas de saison avec l’IA (appui long : choisir le niveau)' : signInHint}
                   aria-label={`${label} : générer un repas de saison avec l’IA`}
                   menuTitle="Générer avec l’IA" menuSubtitle={`Pour le ${label} : choisissez le niveau de cuisine de ce repas. Celui des paramètres ne change pas.`}

@@ -122,3 +122,13 @@ export async function refreshApp() {
   await refreshShell(worker);
   if (current.waiting === worker) await activateUpdate(worker);
 }
+
+export async function applyRequiredClientUpdate(id: string): Promise<boolean> {
+  const key = 'a-table-client-update';
+  if (sessionStorage.getItem(key) === id) return false;
+  await refreshApp();
+  // Per-tab acknowledgement survives reload without letting another tab skip its own update.
+  sessionStorage.setItem(key, id);
+  window.location.reload();
+  return true;
+}

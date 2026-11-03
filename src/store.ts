@@ -12,6 +12,7 @@ import {
 } from './repository';
 import { newId } from './id';
 import { catalogEntries, syncCatalog } from './catalog';
+import { applyRequiredClientUpdate } from './pwa';
 
 export type AuthMode = 'unknown' | 'disabled' | 'guest' | 'signed-in' | 'expired' | 'revoked';
 export interface AuthState { mode: AuthMode; user: SessionUser | null; space: SessionSpace | null }
@@ -447,7 +448,18 @@ function sendOutbox(): Promise<void> {
           publish({ connection: 'error' });
           throw new Error(apiError(body, `Synchronisation refusée (HTTP ${response.status}).`));
         }
-        const result = syncResponseSchema.safeParse(await response.json());
+        const body: unknown = await response.json();
+        // Read the update signal before validating a potentially incompatible data format.
+        const update = syncResponseSchema.pick({ forceClientUpdate: true }).safeParse(body);
+        if (update.success && update.data.forceClientUpdate) {
+          try {
+            if (await applyRequiredClientUpdate(update.data.forceClientUpdate)) return;
+          } catch (cause) {
+            publish({ connection: 'error' });
+            throw new Error(`Mise à jour requise impossible : ${errorMessage(cause)} Vos données locales sont conservées.`, { cause });
+          }
+        }
+        const result = syncResponseSchema.safeParse(body);
         if (!result.success) {
           publish({ connection: 'error' });
           throw new Error('Réponse serveur incompatible. Vos modifications locales sont conservées.');

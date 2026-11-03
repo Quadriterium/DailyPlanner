@@ -18,6 +18,13 @@ function success(value: Omit<DishDetails, 'ingredients'> & { ingredients: (strin
   }));
 }
 describe('Analyse IA asynchrone', () => {
+  it('accepte une réponse IA de plus de trente ingrédients structurés', async () => {
+    const ingredients = Array.from({ length: 45 }, (_, index) => ({ name: `Légume ${index}`, quantity: 100, unit: 'g' }));
+    const request = vi.fn<typeof fetch>().mockResolvedValue(success({ ...details, ingredients }));
+    const result = await analyzeDish(dish(), preferences, config, config.OPENAI_MODEL, new AbortController().signal, request);
+    expect(result.details.items).toEqual(ingredients);
+    expect(result.details.ingredients).toHaveLength(45);
+  });
   describe('Import d’une URL', () => {
     const url = 'https://example.org/gratin';
     const page = { url, name: 'Gratin de courge', content: JSON.stringify({

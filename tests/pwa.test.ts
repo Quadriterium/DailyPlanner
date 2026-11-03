@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { refreshApp } from '../src/pwa';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { applyRequiredClientUpdate, refreshApp } from '../src/pwa';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -88,6 +88,63 @@ describe('Mise à jour explicite du client', () => {
 const source = readFileSync(new URL('../pwa/service-worker.js', import.meta.url), 'utf8')
   .replace('__VERSION__', 'test')
   .replace('__PRECACHE__', JSON.stringify(['/index.html', '/assets/app.css']));
+
+describe('Mise à jour imposée par la synchronisation', () => {
+  let values: Map<string, string>;
+  let reload: ReturnType<typeof vi.fn>;
+  let fetchSite: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    values = new Map();
+    reload = vi.fn();
+    fetchSite = vi.fn().mockImplementation(async () => new Response('application'));
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+    });
+    vi.stubGlobal('navigator', {});
+    vi.stubGlobal('window', { location: { href: 'http://planner.local/', reload }, isSecureContext: false });
+    vi.stubGlobal('DOMParser', class {
+      parseFromString() { return { querySelectorAll: () => [] }; }
+    });
+    vi.stubGlobal('fetch', fetchSite);
+  });
+
+  it('télécharge avant rechargement et ne traite chaque identifiant qu’une fois par onglet', async () => {
+    reload.mockImplementation(() => {
+      expect(values.get('a-table-client-update')).toBe('breaking-v2');
+      expect(fetchSite).toHaveBeenCalledTimes(1);
+    });
+    expect(await applyRequiredClientUpdate('breaking-v2')).toBe(true);
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(await applyRequiredClientUpdate('breaking-v2')).toBe(false);
+    expect(fetchSite).toHaveBeenCalledTimes(1);
+    reload.mockReset();
+    expect(await applyRequiredClientUpdate('breaking-v3')).toBe(true);
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(values.get('a-table-client-update')).toBe('breaking-v3');
+    values.clear(); // Another tab must download and reload too.
+    expect(await applyRequiredClientUpdate('breaking-v3')).toBe(true);
+    expect(reload).toHaveBeenCalledTimes(2);
+  });
+
+  it('ne mémorise ni ne recharge en cas d’échec et réessaie au prochain signal', async () => {
+    fetchSite.mockResolvedValueOnce(new Response('indisponible', { status: 503 }));
+    await expect(applyRequiredClientUpdate('breaking-v2')).rejects.toThrow('serveur est inaccessible');
+    expect(values.size).toBe(0);
+    expect(reload).not.toHaveBeenCalled();
+    expect(await applyRequiredClientUpdate('breaking-v2')).toBe(true);
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuse de recharger si l’acquittement ne peut pas être enregistré', async () => {
+    vi.stubGlobal('sessionStorage', {
+      getItem: () => null,
+      setItem: () => { throw new Error('Stockage indisponible'); },
+    });
+    await expect(applyRequiredClientUpdate('breaking-v2')).rejects.toThrow('Stockage indisponible');
+    expect(reload).not.toHaveBeenCalled();
+  });
+});
 
 function shell(fetchFile: ReturnType<typeof vi.fn>) {
   const handlers: Record<string, (event: object) => void> = {};
