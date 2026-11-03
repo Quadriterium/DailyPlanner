@@ -35,6 +35,10 @@ async function forceSync(page: Page) {
 async function awaitSynced(page: Page) {
   await expect(page.locator('.connection-indicator')).toHaveText('Carnet à jour');
 }
+async function openAdvanced(page: Page, card: 'Synchronisation' | 'Intelligence artificielle') {
+  await page.locator('.settings-card').filter({ has: page.getByRole('heading', { name: card, exact: true }) })
+    .getByText('Options avancées', { exact: true }).click();
+}
 test.beforeEach(async ({ page }) => {
   await page.goto('/');
   await awaitSynced(page);
@@ -186,6 +190,7 @@ test('paramètres : mise à jour forcée du CSS et activation sans perte des sai
   const text = name('mise à jour CSS');
   await writeMeal(page, text);
   await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+  await openAdvanced(page, 'Synchronisation');
   await page.getByRole('button', { name: 'Forcer la mise à jour', exact: true }).click();
   await expect(page.getByRole('alert').filter({ hasText: 'Mise à jour impossible' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Forcer la mise à jour', exact: true })).toBeEnabled();
@@ -230,6 +235,7 @@ test('paramètres : mise à jour forcée sans service worker', async ({ browser,
     const text = name('mise à jour sans PWA');
     await writeMeal(page, text);
     await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+    await openAdvanced(page, 'Synchronisation');
     await page.getByRole('button', { name: 'Forcer la mise à jour', exact: true }).click();
     await expect(cell(page)).toHaveText(text);
     await awaitSynced(page);
@@ -354,6 +360,7 @@ test('deux appareils : le dernier changement gagne, les autres créneaux sont co
 
 test('paramètres : modèle partagé, conservé après rechargement et désactivé hors ligne', async ({ page, context }) => {
   await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+  await openAdvanced(page, 'Intelligence artificielle');
   for (const model of ['gpt-6-sol', 'gpt-5.6-terra']) {
     await page.getByRole('radio', { name: model, exact: true }).check();
     await awaitSynced(page);
@@ -362,13 +369,14 @@ test('paramètres : modèle partagé, conservé après rechargement et désactiv
   const firstModel = page.getByRole('radio', { name: 'gpt-6-luna', exact: true });
   const alternative = await firstModel.isChecked() ? 'gpt-5.6-luna' : 'gpt-6-luna';
   await page.getByRole('radio', { name: alternative, exact: true }).check();
-  await expect(page.getByText('Choix enregistré localement', { exact: false })).toBeVisible();
+  await expect(page.getByText('Modèle enregistré.', { exact: true })).toBeVisible();
   await awaitSynced(page);
   await page.reload();
   await awaitSynced(page);
   await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+  await openAdvanced(page, 'Intelligence artificielle');
   await expect(page.getByRole('radio', { name: alternative, exact: true })).toBeChecked();
-  await expect(page.getByText('L’analyse attend la configuration de la clé OpenAI sur le serveur.', { exact: false })).toBeVisible();
+  await expect(page.getByText('IA indisponible : la clé OpenAI n’est pas configurée sur le serveur.', { exact: true })).toBeVisible();
   await context.setOffline(true);
   await page.getByRole('button', { name: 'Synchroniser', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Actualisation impossible' })).toBeVisible();
@@ -446,6 +454,7 @@ test('HTTP LAN : saisie, carnet et synchronisation sans contexte sécurisé', as
   await awaitSynced(page);
   await expect(page.getByRole('button', { name: new RegExp(`${text} corrigé`) })).toBeVisible();
   await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+  await openAdvanced(page, 'Synchronisation');
   await expect(page.getByText('Indisponible sur cet appareil', { exact: true })).toBeVisible();
   await expect(page.getByText('Le mode hors ligne nécessite HTTPS (ou localhost).', { exact: true })).toBeVisible();
 });

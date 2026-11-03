@@ -121,6 +121,16 @@ description: "Comprendre ou faire évoluer l'interface À table ! : planning mid
 
 ## Carnet, réglages et notifications
 
+- Ordre des cartes de [Settings](../../../src/Settings.tsx) : Compte et foyer,
+  Personnes à table (compteurs −/+ partagés avec la fenêtre « Convives du repas »),
+  Préférences alimentaires, Niveau de cuisine, Apparence, Intelligence artificielle,
+  Synchronisation, Une idée pour l'application. Titres explicites, pas de paragraphe
+  explicatif : seuls restent l'avertissement allergie, le statut du thème et les
+  états (erreurs, hors ligne, invité). Le modèle, les compteurs mensuels, l'état du
+  serveur/hors ligne et « Forcer la mise à jour » sont dans des `<details>`
+  « Options avancées » (ouverts d'office si le modèle est refusé ou une mise à jour prête).
+- Sous 520 px, les quatre onglets se partagent la largeur avec leur libellé ;
+  sous 380 px, l'icône passe au-dessus du libellé.
 - Une correction de fiche ou un archivage ne réécrit pas les anciens menus.
 - Les cartes du carnet et la recette d'un repas affichent le niveau (`LevelTag`) ;
   l'éditeur de fiche permet de le choisir ou de le retirer (second appui).

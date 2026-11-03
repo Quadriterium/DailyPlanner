@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Check, ChefHat, Clock3, Cloud, Download, Lightbulb, MonitorSmartphone, Moon, RefreshCw, Send, ShieldCheck, Sparkles, Sun, SunMoon } from 'lucide-react';
+import {
+  Check, ChefHat, Clock3, Cloud, Download, Lightbulb, Minus, MonitorSmartphone, Moon, Plus, RefreshCw, Salad, Send, Settings2, ShieldCheck,
+  Sparkles, Sun, SunMoon, Users,
+} from 'lucide-react';
 import {
   cookingLevelHints, cookingLevelLabels, cookingLevels, defaultCookingLevel, defaultHousehold, featureRequestStatusLabels, householdCategories,
   type Capabilities, type CookingLevel, type FeatureRequest, type Household, type Settings as AppSettings,
@@ -53,17 +56,17 @@ function FeatureRequests({ online, allowed }: { online: boolean; allowed: boolea
   const date = new Intl.DateTimeFormat('fr-FR', { dateStyle: 'short', timeZone: 'Europe/Paris' });
   return <div className="settings-card">
     <h3><Lightbulb size={19} />Une idée pour l’application ?</h3>
-    <p>Proposez une amélioration ou signalez ce qui vous manque. Les demandes sont conservées sur le serveur et partagées entre tous les appareils ; leur statut évolue au fil de leur prise en compte.</p>
-    <label className="field-label" htmlFor="feature-request">Demande d’évolution</label>
-    <textarea id="feature-request" className="avoid-input" rows={3} maxLength={1000} disabled={sending}
-      placeholder="Ex. : pouvoir noter les repas, ajouter un goûter…"
-      value={draft} onChange={event => { setDraft(event.target.value); setSent(false); }} />
-    <div className="settings-actions">
-      <button className="secondary-button" disabled={!online || !allowed || sending || draft.trim().length < 3} title={allowed ? undefined : signInHint} onClick={() => void send()}>
-        <Send size={16} />Envoyer</button>
-    </div>
-    {!allowed ? <p className="field-hint">{signInHint} : les demandes sont liées à votre foyer.</p>
-      : !online && <p className="field-hint">L’envoi et le suivi des demandes nécessitent le serveur.</p>}
+    {!allowed ? <p className="info-box">{signInHint}.</p> : <>
+      <label className="field-label" htmlFor="feature-request">Demande d’évolution</label>
+      <textarea id="feature-request" className="avoid-input" rows={3} maxLength={1000} disabled={sending}
+        placeholder="Ex. : pouvoir noter les repas, ajouter un goûter…"
+        value={draft} onChange={event => { setDraft(event.target.value); setSent(false); }} />
+      <div className="settings-actions">
+        <button className="secondary-button" disabled={!online || sending || draft.trim().length < 3} onClick={() => void send()}>
+          <Send size={16} />Envoyer</button>
+      </div>
+      {!online && <p className="field-hint">Indisponible hors ligne.</p>}
+    </>}
     {sent && <p className="field-hint" role="status">Merci ! Votre demande est enregistrée.</p>}
     {error && <p className="inline-error" role="alert">{error}</p>}
     {requests && (requests.length
@@ -84,7 +87,9 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
 }) {
   const allowed = serverFeaturesAvailable(auth);
   const local = auth.mode === 'guest' || auth.mode === 'unknown';
-  const [error, setError] = useState<string | null>(null);
+  const [householdError, setHouseholdError] = useState<string | null>(null);
+  const [preferencesError, setPreferencesError] = useState<string | null>(null);
+  const [modelError, setModelError] = useState<string | null>(null);
   const [pendingModel, setPendingModel] = useState<string | null>(null);
   const [pendingHousehold, setPendingHousehold] = useState(false);
   const [modelSaved, setModelSaved] = useState(false);
@@ -95,6 +100,8 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
   const [pendingLevel, setPendingLevel] = useState<CookingLevel | null>(null);
   const [levelSaved, setLevelSaved] = useState(false);
   const [levelError, setLevelError] = useState<string | null>(null);
+  const [pendingDiet, setPendingDiet] = useState<Partial<Pick<AppSettings, 'vegetarian' | 'vegetarianDinners'>> | null>(null);
+  const [dietSaved, setDietSaved] = useState(false);
   const [themeError, setThemeError] = useState<string | null>(null);
   const [timeDraft, setTimeDraft] = useState<Partial<Record<ThemeTime, string>>>({});
   const [updating, setUpdating] = useState(false);
@@ -103,6 +110,8 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
   const selectedModel = pendingModel ?? settings?.model;
   const savedAvoid = settings?.avoid ?? '';
   const selectedLevel = pendingLevel ?? settings?.cookingLevel ?? defaultCookingLevel;
+  const selectedVegetarian = pendingDiet?.vegetarian ?? settings?.vegetarian ?? false;
+  const selectedVegetarianDinners = pendingDiet?.vegetarianDinners ?? settings?.vegetarianDinners ?? false;
   const avoidText = avoidDraft ?? savedAvoid;
   const { preference, theme } = appearance;
   const currentTheme = theme === 'dark' ? 'sombre' : 'clair';
@@ -122,11 +131,21 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
     setTimeDraft(current => ({ ...current, [key]: value }));
     if (timePattern.test(value)) changeTheme({ ...preference, [key]: value });
   }
-  function saveSettings(patch: Partial<Pick<AppSettings, 'model' | 'household' | 'avoid' | 'cookingLevel'>>) {
+  function saveSettings(patch: Partial<Pick<AppSettings, 'model' | 'household' | 'avoid' | 'cookingLevel' | 'vegetarian' | 'vegetarianDinners'>>) {
     return save([{
       type: 'settings', id: 'global', model: settings?.model ?? '', household: settings?.household ?? defaultHousehold,
-      avoid: savedAvoid, cookingLevel: settings?.cookingLevel ?? defaultCookingLevel, ...patch,
+      avoid: savedAvoid, cookingLevel: settings?.cookingLevel ?? defaultCookingLevel,
+      vegetarian: settings?.vegetarian ?? false, vegetarianDinners: settings?.vegetarianDinners ?? false,
+      ...patch,
     }]);
+  }
+  async function changeDiet(patch: Partial<Pick<AppSettings, 'vegetarian' | 'vegetarianDinners'>>) {
+    setPendingDiet(patch);
+    setDietSaved(false);
+    setPreferencesError(null);
+    try { await saveSettings(patch); setDietSaved(true); }
+    catch (cause) { setPreferencesError(errorMessage(cause)); }
+    finally { setPendingDiet(null); }
   }
   async function changeLevel(cookingLevel: CookingLevel) {
     setPendingLevel(cookingLevel);
@@ -140,40 +159,40 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
   }
   async function changeModel(model: string) {
     setPendingModel(model);
-    setError(null);
+    setModelError(null);
     setModelSaved(false);
     try {
       await saveSettings({ model });
       setModelSaved(true);
-    } catch (cause) { setError(errorMessage(cause)); }
+    } catch (cause) { setModelError(errorMessage(cause)); }
     finally { setPendingModel(null); }
   }
   async function changeHousehold(person: keyof Household, value: string) {
     const count = Number(value);
     const household = settings?.household ?? defaultHousehold;
     if (!Number.isInteger(count) || count < 0 || count > 20 || household.adults + household.teenagers + household.children - household[person] + count < 1) {
-      setError('Indiquez entre 0 et 20 personnes par catégorie, avec au moins une personne au total.');
+      setHouseholdError('Indiquez entre 0 et 20 personnes par catégorie, avec au moins une personne au total.');
       return;
     }
     setPendingHousehold(true);
-    setError(null);
+    setHouseholdError(null);
     setHouseholdSaved(false);
     try {
       await saveSettings({ household: { ...household, [person]: count } });
       setHouseholdSaved(true);
-    } catch (cause) { setError(errorMessage(cause)); }
+    } catch (cause) { setHouseholdError(errorMessage(cause)); }
     finally { setPendingHousehold(false); }
   }
   async function saveAvoid() {
     if (avoidDraft === null || avoidDraft.trim() === savedAvoid.trim()) { setAvoidDraft(null); return; }
     setPendingAvoid(true);
-    setError(null);
+    setPreferencesError(null);
     setAvoidSaved(false);
     try {
       await saveSettings({ avoid: avoidDraft.trim() });
       setAvoidDraft(null);
       setAvoidSaved(true);
-    } catch (cause) { setError(errorMessage(cause)); }
+    } catch (cause) { setPreferencesError(errorMessage(cause)); }
     finally { setPendingAvoid(false); }
   }
   async function updateApp() {
@@ -187,13 +206,72 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
       setUpdating(false);
     }
   }
+  const household = settings?.household ?? defaultHousehold;
+  const totalGuests = household.adults + household.teenagers + household.children;
+  const modelInvalid = Boolean(settings && capabilities && !capabilities.allowedModels.includes(settings.model));
   return <section className="settings">
-    <div className="section-heading"><div><p className="eyebrow">LES COULISSES DU CARNET</p><h2>À votre façon</h2></div><Sparkles size={23} strokeWidth={1.3} /></div>
+    <div className="section-heading"><h2>Paramètres</h2><Settings2 size={23} strokeWidth={1.3} /></div>
     <AccountCard auth={auth} reachable={reachable} pending={pending} onNotice={onNotice} />
     <div className="settings-card">
-      <h3><SunMoon size={19} />Clair ou sombre</h3>
-      <p>Une ambiance lumineuse pour la journée, plus feutrée pour le soir. Ce choix ne concerne que cet appareil.</p>
-      <fieldset><legend className="field-label">Thème</legend>
+      <h3><Users size={19} />Personnes à table</h3>
+      <fieldset disabled={!settings || pendingHousehold}><legend className="sr-only">Personnes à table</legend>
+        <div className="meal-guests-counts">{householdCategories.map(([person, label]) => {
+          const count = household[person];
+          const singular = label.toLocaleLowerCase('fr-FR').slice(0, -1);
+          return <div className="meal-guest-row" key={person}>
+            <label htmlFor={`household-${person}`}>{label}</label>
+            <div className="meal-guest-stepper">
+              <button type="button" aria-label={`Retirer un ${singular}`} disabled={count <= 0 || totalGuests <= 1}
+                onClick={() => void changeHousehold(person, String(count - 1))}><Minus size={16} /></button>
+              <input id={`household-${person}`} type="number" inputMode="numeric" min="0" max="20" step="1" value={count}
+                onChange={event => void changeHousehold(person, event.target.value)} />
+              <button type="button" aria-label={`Ajouter un ${singular}`} disabled={count >= 20}
+                onClick={() => void changeHousehold(person, String(count + 1))}><Plus size={16} /></button>
+            </div>
+          </div>;
+        })}</div>
+      </fieldset>
+      {householdSaved && <p className="field-hint" role="status">Nombre de personnes enregistré.</p>}
+      {householdError && <p className="inline-error" role="alert">{householdError}</p>}
+    </div>
+    <div className="settings-card">
+      <h3><Salad size={19} />Préférences alimentaires</h3>
+      <fieldset disabled={!settings || pendingDiet !== null}><legend className="field-label">Menus végétariens</legend>
+        <label className="checkbox-field"><input type="checkbox" checked={selectedVegetarian}
+          onChange={event => void changeDiet({ vegetarian: event.target.checked })} />Je suis végétarien</label>
+        <label className="checkbox-field"><input type="checkbox" checked={selectedVegetarian || selectedVegetarianDinners}
+          disabled={selectedVegetarian}
+          onChange={event => void changeDiet({ vegetarianDinners: event.target.checked })} />Repas du soir végétariens</label>
+      </fieldset>
+      {dietSaved && <p className="field-hint" role="status">Préférences végétariennes enregistrées.</p>}
+      <label className="field-label" htmlFor="avoid">Repas et ingrédients à éviter</label>
+      <textarea id="avoid" className="avoid-input" rows={3} maxLength={1000} disabled={!settings || pendingAvoid}
+        placeholder="Ex. : champignons, fruits de mer, coriandre, plats trop épicés…"
+        value={avoidText} onChange={event => { setAvoidDraft(event.target.value); setAvoidSaved(false); }} />
+      <div className="settings-actions">
+        <button className="secondary-button" disabled={!settings || pendingAvoid || avoidDraft === null || avoidDraft.trim() === savedAvoid.trim()}
+          onClick={() => void saveAvoid()}><Check size={16} />Enregistrer</button>
+      </div>
+      <p className="field-hint">Pris en compte par l’IA, sans garantie : vérifiez toujours en cas d’allergie.</p>
+      {avoidSaved && <p className="field-hint" role="status">Repas et ingrédients à éviter enregistrés.</p>}
+      {preferencesError && <p className="inline-error" role="alert">{preferencesError}</p>}
+    </div>
+    <div className="settings-card">
+      <h3><ChefHat size={19} />Niveau de cuisine</h3>
+      <fieldset disabled={!settings || pendingLevel !== null}><legend className="sr-only">Niveau de cuisine</legend>
+        <div className="level-options">{cookingLevels.map(level =>
+          <label key={level} className={selectedLevel === level ? 'selected' : ''}>
+            <input type="radio" name="cooking-level" checked={selectedLevel === level} onChange={() => void changeLevel(level)} />
+            <span className="level-option-text"><strong>{cookingLevelLabels[level]}</strong><small>{cookingLevelHints[level]}</small></span>
+            <LevelGauge level={level} />
+          </label>)}</div>
+      </fieldset>
+      {levelSaved && <p className="field-hint" role="status">Niveau « {cookingLevelLabels[selectedLevel]} » enregistré.</p>}
+      {levelError && <p className="inline-error" role="alert">{levelError}</p>}
+    </div>
+    <div className="settings-card">
+      <h3><SunMoon size={19} />Apparence</h3>
+      <fieldset><legend className="sr-only">Thème</legend>
         <div className="theme-options">{themeModes.map(([mode, label, Icon]) =>
           <label key={mode} className={preference.mode === mode ? 'selected' : ''}>
             <input type="radio" name="theme" checked={preference.mode === mode} onChange={() => changeTheme({ ...preference, mode })} />
@@ -209,93 +287,59 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
       {themeError && <p className="inline-error" role="alert">{themeError}</p>}
     </div>
     <div className="settings-card">
-      <h3><Cloud size={19} />Votre carnet, partout</h3>
-      <p>{local ? 'En mode invité, les repas sont enregistrés uniquement sur cet appareil. Connectez-vous pour les partager avec le serveur et votre foyer.'
-        : 'Les repas sont enregistrés sur cet appareil, puis partagés avec le serveur. En cas de conflit sur un même créneau ou une même fiche, la modification la plus récente l’emporte.'}</p>
-      <dl><div><dt>Connexion au serveur</dt><dd>{local ? 'Non utilisée (mode invité)' : online ? 'Disponible' : 'Indisponible'}</dd></div>
-        <div><dt>Modifications à envoyer</dt><dd>{pending}</dd></div>
-        <div><dt>Dernière synchronisation</dt><dd>{lastSync ? new Intl.DateTimeFormat('fr-FR', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Europe/Paris' }).format(lastSync) : 'Pas encore'}</dd></div>
-        <div><dt>Application hors ligne</dt><dd>{pwa.error ? 'Indisponible sur cet appareil' : pwa.ready ? 'Prête sur cet appareil' : import.meta.env.DEV ? 'Après le build de production' : 'Préparation en cours'}</dd></div>
+      <h3><Sparkles size={19} />Intelligence artificielle</h3>
+      {!allowed ? <p className="info-box">{signInHint}.</p> : <>
+        {capabilities && !capabilities.aiConfigured && <p className="info-box">IA indisponible : la clé OpenAI n’est pas configurée sur le serveur.</p>}
+        {modelInvalid && <p className="inline-error" role="alert">Le modèle enregistré ({settings?.model}) n’est plus autorisé. Choisissez-en un autre dans les options avancées.</p>}
+        {capabilities && <>
+          <dl><div><dt>Appels IA aujourd’hui</dt><dd>{capabilities.callsToday}</dd></div></dl>
+          <p className="field-hint">{capabilities.dailyLimit === null
+            ? 'Sans limite quotidienne pour votre foyer.'
+            : `${capabilities.dailyLimit} requêtes IA par jour, renouvelées à minuit.`}</p>
+          <details className="settings-advanced" open={modelInvalid || undefined}>
+            <summary>Options avancées</summary>
+            <fieldset disabled={!online || pendingModel !== null}><legend className="field-label">Modèle OpenAI</legend>
+              <div className="model-options">{capabilities.allowedModels.map(model =>
+                <label key={model} className={selectedModel === model ? 'selected' : ''}>
+                  <input type="radio" name="model" checked={selectedModel === model} onChange={() => void changeModel(model)} />
+                  <span>{model}</span>{selectedModel === model && <Check size={16} />}
+                </label>)}</div>
+            </fieldset>
+            {!online && <p className="field-hint">Indisponible hors ligne.</p>}
+            {modelSaved && <p className="field-hint" role="status">Modèle enregistré.</p>}
+            <dl>
+              <div><dt>Appels IA ce mois-ci</dt><dd>{capabilities.callsThisMonth}</dd></div>
+              <div><dt>Tokens comptabilisés ce mois-ci</dt><dd>{(capabilities.inputTokens + capabilities.outputTokens).toLocaleString('fr-FR')}</dd></div>
+            </dl>
+          </details>
+        </>}
+        {modelError && <p className="inline-error" role="alert">{modelError}</p>}
+      </>}
+    </div>
+    <div className="settings-card">
+      <h3><Cloud size={19} />Synchronisation</h3>
+      <dl><div><dt>Dernière synchronisation</dt><dd>{local ? 'Mode invité' : lastSync ? new Intl.DateTimeFormat('fr-FR', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Europe/Paris' }).format(lastSync) : 'Pas encore'}</dd></div>
+        {!local && <div><dt>Modifications à envoyer</dt><dd>{pending}</dd></div>}
       </dl>
       {pwa.error && <p className="inline-error" role="alert">{pwa.error}</p>}
-      {pwa.updateAvailable && <p className="info-box">Une nouvelle version est prête. Utilisez « Forcer la mise à jour » ou fermez tous les onglets et fenêtres de l’application, puis rouvrez-la. Vos modifications locales restent conservées.</p>}
+      {pwa.updateAvailable && <p className="info-box">Une nouvelle version est prête : utilisez « Forcer la mise à jour » ci-dessous.</p>}
       <div className="settings-actions"><button className="secondary-button" disabled={syncing || !allowed} onClick={onSync}><RefreshCw size={16} className={syncing ? 'spinning' : ''} />Synchroniser</button>
-        <button className="secondary-button" disabled={updating || syncing || pendingModel !== null || pendingHousehold || pendingAvoid || pendingLevel !== null}
-          onClick={() => void updateApp()}><RefreshCw size={16} className={updating ? 'spinning' : ''} />{updating ? 'Mise à jour…' : 'Forcer la mise à jour'}</button>
         <button className="text-button" onClick={onInstall}><Download size={16} />Installer l’application</button></div>
-      <p className="field-hint">La mise à jour retélécharge l’application, y compris les styles CSS, puis recharge cette page. Le serveur doit être accessible ; les repas et modifications enregistrés restent conservés. Enregistrez d’abord les champs en cours de saisie.</p>
-      {updating && <p className="field-hint" role="status">Téléchargement de l’application avant rechargement…</p>}
-      {updateError && <p className="inline-error" role="alert">{updateError}</p>}
-      <p className="field-hint">Astuce : quatre taps rapides sur « À table ! » actualisent aussi les données, sans effacer le carnet.</p>
-    </div>
-    <div className="settings-card">
-      <h3><Sparkles size={19} />Votre foyer</h3>
-      <p>Ces convives sont utilisés par défaut pour les repas. Les quantités des recettes du planning se recalculent immédiatement, même pour un plat déjà dans le carnet, si son nombre de portions d’origine est connu. Touchez un repas pour personnaliser ses convives. Le calcul local compte une portion par adulte ou adolescent et une demi-portion par enfant.</p>
-      <fieldset disabled={!settings || pendingHousehold}><legend className="field-label">Personnes à table</legend>
-        <div className="household-options">
-          {householdCategories.map(([person, label]) => <label key={person}>
-            <span>{label}</span>
-            <input type="number" min="0" max="20" step="1" value={settings?.household[person] ?? defaultHousehold[person]}
-              onChange={event => void changeHousehold(person, event.target.value)} />
-          </label>)}
+      <details className="settings-advanced" open={pwa.updateAvailable || undefined}>
+        <summary>Options avancées</summary>
+        <dl><div><dt>Connexion au serveur</dt><dd>{local ? 'Non utilisée (mode invité)' : online ? 'Disponible' : 'Indisponible'}</dd></div>
+          <div><dt>Application hors ligne</dt><dd>{pwa.error ? 'Indisponible sur cet appareil' : pwa.ready ? 'Prête sur cet appareil' : import.meta.env.DEV ? 'Après le build de production' : 'Préparation en cours'}</dd></div>
+        </dl>
+        <div className="settings-actions">
+          <button className="secondary-button" disabled={updating || syncing || pendingModel !== null || pendingHousehold || pendingAvoid || pendingDiet !== null || pendingLevel !== null}
+            onClick={() => void updateApp()}><RefreshCw size={16} className={updating ? 'spinning' : ''} />{updating ? 'Mise à jour…' : 'Forcer la mise à jour'}</button>
         </div>
-      </fieldset>
-      {householdSaved && <p className="field-hint" role="status">Composition du foyer enregistrée ; les quantités du planning suivent ce réglage lorsque les portions d’origine sont connues.</p>}
-      <label className="field-label" htmlFor="avoid">Repas et ingrédients à éviter</label>
-      <textarea id="avoid" className="avoid-input" rows={3} maxLength={1000} disabled={!settings || pendingAvoid}
-        placeholder="Ex. : champignons, fruits de mer, coriandre, plats trop épicés…"
-        value={avoidText} onChange={event => { setAvoidDraft(event.target.value); setAvoidSaved(false); }} />
-      <div className="settings-actions">
-        <button className="secondary-button" disabled={!settings || pendingAvoid || avoidDraft === null || avoidDraft.trim() === savedAvoid.trim()}
-          onClick={() => void saveAvoid()}><Check size={16} />Enregistrer</button>
-      </div>
-      <p className="field-hint">L’IA évitera ces repas et ingrédients dans ses propositions et les retirera si possible des recettes. Ce n’est pas une garantie : vérifiez toujours en cas d’allergie.</p>
-      {avoidSaved && <p className="field-hint" role="status">Préférences enregistrées ; elles seront utilisées pour les prochaines propositions IA.</p>}
-      {error && <p className="inline-error" role="alert">{error}</p>}
-    </div>
-    <div className="settings-card">
-      <h3><ChefHat size={19} />Votre niveau en cuisine</h3>
-      <p>Du plat vite fait au repas de fête : ce niveau guide les idées générées par l’IA et le choix au hasard dans le carnet, qui ne pioche que parmi les plats de ce niveau. Pour un repas ponctuel, un appui long sur les boutons de génération ou de choix au hasard permet d’en choisir un autre.</p>
-      <fieldset disabled={!settings || pendingLevel !== null}><legend className="field-label">Niveau de cuisine</legend>
-        <div className="level-options">{cookingLevels.map(level =>
-          <label key={level} className={selectedLevel === level ? 'selected' : ''}>
-            <input type="radio" name="cooking-level" checked={selectedLevel === level} onChange={() => void changeLevel(level)} />
-            <span className="level-option-text"><strong>{cookingLevelLabels[level]}</strong><small>{cookingLevelHints[level]}</small></span>
-            <LevelGauge level={level} />
-          </label>)}</div>
-      </fieldset>
-      {levelSaved && <p className="field-hint" role="status">Niveau « {cookingLevelLabels[selectedLevel]} » enregistré ; il sera utilisé pour les prochaines générations IA et le choix au hasard.</p>}
-      {levelError && <p className="inline-error" role="alert">{levelError}</p>}
-    </div>
-    <div className="settings-card">
-      <h3><Sparkles size={19} />Un petit coup de pouce de l’IA</h3>
-      <p>Pour enrichir vos fiches et générer de nouvelles idées de saison, en tenant compte du carnet et des repas choisis de J−15 à J+15 autour d’aujourd’hui. L’enrichissement ne change pas les textes déjà saisis dans le planning.</p>
-      {!allowed && <p className="info-box">{signInHint} : l’IA est réservée aux comptes connectés. Le choix au hasard dans le carnet reste disponible.</p>}
-      {allowed && !capabilities?.aiConfigured && <p className="info-box">L’analyse attend la configuration de la clé OpenAI sur le serveur. Vous pouvez déjà tout planifier.</p>}
-      {settings && capabilities && !capabilities.allowedModels.includes(settings.model) &&
-        <p className="inline-error" role="alert">Le modèle enregistré ({settings.model}) n’est plus autorisé par le serveur. Choisissez un modèle ci-dessous pour reprendre les analyses en attente.</p>}
-      <fieldset disabled={!online || !allowed || pendingModel !== null || !capabilities}><legend className="field-label">Modèle OpenAI</legend>
-        <div className="model-options">{(capabilities?.allowedModels ?? []).map(model =>
-          <label key={model} className={selectedModel === model ? 'selected' : ''}>
-            <input type="radio" name="model" checked={selectedModel === model} onChange={() => void changeModel(model)} />
-            <span>{model}</span>{selectedModel === model && <Check size={16} />}
-          </label>)}</div>
-      </fieldset>
-      {allowed && !online && <p className="field-hint">Le choix du modèle et la relance de l’IA nécessitent le serveur.</p>}
-      {modelSaved && <p className="field-hint" role="status">Choix enregistré localement ; il sera appliqué aux prochaines analyses et générations après synchronisation.</p>}
-      {error && <p className="inline-error" role="alert">{error}</p>}
-      {capabilities && <dl>
-        <div><dt>Appels IA aujourd’hui</dt><dd>{capabilities.callsToday}</dd></div>
-        <div><dt>Appels IA ce mois-ci</dt><dd>{capabilities.callsThisMonth}</dd></div>
-        <div><dt>Tokens comptabilisés ce mois-ci</dt><dd>{(capabilities.inputTokens + capabilities.outputTokens).toLocaleString('fr-FR')}</dd></div>
-      </dl>}
-      <p className="field-hint">{capabilities?.dailyLimit === null
-        ? 'Votre foyer utilise l’IA sans limite quotidienne.'
-        : 'Votre foyer dispose de 20 requêtes IA par jour, renouvelées à minuit (heure de Paris).'} </p>
+        {updating && <p className="field-hint" role="status">Téléchargement de l’application avant rechargement…</p>}
+      </details>
+      {updateError && <p className="inline-error" role="alert">{updateError}</p>}
     </div>
     <FeatureRequests online={online} allowed={allowed} />
-    <div className="privacy-note"><ShieldCheck size={22} strokeWidth={1.4} /><p>{auth.mode === 'disabled'
-      ? 'Un carnet partagé, sans compte utilisateur. Toute personne ayant accès à cette adresse peut lire et modifier les repas. '
-      : 'Chaque foyer a son propre carnet : seuls ses membres, connectés avec Google, peuvent le lire et le modifier. L’application ne reçoit ni votre mot de passe Google ni l’accès à vos autres données Google. '}La clé OpenAI ne quitte jamais le serveur. L’analyse transmet le nom du repas, la composition du foyer et les repas et ingrédients à éviter à OpenAI ; la génération transmet aussi la saison du créneau, le niveau de cuisine demandé, les noms du carnet (archives comprises) et ceux des repas choisis de J−15 à J+15 autour d’aujourd’hui, sans leurs dates ni les recettes.</p></div>
+    {auth.mode === 'disabled' && <div className="privacy-note"><ShieldCheck size={22} strokeWidth={1.4} />
+      <p>Carnet partagé sans compte : toute personne ayant accès à cette adresse peut lire et modifier les repas.</p></div>}
   </section>;
 }

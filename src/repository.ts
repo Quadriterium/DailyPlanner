@@ -31,6 +31,7 @@ const zeroId = '00000000-0000-0000-0000-000000000000';
 export function initialSettings(model: string): Settings {
   return {
     type: 'settings', id: 'global', model, household: { ...defaultHousehold }, avoid: '', cookingLevel: defaultCookingLevel,
+    vegetarian: false, vegetarianDinners: false,
     modifiedAt: 0, mutationId: zeroId,
   };
 }

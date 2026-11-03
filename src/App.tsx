@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { BookOpen, CalendarDays, Check, CircleAlert, CloudOff, Download, Leaf, Settings2 } from 'lucide-react';
+import { BookOpen, CalendarDays, Check, CircleAlert, CloudOff, Download, Leaf, Settings2, ShoppingBasket } from 'lucide-react';
 import { mealId, parisDate, type InvitationPreview, type Slot } from '../shared/model';
 import { Modal } from './components';
 import { Planner } from './Planner';
 import { MealEditor } from './MealEditor';
 import { Library } from './Library';
+import { Shopping } from './Shopping';
 import { Settings } from './Settings';
 import {
   acceptInvitation, currentAuth, errorMessage, finishSignIn, forgetInvitation, guestRecordsToImport, importGuestData, initialize, pendingInvitation, previewInvitation,
@@ -35,7 +36,7 @@ function plural(count: number, word: string) {
 export function App() {
   const state = usePlanner();
   const appearance = useTheme();
-  const [tab, setTab] = useState<'planner' | 'library' | 'settings'>('planner');
+  const [tab, setTab] = useState<'planner' | 'shopping' | 'library' | 'settings'>('planner');
   const [today, setToday] = useState(parisDate());
   const [selected, setSelected] = useState<{ date: string; slot: Slot; start: string; index?: 1 } | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -235,6 +236,7 @@ export function App() {
       </div>
       <nav className="main-nav" aria-label="Navigation principale">
         <button className={tab === 'planner' ? 'active' : ''} aria-current={tab === 'planner' ? 'page' : undefined} onClick={() => setTab('planner')}><CalendarDays size={17} />Mon planning</button>
+        <button className={`shopping-nav ${tab === 'shopping' ? 'active' : ''}`} aria-current={tab === 'shopping' ? 'page' : undefined} onClick={() => setTab('shopping')}><ShoppingBasket size={17} /><span>Liste de courses</span></button>
         <button className={tab === 'library' ? 'active' : ''} aria-current={tab === 'library' ? 'page' : undefined} onClick={() => setTab('library')}><BookOpen size={17} />Mon carnet</button>
         <button className={`settings-nav ${tab === 'settings' ? 'active' : ''}`} aria-label="Paramètres" aria-current={tab === 'settings' ? 'page' : undefined} onClick={() => setTab('settings')}><Settings2 size={18} /><span>Paramètres</span></button>
       </nav>
@@ -245,8 +247,10 @@ export function App() {
         {state.error ? <><CircleAlert /><h2>Impossible d’ouvrir le stockage local</h2><p>{state.error}</p><p>Vérifiez les permissions de stockage et l’espace disponible. Aucune saisie ne sera acceptée tant qu’elle ne peut pas être sauvegardée.</p></> : <><Leaf className="spinning" /><p>On met la table…</p></>}
       </div> : <>
         {state.error && <div className="connection-banner" role="status"><CloudOff size={17} /><span>{state.error}</span></div>}
-        {tab === 'planner' && <Planner key={today} today={today} meals={meals} dishes={dishes} analyses={state.analyses} cookingLevel={settings?.cookingLevel} recentMeal={recentMeal} onSelect={(date, slot, start, index) => setSelected({ date, slot, start, index })} onSaved={mealSaved} onSignInRequired={requestAiSignIn} />}
-        {tab === 'library' && <Library dishes={dishes} analyses={state.analyses} online={state.connection === 'online' && Boolean(state.capabilities?.aiConfigured)} onSaved={() => setToast(true)} onSignInRequired={requestAiSignIn} />}
+        {tab === 'planner' && <Planner key={today} today={today} meals={meals} dishes={dishes} analyses={state.analyses} cookingLevel={settings?.cookingLevel} dietarySettings={settings} recentMeal={recentMeal} onSelect={(date, slot, start, index) => setSelected({ date, slot, start, index })} onSaved={mealSaved} onSignInRequired={requestAiSignIn} />}
+        {tab === 'shopping' && <Shopping today={today} meals={meals} dishes={dishes} analyses={state.analyses} household={settings?.household}
+          online={state.connection === 'online' && Boolean(state.capabilities?.aiConfigured)} onSignInRequired={requestAiSignIn} />}
+        {tab === 'library' && <Library dishes={dishes} analyses={state.analyses} online={state.connection === 'online'} aiConfigured={Boolean(state.capabilities?.aiConfigured)} onSaved={() => setToast(true)} onSignInRequired={requestAiSignIn} />}
         {tab === 'settings' && <Settings settings={settings} capabilities={state.capabilities} online={state.connection === 'online'} appearance={appearance}
           lastSync={state.lastSync} pending={state.pending} syncing={state.syncing} onSync={() => void forceSync()} onInstall={() => void install()}
           auth={state.auth} reachable={state.reachable} onNotice={(title, text) => setNotice({ kind: 'info', title, text })} />}
@@ -270,7 +274,7 @@ export function App() {
     {selected && <MealEditor key={mealId(selected.date, selected.slot, selected.index)} {...selected} today={today} dishes={dishes} analyses={state.analyses}
       aiConfigured={Boolean(state.capabilities?.aiConfigured)}
       onSignInRequired={requestAiSignIn}
-      household={settings?.household} cookingLevel={settings?.cookingLevel}
+      household={settings?.household} cookingLevel={settings?.cookingLevel} dietarySettings={settings}
       meal={meals.find(meal => meal.id === mealId(selected.date, selected.slot, selected.index))}
       onAddDish={!otherSelectedMeal ? () => setSelected({ ...selected, index: selected.index === 1 ? undefined : 1 }) : undefined}
       onClose={() => setSelected(null)} onSaved={() => mealSaved(mealId(selected.date, selected.slot, selected.index))} />}

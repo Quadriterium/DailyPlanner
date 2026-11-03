@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowUpRight, BookOpen, Check, Leaf, LoaderCircle, Minus, Pencil, Plus, Search, Shuffle, Sparkles, Trash2, Users } from 'lucide-react';
 import {
   cookingLevelLabels, defaultHousehold, dishDetails, formatDate, formatPortions, householdCategories, householdCount, householdPortions, householdSchema,
-  householdSummary, mealDisplayName, mealHousehold, mealId, normalizedName, recipeUrl, seasonalDishes, seasonForDate, seasonLabels,
-  type Analysis, type CatalogEntry, type CookingLevel, type Dish, type DishDetails, type Household, type Meal, type Slot,
+  householdSummary, matchesDiet, mealDisplayName, mealHousehold, mealId, normalizedName, recipeUrl, seasonalDishes, seasonForDate, seasonLabels, vegetarianForSlot,
+  type Analysis, type CatalogEntry, type CookingLevel, type DietarySettings, type Dish, type DishDetails, type Household, type Meal, type Slot,
 } from '../shared/model';
 import { EmptyState, GenerationProgress, Modal } from './components';
 import { LevelButton, LevelTag, seasonalLevelCounts } from './CookingLevel';
@@ -15,12 +15,13 @@ import { scaleRecipe } from '../shared/recipe';
 
 interface Completion { dish?: Dish; entry?: CatalogEntry; details: DishDetails }
 
-export function MealEditor({ date, slot, start, index, meal, today, dishes, analyses, aiConfigured, household = defaultHousehold, cookingLevel, onAddDish, onClose, onSaved, onSignInRequired }: {
+export function MealEditor({ date, slot, start, index, meal, today, dishes, analyses, aiConfigured, household = defaultHousehold, cookingLevel, dietarySettings, onAddDish, onClose, onSaved, onSignInRequired }: {
   date: string; slot: Slot; start: string; meal?: Meal; today: string; dishes: Dish[]; analyses: Analysis[];
   aiConfigured: boolean;
   index?: 1;
   household?: Household;
   cookingLevel?: CookingLevel;
+  dietarySettings?: DietarySettings;
   onAddDish?: () => void;
   onClose: () => void; onSaved: () => void;
   onSignInRequired: () => void;
@@ -78,14 +79,17 @@ export function MealEditor({ date, slot, start, index, meal, today, dishes, anal
   const analysisError = !currentDish?.details && currentAnalysis?.analysisKey === currentDish?.analysisKey
     ? currentAnalysis?.error : null;
   const available = dishes.filter(dish => !dish.archived);
+  const vegetarian = vegetarianForSlot(dietarySettings, slot);
+  const eligible = available.filter(dish => matchesDiet(dishDetails(dish, analysisMap.get(dish.id)), vegetarian));
+  const eligibleCatalog = catalog.filter(entry => matchesDiet(entry.details, vegetarian));
   const typed = normalizedName(text);
-  const carnetCompletions: Completion[] = text.trim() && !recipeUrl(text) ? available
+  const carnetCompletions: Completion[] = text.trim() && !recipeUrl(text) ? eligible
     .map(dish => ({ dish, details: dishDetails(dish, analysisMap.get(dish.id)) }))
     .filter(({ dish, details }) => [dish.name, details.name].some(name => normalizedName(name).includes(typed)))
     .sort((a, b) => a.details.name.localeCompare(b.details.name, 'fr')).slice(0, 6) : [];
   const knownNames = new Set(available.flatMap(dish => [dish.name, dishDetails(dish, analysisMap.get(dish.id)).name].map(normalizedName)));
   // Carnet first, then the shared catalogue (all seasons), without duplicating a dish already in the carnet.
-  const completions: Completion[] = text.trim() && !recipeUrl(text) ? [...carnetCompletions, ...catalog
+  const completions: Completion[] = text.trim() && !recipeUrl(text) ? [...carnetCompletions, ...eligibleCatalog
     .filter(entry => normalizedName(entry.details.name).includes(typed) && !knownNames.has(normalizedName(entry.details.name)))
     .slice(0, Math.max(3, 8 - carnetCompletions.length))
     .map(entry => ({ entry, details: entry.details }))] : [];
@@ -103,8 +107,8 @@ export function MealEditor({ date, slot, start, index, meal, today, dishes, anal
     setActiveOption(-1);
     ideaInput.current?.focus();
   }
-  const seasonal = seasonalDishes(available, analyses, date);
-  const suggestions = (allSeasons ? available : seasonal)
+  const seasonal = seasonalDishes(eligible, analyses, date);
+  const suggestions = (allSeasons ? eligible : seasonal)
     .map(dish => ({ dish, details: dishDetails(dish, analysisMap.get(dish.id)) }))
     .filter(({ details }) => normalizedName(details.name).includes(normalizedName(query)))
     .sort((a, b) => a.details.name.localeCompare(b.details.name, 'fr'));
@@ -146,16 +150,22 @@ export function MealEditor({ date, slot, start, index, meal, today, dishes, anal
     }
   }
 
-  async function replace(mode: 'ai' | 'random', level?: CookingLevel) {
+  async function replace(mode: 'ai' | 'random', level?: CookingLevel, vegetarianMenu = false) {
     if (busy) return;
     if (mode === 'ai' && !serverFeatures) { onSignInRequired(); return; }
     setBusy(true);
     setFilling(mode);
     setError(null);
     try {
-      await fillMeal(date, slot, start, mode, meal, index, level);
+      const warning = await fillMeal(date, slot, start, mode, meal, index, level, vegetarianMenu);
       onSaved();
-      onClose();
+      if (warning) {
+        setManaging(false);
+        setEditing(false);
+        setError(warning);
+        setBusy(false);
+        setFilling(null);
+      } else onClose();
     } catch (cause) {
       setError(errorMessage(cause));
       setBusy(false);
@@ -166,15 +176,16 @@ export function MealEditor({ date, slot, start, index, meal, today, dishes, anal
   function levelButtons(disabled: boolean, replacement = false) {
     return <>
       <LevelButton className={`secondary-button${replacement ? ' wide' : ''}`} disabled={disabled} preferred={cookingLevel}
-        title={serverFeatures ? 'Appui long : choisir le niveau de cuisine' : signInHint}
+        title={serverFeatures ? 'Appui long : niveau de cuisine et menu végétarien' : signInHint}
         menuTitle={replacement ? 'Générer un nouveau plat' : 'Générer avec l’IA'} menuSubtitle="Choisissez le niveau de cuisine de ce repas. Celui des paramètres ne change pas."
-        onPress={() => void replace('ai')} onLevel={level => void replace('ai', level)}>
+        vegetarianRequired={vegetarian}
+        onPress={() => void replace('ai')} onLevel={(level, vegetarianMenu) => void replace('ai', level, vegetarianMenu)}>
         <Sparkles size={17} />{filling === 'ai' ? 'Génération…' : replacement ? 'Générer un nouveau plat' : 'Générer avec l’IA'}</LevelButton>
       {!replacement && <LevelButton className="secondary-button" disabled={disabled} preferred={cookingLevel} title="Appui long : choisir le niveau de cuisine"
         menuTitle="Choisir au hasard" menuSubtitle="Tirage parmi les plats de saison du carnet et du catalogue commun au niveau choisi."
         levelCounts={() => {
-          const counts = seasonalLevelCounts(available, analyses, date);
-          for (const entry of sharedRandomCandidates(date)) if (entry.details.level) counts[entry.details.level]++;
+          const counts = seasonalLevelCounts(eligible, analyses, date);
+          for (const entry of sharedRandomCandidates(date).filter(entry => matchesDiet(entry.details, vegetarian))) if (entry.details.level) counts[entry.details.level]++;
           return counts;
         }}
         onPress={() => void replace('random')} onLevel={level => void replace('random', level)}>
@@ -223,6 +234,7 @@ export function MealEditor({ date, slot, start, index, meal, today, dishes, anal
 
   return <><Modal title={editing ? 'Qu’est-ce qu’on mange ?' : 'Votre repas'} onClose={onClose} dismissible={filling !== 'ai'}>
     <p className="modal-subtitle">{formatDate(date, { weekday: 'long', day: 'numeric', month: 'long' })} · {slot === 'lunch' ? 'Midi' : 'Soir'}{index === 1 ? ' · Deuxième plat' : ''}</p>
+    {vegetarian && editing && <p className="field-hint">Suggestions et génération végétariennes pour ce repas. Les fiches non classées sont exclues ; la saisie libre reste possible.</p>}
     {!editing ? <>
       <h3 className="meal-detail-name">{displayName}</h3>
       <button ref={guestsButton} className="meal-guests-chip" disabled={busy} onClick={editGuests}

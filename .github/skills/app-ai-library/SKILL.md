@@ -104,6 +104,18 @@ Une ancienne réponse ne doit jamais écraser cette nouvelle demande.
 - Un nom équivalent réutilise une fiche active sans remplacer ses détails.
   Un créneau modifié pendant la requête n'est pas écrasé par la proposition.
 
+## Affinage de la liste de courses
+
+- `POST /api/shopping/refine` (`refineShoppingRequestSchema` : `{ lines }`, 1 à 300 lignes)
+  appelle `refineShoppingList()` avec `settings.model` : seules les lignes exactes
+  « ingrédient — quantité » sont envoyées, sans noms de repas, dates ni avertissements.
+- `reserveGeneration()` comptabilise l'appel avant la requête (limite quotidienne
+  partagée, 429 si atteinte) ; réponse JSON stricte `{ sections: [{ name, items }] }`
+  validée par `refinedShoppingListSchema`, 3 000 tokens de sortie, 60 secondes.
+- L'IA regroupe par rayon et arrondit vers le haut ; rien n'est enregistré. Le client
+  ajoute localement les avertissements (`refinedShoppingListText`) et peut revenir
+  à la liste exacte.
+
 ## Catalogue commun
 
 - Table SQLite `catalog` (migration v4) : `seq` croissant, `name_key` unique
@@ -111,6 +123,10 @@ Une ancienne réponse ne doit jamais écraser cette nouvelle demande.
   (jamais exposé). `addToCatalog` n'accepte que des détails avec `items`,
   `level` et `servings` ; appelé après la génération et par le worker
   (noms saisis et liens). Les fiches antérieures ne sont pas migrées.
+- Toutes les demandes IA (nom, lien, génération) exigent un booléen `troll`
+  (blague, insulte, contenu choquant, non comestible…). Une réponse `troll: true`
+  reste utilisable dans le carnet du foyer créateur mais n'appelle jamais
+  `addToCatalog` : elle n'apparaît pas chez les autres foyers.
 - L'IA renvoie des ingrédients structurés (`items` : nom, quantité, unité) et
   des `tags` pour `referenceServings` = 4 portions ; `scaleRecipe` les recalcule
   exactement (`householdPortions` : enfant 0,5, ado/adulte 1). Le foyer n'est

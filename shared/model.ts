@@ -74,7 +74,9 @@ export const detailsSchema = z.object({
   seasons: z.array(seasonSchema).min(1).max(5),
   ingredients: z.array(z.string().trim().min(1).max(120)),
   recipe: z.string().max(4000),
+  preserveRecipe: z.literal(true).optional(),
   level: cookingLevelSchema.optional(),
+  vegetarian: z.boolean().optional(),
   servings: z.number().min(0.5).max(60).multipleOf(0.5).optional(),
   /** Version structurée de `ingredients`, pour `servings` portions. */
   items: z.array(ingredientSchema).optional(),
@@ -82,12 +84,18 @@ export const detailsSchema = z.object({
   tags: z.array(z.string().trim().min(1).max(60)).max(40).optional(),
 }).strict();
 export type DishDetails = z.infer<typeof detailsSchema>;
+export const sourceRecipeSchema = z.object({
+  ingredients: z.array(z.string().trim().min(1).max(120)).min(1).max(100),
+  recipe: z.string().max(4000).refine(value => Boolean(value.trim()), 'Renseignez les étapes de la recette.'),
+  servings: detailsSchema.shape.servings.unwrap(),
+}).strict();
 export const dishSchema = z.object({
   type: z.literal('dish'),
   id: z.string().uuid(),
   name: z.string().trim().min(1).pipe(mealInputSchema),
   creationSeason: seasonSchema,
   sourceUrl: recipeUrlSchema.optional(),
+  sourceRecipe: sourceRecipeSchema.optional(),
   analysisKey: z.string().uuid(),
   details: detailsSchema.nullable(),
   archived: z.boolean(),
@@ -115,10 +123,15 @@ export const settingsSchema = z.object({
   household: householdSchema.default(defaultHousehold),
   avoid: z.string().max(1000).default(''),
   cookingLevel: cookingLevelSchema.default(defaultCookingLevel),
+  vegetarian: z.boolean().default(false),
+  vegetarianDinners: z.boolean().default(false),
   ...version,
 }).strict();
 export const recordSchema = z.discriminatedUnion('type', [dishSchema, mealSchema, settingsSchema])
   .superRefine((record, context) => {
+    if (record.type === 'dish' && record.sourceRecipe && (record.sourceUrl || record.name.length > 240)) {
+      context.addIssue({ code: 'custom', message: 'Une recette personnelle nécessite un titre de 240 caractères maximum, sans lien source.' });
+    }
     if (record.type === 'meal' && (
       record.id !== mealId(record.date, record.slot, record.index) || (!record.text.trim() && (record.dishId !== null || record.household != null))
     )) context.addIssue({ code: 'custom', message: 'Créneau invalide' });
@@ -131,12 +144,17 @@ export function mealId(date: string, slot: Slot, index?: 1): string {
 export function mealHousehold(meal: Meal | undefined, household: Household = defaultHousehold): Household {
   return meal?.household ?? household;
 }
-export const generateMealRequestSchema = z.object({ date: dateSchema, level: cookingLevelSchema.optional() }).strict();
+export const generateMealRequestSchema = z.object({
+  date: dateSchema, slot: z.enum(['lunch', 'dinner']).optional(), level: cookingLevelSchema.optional(),
+  vegetarian: z.boolean().optional(),
+}).strict();
+export const generationErrorMessage = 'Oups, problème dans la génération.';
 export const generateMealResponseSchema = z.object({
   details: detailsSchema,
   /** `catalog` : tiré du catalogue commun sans appel IA ; `ai` : nouvelle proposition. */
   source: z.enum(['catalog', 'ai']).optional(),
   sourceUrl: recipeUrlSchema.optional(),
+  warning: z.literal(generationErrorMessage).optional(),
 }).strict();
 /** Fiche du catalogue commun, partagée par tous les foyers en lecture seule. */
 export const catalogEntrySchema = z.object({
@@ -162,6 +180,15 @@ export const recentMealDays = 15;
 export type Settings = z.infer<typeof settingsSchema>;
 export type RecordData = z.infer<typeof recordSchema>;
 export type Slot = Meal['slot'];
+export type DietarySettings = Pick<Settings, 'vegetarian' | 'vegetarianDinners'>;
+export function vegetarianForSlot(settings: DietarySettings | undefined, slot?: Slot): boolean {
+  return Boolean(settings?.vegetarian || (settings?.vegetarianDinners && slot === 'dinner'));
+}
+
+/** Une ancienne fiche non classée n'est jamais présumée végétarienne. */
+export function matchesDiet(details: DishDetails, vegetarian = false): boolean {
+  return !vegetarian || details.vegetarian === true;
+}
 export const analysisSchema = z.object({
   dishId: z.string().uuid(),
   analysisKey: z.string().uuid(),
@@ -169,6 +196,7 @@ export const analysisSchema = z.object({
   details: detailsSchema.nullable(),
   error: z.string().nullable(),
   name: detailsSchema.shape.name.optional(),
+  sharing: z.enum(['approved', 'rejected']).optional(),
   updatedAt: z.number(),
 });
 export type Analysis = z.infer<typeof analysisSchema>;
@@ -301,10 +329,13 @@ export function compareVersions(a: Pick<RecordData, 'modifiedAt' | 'mutationId'>
 
 export function dishDetails(dish: Dish, analysis?: Analysis): DishDetails {
   if (dish.details) return dish.details;
-  if (analysis?.analysisKey === dish.analysisKey && analysis.status === 'ready' && analysis.details) return analysis.details;
+  if (analysis?.analysisKey === dish.analysisKey && analysis.status === 'ready' && analysis.details &&
+    !(dish.sourceRecipe && analysis.sharing === 'rejected')) return analysis.details;
   return {
     name: analysis?.analysisKey === dish.analysisKey && analysis.name ? analysis.name : dish.name,
     seasons: [dish.creationSeason], ingredients: [], recipe: '',
+    ...dish.sourceRecipe,
+    ...(dish.sourceRecipe ? { preserveRecipe: true } : {}),
   };
 }
 
@@ -364,7 +395,7 @@ export function recentMealNames(records: RecordData[], analyses: Analysis[], dat
 
 /** Fiches du catalogue de la saison du repas (ou de toute l'année), du niveau demandé, sans aliment à éviter ni nom exclu. */
 export function catalogCandidates(entries: CatalogEntry[], options: {
-  date: string; level?: CookingLevel; avoid: string; excludedNames: Iterable<string>;
+  date: string; level?: CookingLevel; avoid: string; excludedNames: Iterable<string>; vegetarian?: boolean;
 }): CatalogEntry[] {
   const season = seasonForDate(options.date);
   const terms = avoidTerms(options.avoid);
@@ -372,6 +403,7 @@ export function catalogCandidates(entries: CatalogEntry[], options: {
   return entries.filter(({ details }) =>
     (details.seasons.includes(season) || details.seasons.includes('all')) &&
     (options.level === undefined || details.level === options.level) &&
+    matchesDiet(details, options.vegetarian) &&
     !excluded.has(normalizedName(details.name)) && !containsAvoided(details, terms));
 }
 
@@ -385,11 +417,14 @@ export function seasonalDishes(dishes: Dish[], analyses: Analysis[], date: strin
 }
 
 export function randomMealCandidates(
-  dishes: Dish[], analyses: Analysis[], meals: Meal[], date: string, start: string, level?: CookingLevel,
+  dishes: Dish[], analyses: Analysis[], meals: Meal[], date: string, start: string, level?: CookingLevel, vegetarian = false,
 ): Dish[] {
   const analysisMap = new Map(analyses.map(analysis => [analysis.dishId, analysis]));
   const candidates = seasonalDishes(dishes, analyses, date)
-    .filter(dish => level === undefined || dishDetails(dish, analysisMap.get(dish.id)).level === level);
+    .filter(dish => {
+      const details = dishDetails(dish, analysisMap.get(dish.id));
+      return (level === undefined || details.level === level) && matchesDiet(details, vegetarian);
+    });
   const week = meals.filter(meal => meal.date >= start && meal.date <= addDays(start, 6) && meal.text.trim());
   const ids = new Set(week.map(meal => meal.dishId));
   const names = new Set(week.map(meal => normalizedName(meal.text)));

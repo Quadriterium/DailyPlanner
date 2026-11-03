@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { LogController } from 'fastify';
 import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
@@ -8,14 +8,16 @@ import { existsSync } from 'node:fs';
 import { randomInt } from 'node:crypto';
 import { join, resolve, sep } from 'node:path';
 import {
-  catalogCandidates, catalogDrawThreshold, catalogRequestSchema, createFeatureRequestSchema, generateMealRequestSchema, isResetScoped,
-  recentMealNames, syncRequestSchema,
+  catalogCandidates, catalogDrawThreshold, catalogRequestSchema, createFeatureRequestSchema, generateMealRequestSchema, generationErrorMessage, isResetScoped,
+  recentMealNames, seasonForDate, syncRequestSchema, vegetarianForSlot,
 } from '../shared/model.js';
-import { generateMeal, mealGenerationContext } from './ai.js';
+import { generateMeal, mealGenerationContext, refineShoppingList } from './ai.js';
+import { refineShoppingRequestSchema } from '../shared/shopping.js';
 import type { Store } from './database.js';
 import { AiQuotaError } from './database.js';
 import type { Config } from './config.js';
 import { registerAuth, type AuthOptions } from './auth/routes.js';
+import { audit, describeMutations, loggedUrl, logFailedRequest } from './audit.js';
 
 const loopback = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 
@@ -29,8 +31,7 @@ export function rateLimitKey(config: Pick<Config, 'TRUSTED_PROXY'>) {
   };
 }
 
-/** OAuth callbacks carry `code` and `state` in their query: never log it. */
-export const loggedUrl = (url: string) => /^\/api\/(auth|test-auth)\//.test(url) ? url.split('?')[0] : url;
+export { loggedUrl };
 
 const legalPages: Record<string, string> = { '/confidentialite': 'confidentialite.html', '/conditions-utilisation': 'conditions-utilisation.html' };
 
@@ -39,8 +40,11 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     logger: (options.logger ?? true) ? { serializers: { req: request => ({
       method: request.method, url: loggedUrl(request.url), host: request.host, remoteAddress: request.ip, remotePort: request.socket?.remotePort,
     }) } } : false,
+    // Every successful request (assets, polling, sync) drowned the console: only user actions and failures are logged.
+    logController: new LogController({ disableRequestLogging: true }),
     bodyLimit: 2 * 1024 * 1024,
   });
+  app.addHook('onResponse', async (request, reply) => logFailedRequest(request, reply));
   await app.register(helmet, {
     contentSecurityPolicy: { directives: {
       defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"],
@@ -72,35 +76,76 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     if (!parsed.success) return reply.code(400).send({ error: 'Date du repas ou niveau de cuisine invalide.' });
     const { date } = parsed.data;
     const settings = store.settings(spaceId);
+    if (settings.vegetarianDinners && !settings.vegetarian && !parsed.data.slot) {
+      return reply.code(400).send({ error: 'Précisez midi ou soir pour appliquer les préférences végétariennes.' });
+    }
+    const vegetarian = vegetarianForSlot(settings, parsed.data.slot) || parsed.data.vegetarian === true;
     const level = parsed.data.level ?? settings.cookingLevel;
     const records = store.records(spaceId);
     const analyses = store.analyses(spaceId);
     const catalog = store.catalog();
     // Enough suitable shared recipes: draw one instead of paying for a new AI proposal.
-    const candidates = catalogCandidates(catalog, { date, level, avoid: settings.avoid, excludedNames: recentMealNames(records, analyses, date) });
+    const candidates = catalogCandidates(catalog, { date, level, vegetarian, avoid: settings.avoid, excludedNames: recentMealNames(records, analyses, date) });
     if (candidates.length >= catalogDrawThreshold) {
       const entry = candidates[randomInt(candidates.length)];
+      audit(request, 'meal.generate', `suggestion du catalogue pour le ${date} : « ${entry.details.name} »`, { date, level, source: 'catalog' });
       return { details: entry.details, source: 'catalog', ...(entry.sourceUrl ? { sourceUrl: entry.sourceUrl } : {}) };
     }
-    const comparable = catalogCandidates(catalog, { date, level, avoid: '', excludedNames: [] }).map(entry => entry.details.name);
+    const comparable = catalogCandidates(catalog, { date, level, vegetarian, avoid: '', excludedNames: [] }).map(entry => entry.details.name);
     const context = mealGenerationContext(records, analyses, date, comparable);
+    let proposedName: string | undefined;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let day: string;
+      try { day = store.reserveGeneration(spaceId); }
+      catch (error) {
+        request.log.warn(error);
+        if (attempt === 0) {
+          return reply.code(error instanceof AiQuotaError ? 429 : 409).send({ error: error instanceof Error ? error.message : 'Génération IA indisponible.' });
+        }
+        break;
+      }
+      let result: Awaited<ReturnType<typeof generateMeal>>;
+      try {
+        result = await generateMeal(
+          date, level, context, { ...settings, vegetarian }, config, settings.model,
+          AbortSignal.timeout(45_000), options.aiRequest, name => { proposedName = name; },
+        );
+      } catch (error) {
+        request.log.error(error);
+        continue;
+      }
+      store.recordTokens(day, result.inputTokens, result.outputTokens, spaceId);
+      if (!result.troll) store.addToCatalog(result.details, undefined, spaceId);
+      audit(request, 'meal.generate', `suggestion IA pour le ${date} : « ${result.details.name} »`, { date, level, source: 'ai' });
+      return { details: result.details, source: 'ai' };
+    }
+    if (proposedName && !vegetarian) return {
+      details: { name: proposedName, seasons: [seasonForDate(date)], ingredients: [], recipe: '' },
+      source: 'ai', warning: generationErrorMessage,
+    };
+    return reply.code(502).send({ error: generationErrorMessage });
+  });
+  // Same budget and model as meal generation; nothing is stored, the household copies the result.
+  app.post('/api/shopping/refine', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+    const spaceId = requireSpace(request, reply);
+    if (!spaceId) return reply;
+    const parsed = refineShoppingRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Liste de courses invalide.' });
+    const settings = store.settings(spaceId);
     let day: string;
     try { day = store.reserveGeneration(spaceId); }
     catch (error) {
       request.log.warn(error);
-      return reply.code(error instanceof AiQuotaError ? 429 : 409).send({ error: error instanceof Error ? error.message : 'Génération IA indisponible.' });
+      return reply.code(error instanceof AiQuotaError ? 429 : 409).send({ error: error instanceof Error ? error.message : 'IA indisponible.' });
     }
     try {
-      const result = await generateMeal(
-        date, level, context, settings, config, settings.model,
-        AbortSignal.timeout(45_000), options.aiRequest,
-      );
+      const result = await refineShoppingList(parsed.data.lines, config, settings.model, AbortSignal.timeout(60_000), options.aiRequest);
       store.recordTokens(day, result.inputTokens, result.outputTokens, spaceId);
-      store.addToCatalog(result.details, undefined, spaceId);
-      return { details: result.details, source: 'ai' };
+      audit(request, 'shopping.refine', `liste de courses affinée (${parsed.data.lines.length} lignes)`, { lines: parsed.data.lines.length });
+      return { list: result.list };
     } catch (error) {
       request.log.error(error);
-      return reply.code(502).send({ error: error instanceof Error ? error.message : 'La génération IA a échoué.' });
+      return reply.code(502).send({ error: 'Oups, l’IA n’a pas pu affiner la liste. La liste exacte reste disponible.' });
     }
   });
   // Read-only and without session: the cached catalogue also serves autocompletion and random draws in guest mode.
@@ -119,6 +164,7 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     if (!spaceId) return reply;
     const parsed = createFeatureRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Décrivez votre demande en 3 à 1 000 caractères.' });
+    audit(request, 'feature-request.create', `demande d’évolution : « ${parsed.data.text.slice(0, 120)} »`);
     return reply.code(201).send({ request: store.addFeatureRequest(spaceId, parsed.data.text, request.auth.user?.id ?? null) });
   });
   app.post('/api/sync', { config: { rateLimit: { max: 180, timeWindow: '1 minute' } } }, async (request, reply) => {
@@ -136,7 +182,9 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     const resetId = store.resetId(spaceId);
     // A client that has not yet applied the latest reset must not resurrect deleted meals or dishes.
     const stale = (parsed.data.resetId ?? null) !== resetId;
-    store.merge(spaceId, stale ? mutations.filter(record => !isResetScoped(record)) : mutations);
+    const applied = stale ? mutations.filter(record => !isResetScoped(record)) : mutations;
+    store.merge(spaceId, applied);
+    if (applied.length) audit(request, 'sync', describeMutations(applied), { mutations: applied.length });
     return {
       ...(config.CLIENT_UPDATE_ID ? { forceClientUpdate: config.CLIENT_UPDATE_ID } : {}),
       resetId, records: store.records(spaceId), analyses: store.analyses(spaceId),

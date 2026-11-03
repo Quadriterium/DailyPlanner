@@ -18,6 +18,76 @@ function success(value: Omit<DishDetails, 'ingredients'> & { ingredients: (strin
   }));
 }
 describe('Analyse IA asynchrone', () => {
+  it.each([
+    ['{"name":"Gratin \\"surprise\\" {courge}","recipe":"interrompue', 'Gratin "surprise" {courge}'],
+    ['{"ingredients":[{"name":"Nom imbriqué"}],"name":"Nom du repas","recipe":', 'Nom du repas'],
+    ['{"recipe":{"name":"Nom imbriqué"},"ingredients":', undefined],
+    ['{"name":"","recipe":', undefined],
+    ['{"name":123,"recipe":', undefined],
+    ['{"name":"https://example.org/recette","recipe":', undefined],
+    ['{"name":"GRATIN  EXISTANT","recipe":', undefined],
+    ['{"name":"Nom coupé', undefined],
+    ['{"name":"Nom \\\\ à garder","recipe":', 'Nom \\ à garder'],
+  ])('ne récupère qu’un nom racine complet et admissible depuis %s', async (text, name) => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text }] }],
+      usage: { input_tokens: 300, output_tokens: 200 },
+    })));
+    const onName = vi.fn();
+    await expect(generateMeal('2026-10-30', 2, { recentMeals: [], existingDishes: ['Gratin existant'] },
+      preferences, config, config.OPENAI_MODEL, new AbortController().signal, request, onName)).rejects.toThrow();
+    if (name) expect(onName).toHaveBeenCalledExactlyOnceWith(name);
+    else expect(onName).not.toHaveBeenCalled();
+  });
+  it('utilise le JSON final sans concaténer les commentaires ni le raisonnement', async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      status: 'completed', output: [
+        { type: 'reasoning', content: [{ type: 'output_text', text: 'Raisonnement interne' }] },
+        { type: 'message', phase: 'commentary', content: [{ type: 'output_text', text: 'Je prépare une idée.' }] },
+        { type: 'message', phase: 'final_answer', content: [{ type: 'output_text', text: JSON.stringify({ ...details, seasons: ['autumn'] }) }] },
+      ],
+      usage: { input_tokens: 300, output_tokens: 200 },
+    })));
+    const result = await generateMeal('2026-10-30', 2, { recentMeals: [], existingDishes: [] }, preferences,
+      config, config.OPENAI_MODEL, new AbortController().signal, request);
+    expect(result.details).toEqual({ ...details, seasons: ['autumn'], servings: 4 });
+    expect(result.inputTokens).toBe(300);
+    expect(result.outputTokens).toBe(200);
+    expect(request).toHaveBeenCalledOnce();
+  });
+  it.each(['messages', 'contenus'])('refuse plusieurs %s au lieu de choisir ou de concaténer leurs JSON', async shape => {
+    const content = { type: 'output_text', text: JSON.stringify(details) };
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      status: 'completed', output: shape === 'messages'
+        ? [{ type: 'message', content: [content] }, { type: 'message', content: [content] }]
+        : [{ type: 'message', content: [content, content] }],
+      usage: { input_tokens: 300, output_tokens: 200 },
+    })));
+    await expect(analyzeDish(dish(), preferences, config, config.OPENAI_MODEL, new AbortController().signal, request))
+      .rejects.toThrow('Réponse IA ambiguë');
+    expect(request).toHaveBeenCalledOnce();
+  });
+  it.each(['\nTexte supplémentaire', `\n${JSON.stringify(details)}`, '```'])(
+    'ne récupère pas silencieusement le premier objet JSON si la réponse contient un suffixe %s', async suffix => {
+      const recipe = dish();
+      store.merge('common', [recipe]);
+      const request = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({
+        status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(details) + suffix }] }],
+        usage: { input_tokens: 300, output_tokens: 200 },
+      })));
+      const log = vi.fn();
+      const addToCatalog = vi.spyOn(store, 'addToCatalog');
+      const worker = new AiWorker(store, config, log, request);
+      await worker.tick();
+      await worker.tick();
+      expect(store.analysis('common', recipe.id)).toMatchObject({
+        status: 'error', details: null, error: expect.stringContaining('objet JSON unique et valide'),
+      });
+      expect(store.get('common', `dish:${recipe.id}`)).toEqual(recipe);
+      expect(addToCatalog).not.toHaveBeenCalled();
+      expect(log).toHaveBeenCalledOnce();
+      expect(request).toHaveBeenCalledOnce();
+    });
   it('accepte une réponse IA de plus de trente ingrédients structurés', async () => {
     const ingredients = Array.from({ length: 45 }, (_, index) => ({ name: `Légume ${index}`, quantity: 100, unit: 'g' }));
     const request = vi.fn<typeof fetch>().mockResolvedValue(success({ ...details, ingredients }));

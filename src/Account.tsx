@@ -115,7 +115,7 @@ export function AccountCard({ auth, reachable, pending, onNotice }: {
 
   if (auth.mode === 'guest' || auth.mode === 'unknown') return <div className="settings-card account-card">
     <h3><Home size={19} />Compte et foyer</h3>
-    <p>Sans compte, vos repas restent uniquement sur cet appareil : ils peuvent être perdus si le navigateur efface ses données. Connectez-vous pour les retrouver sur tous vos appareils, les partager avec votre foyer et utiliser l’IA. Vos repas actuels seront ajoutés à votre carnet.</p>
+    <p>Vos repas sont enregistrés uniquement sur cet appareil. Connectez-vous pour les retrouver partout, les partager et utiliser l’IA.</p>
     <GoogleButton reachable={reachable} onError={message => setError(message)} />
     {error && <p className="inline-error" role="alert">{error}</p>}
     <LegalLinks />

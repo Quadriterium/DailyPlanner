@@ -151,4 +151,22 @@ describe('Génération à partir du catalogue', () => {
     expect(store.analysis('common', recipe.id)?.status).toBe('ready');
     expect(store.catalog()).toEqual([expect.objectContaining({ details: expect.objectContaining({ name: 'Velouté de courge' }) })]);
   });
+  it('demande le drapeau troll à l’IA et garde une fiche troll dans le seul carnet de son créateur', async () => {
+    const recipe = dish({ name: 'gratin de chaussettes' });
+    store.merge('common', [recipe]);
+    const request = vi.fn<typeof fetch>().mockResolvedValue(aiAnswer({ ...aiStructured('Gratin de chaussettes'), troll: true }));
+    await new AiWorker(store, config, vi.fn(), request).tick();
+    const body = JSON.parse(String(request.mock.calls[0][1]?.body));
+    expect(body.text.format.schema.required).toContain('troll');
+    expect(body.instructions).toContain('troll');
+    expect(store.analysis('common', recipe.id)).toMatchObject({ status: 'ready', details: { name: 'Gratin de chaussettes' } });
+    expect(store.catalog()).toEqual([]);
+  });
+  it('n’ajoute pas au catalogue une proposition générée marquée troll', async () => {
+    aiRequest.mockResolvedValue(aiAnswer({ ...aiStructured('Soupe de cailloux'), troll: true }));
+    const response = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30', level: 2 } });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({ source: 'ai', details: { name: 'Soupe de cailloux' } });
+    expect(store.catalog()).toEqual([]);
+  });
 });
