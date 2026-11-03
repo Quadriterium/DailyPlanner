@@ -15,6 +15,7 @@ const envSchema = z.object({
   OPENAI_ALLOWED_MODELS: z.string().default('gpt-6-luna,gpt-6-sol,gpt-5.6-luna,gpt-5.6-terra'),
   PUBLIC_ORIGIN: z.string().url().optional(),
   AUTH_ENABLED: booleanFlag('AUTH_ENABLED'),
+  ADMIN_USER_IDS: z.string().trim().default(''),
   GOOGLE_CLIENT_ID: z.string().trim().default(''),
   GOOGLE_CLIENT_SECRET: z.string().trim().default(''),
   AUTH_SESSION_DAYS: z.string().trim().default('30')
@@ -46,6 +47,11 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
     throw new Error('AUTH_TEST_PROVIDER est réservé aux tests (NODE_ENV=test et DATABASE_PATH=:memory:). Retirez-le de la configuration.');
   }
   const authEnabled = parsed.AUTH_ENABLED;
+  const adminUserIds = [...new Set(parsed.ADMIN_USER_IDS.split(',').map(id => id.trim()).filter(Boolean))];
+  if (adminUserIds.some(id => !z.string().uuid().safeParse(id).success)) {
+    throw new Error('ADMIN_USER_IDS doit contenir des identifiants de comptes complets (UUID), séparés par des virgules.');
+  }
+  if (adminUserIds.length && !authEnabled) throw new Error('ADMIN_USER_IDS exige AUTH_ENABLED=true. L’administration ne peut pas être publique.');
   if (authEnabled) {
     if (!parsed.PUBLIC_ORIGIN) throw new Error('AUTH_ENABLED=true exige PUBLIC_ORIGIN (adresse exacte utilisée dans le navigateur).');
     if (!parsed.AUTH_TEST_PROVIDER && (!parsed.GOOGLE_CLIENT_ID || !parsed.GOOGLE_CLIENT_SECRET)) {
@@ -60,6 +66,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   return {
     ...parsed,
     allowedModels,
+    adminUserIds,
     authEnabled,
     secureCookies,
     redirectUri: parsed.PUBLIC_ORIGIN ? `${parsed.PUBLIC_ORIGIN}/api/auth/google/callback` : '',

@@ -65,7 +65,7 @@ export function App() {
     signInTrigger.current = null;
   }, [notice]);
   const pwa = pwaStatus();
-  const enriching = Boolean(state.capabilities?.aiConfigured) && dishes.some(dish => {
+  const enriching = Boolean(state.capabilities?.aiConfigured) && !state.capabilities?.aiPaused && dishes.some(dish => {
     const analysis = state.analyses.find(item => item.dishId === dish.id && item.analysisKey === dish.analysisKey);
     return !dish.archived && !dish.details && !analysis?.error &&
       (!analysis || analysis.status === 'pending' || analysis.status === 'processing');

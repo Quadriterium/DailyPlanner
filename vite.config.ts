@@ -34,9 +34,16 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/api': {
           target: `http://127.0.0.1:${env.PORT || 3000}`,
-          // PUBLIC_ORIGIN désigne l'origine de production : en développement, le proxy retire l'en-tête Origin
-          // pour que l'API accepte les écritures ; Sec-Fetch-Site continue de bloquer les requêtes inter-sites.
-          configure: proxy => proxy.on('proxyReq', request => request.removeHeader('origin')),
+          // Hors authentification/admin, le proxy retire Origin pour les écritures locales ; les routes admin le conservent.
+          configure: proxy => proxy.on('proxyReq', (request, incoming) => {
+            if (incoming.url?.startsWith('/api/admin/') || (incoming.url?.startsWith('/api/auth/') && incoming.headers.origin)) {
+              // Admin writes require an Origin; only rewrite the known, local Vite origin.
+              const origin = incoming.headers.origin;
+              if (origin === 'http://localhost:5173' || origin === 'http://127.0.0.1:5173') {
+                request.setHeader('origin', env.PUBLIC_ORIGIN || `http://127.0.0.1:${env.PORT || 3000}`);
+              }
+            } else request.removeHeader('origin');
+          }),
         },
       },
     },

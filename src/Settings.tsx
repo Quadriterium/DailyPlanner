@@ -290,12 +290,14 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
       <h3><Sparkles size={19} />Intelligence artificielle</h3>
       {!allowed ? <p className="info-box">{signInHint}.</p> : <>
         {capabilities && !capabilities.aiConfigured && <p className="info-box">IA indisponible : la clé OpenAI n’est pas configurée sur le serveur.</p>}
+        {capabilities?.aiPaused && <p className="info-box">Les nouveaux appels IA sont suspendus par l’administrateur. Vos recettes restent disponibles.</p>}
         {modelInvalid && <p className="inline-error" role="alert">Le modèle enregistré ({settings?.model}) n’est plus autorisé. Choisissez-en un autre dans les options avancées.</p>}
         {capabilities && <>
           <dl><div><dt>Appels IA aujourd’hui</dt><dd>{capabilities.callsToday}</dd></div></dl>
           <p className="field-hint">{capabilities.dailyLimit === null
             ? 'Sans limite quotidienne pour votre foyer.'
             : `${capabilities.dailyLimit} requêtes IA par jour, renouvelées à minuit.`}</p>
+          {capabilities.monthlyLimit != null && <p className="field-hint">{capabilities.monthlyLimit} requêtes IA maximum par mois pour votre foyer (heure de Paris).</p>}
           <details className="settings-advanced" open={modelInvalid || undefined}>
             <summary>Options avancées</summary>
             <fieldset disabled={!online || pendingModel !== null}><legend className="field-label">Modèle OpenAI</legend>

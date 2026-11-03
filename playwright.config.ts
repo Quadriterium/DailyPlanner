@@ -3,6 +3,7 @@ import { defineConfig } from '@playwright/test';
 const host = process.env.E2E_HOST ?? '127.0.0.1';
 const baseURL = `http://${host}:3199`;
 const authURL = `http://${host}:3198`;
+const adminURL = `http://${host}:3197`;
 
 export default defineConfig({
   testDir: './e2e',
@@ -29,6 +30,15 @@ export default defineConfig({
     env: {
       HOST: host, PORT: '3199', DATABASE_PATH: ':memory:',
       OPENAI_API_KEY: '', PUBLIC_ORIGIN: baseURL,
+    },
+  }, {
+    command: 'node --import tsx e2e/admin-server.ts',
+    url: `${adminURL}/api/health`,
+    reuseExistingServer: false,
+    env: {
+      HOST: host, PORT: '3197', DATABASE_PATH: ':memory:', NODE_ENV: 'test',
+      AUTH_ENABLED: 'true', AUTH_TEST_PROVIDER: 'true', OPENAI_API_KEY: '', PUBLIC_ORIGIN: adminURL,
+      ADMIN_USER_IDS: '11111111-1111-4111-8111-111111111111',
     },
   }, {
     // Accounts enabled, with the simulated identity provider (e2e/auth.spec.ts).

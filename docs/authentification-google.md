@@ -1,5 +1,104 @@
 # Authentification Google et foyers partagés — plan de mise en œuvre
 
+## Administration graphique et compte Google
+
+L’interface `/admin` réutilise le client OAuth Google du planning. Aucun nouveau
+client OAuth ni mot de passe applicatif n’est nécessaire.
+
+### Côté Google
+
+1. Ouvrir [Google Auth Platform](https://console.cloud.google.com/auth/overview)
+   dans le **projet utilisé pour la connexion existante**.
+2. Dans **Clients**, sélectionner le client de type **Application Web**.
+   Son URI de redirection de production doit être exactement :
+   `https://dailyplanner.fr/api/auth/google/callback`.
+   Pour un essai local, ajouter l’URI exacte de l’origine locale, par exemple
+   `http://localhost:3000/api/auth/google/callback`.
+   **Ne pas utiliser `https://dailyplanner.fr/admin` comme callback.**
+3. Conserver uniquement les scopes d’identité `openid`, `email`, `profile`.
+   Aucune permission Gmail, Drive ou OpenAI n’est requise.
+4. Dans **Audience**, si le projet est en mode **Test**, ajouter le compte
+   administrateur aux utilisateurs de test. Si l’application est publiée,
+   conserver l’audience prévue pour ses utilisateurs : le rôle admin n’est pas
+   un réglage de l’audience Google.
+5. Sur [la sécurité du compte Google](https://myaccount.google.com/security),
+   activer **Validation en deux étapes**, configurer une passkey ou une clé de
+   sécurité et conserver les moyens de récupération dans un endroit sûr.
+   L’application ne reçoit pas le mot de passe Google et ne garantit pas qu’un
+   second facteur sera redemandé à chaque flux OAuth.
+
+Les menus Google peuvent changer ; référence du flux :
+[documentation OpenID Connect Google](https://developers.google.com/identity/openid-connect/openid-connect).
+
+### Sur le serveur
+
+Les valeurs `GOOGLE_CLIENT_ID` et `GOOGLE_CLIENT_SECRET` restent dans `.env`,
+avec `AUTH_ENABLED=true` et `PUBLIC_ORIGIN=https://dailyplanner.fr`.
+Se connecter au **planning** une première fois avec le compte choisi, puis :
+
+```powershell
+npm run admin -- users
+```
+
+Identifier le compte par son nom et son e-mail vérifié, et copier son **UUID
+complet**. Dans `.env`, renseigner :
+
+```dotenv
+ADMIN_USER_IDS=<UUID-complet-du-compte>
+```
+
+Plusieurs UUID sont possibles, séparés par des virgules. Aucun droit n’est
+attribué automatiquement au premier inscrit, à une adresse e-mail ou à un
+membre du foyer. Une liste vide interdit toute élévation admin.
+
+```powershell
+npm run build
+# Arrêter puis redémarrer le processus serveur habituel.
+```
+
+Ouvrir `/admin` à l’origine exacte configurée et choisir **Connexion admin avec
+Google**. Le retour OAuth revient sur `/admin`, sans importer ni synchroniser le
+carnet local. Une nouvelle session admin de 30 minutes est liée à la session
+utilisateur par un jeton conservé uniquement sous forme de hash côté serveur.
+Une connexion depuis le planning seul ne crée pas cette session admin.
+Les tentatives de callback invalides ne donnent aucun droit.
+
+Chaque route admin vérifie les droits et l’expiration ; chaque écriture vérifie
+aussi l’origine exacte, le jeton CSRF et une confirmation. Les actions réussies
+sont conservées dans `admin_audit` ; les refus et erreurs sont journalisés côté
+serveur. Aucune clé Google/OpenAI, cookie ou jeton de session n’est affiché.
+Les données restent uniquement en mémoire du navigateur et ne sont pas mises en
+cache par la PWA ; à expiration, déconnexion ou perte du réseau, l’interface
+retire les données affichées et exige une nouvelle vérification.
+
+Pour retirer les droits, enlever l’UUID de `ADMIN_USER_IDS` puis redémarrer.
+Pour fermer immédiatement tous les appareils du compte :
+
+```powershell
+npm run admin -- revoke-sessions --email <adresse-du-compte>
+```
+
+### Rubriques et limites
+
+- **Tableau de bord** : comptes, foyers, sessions actives, recettes, demandes,
+  états d’analyse et compteurs IA globaux.
+- **Utilisateurs / foyers** : listes recherchables et paginées, inscription,
+  dernière connexion, rattachement et révocation des sessions.
+- **OpenAI** : quotas quotidiens/mensuels par foyer, plafonds globaux, pause
+  des nouveaux appels et compteurs de tokens. Les plafonds portent sur les
+  **appels**, pas sur les euros ; le solde/rechargement reste chez OpenAI.
+- **Administration** : correction/retrait/restauration des recettes communes,
+  réponses aux demandes, sauvegarde SQLite sur le serveur et journal des actions.
+  Les corrections refusent les versions devenues obsolètes et ne modifient pas
+  les copies privées déjà présentes dans les carnets.
+
+Les opérations destructives sur les comptes, déplacements de foyers,
+restaurations de base et changements de secrets restent en ligne de commande.
+Les sauvegardes et le journal peuvent contenir des données personnelles :
+restreindre leurs accès et prévoir leur conservation selon les besoins réels.
+
+---
+
 Ce document décrit **tout** ce qu'il faut pour ajouter une connexion Google facultative à
 À table !, avec synchronisation par foyer. Il est conçu pour être exécuté en une seule
 intervention une fois les valeurs de la section 2 réunies.

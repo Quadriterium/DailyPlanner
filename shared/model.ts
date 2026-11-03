@@ -207,7 +207,9 @@ export const capabilitiesSchema = z.object({
   callsThisMonth: z.number(),
   inputTokens: z.number(),
   outputTokens: z.number(),
-  dailyLimit: z.number().int().positive().nullable().default(20),
+  dailyLimit: z.number().int().nonnegative().nullable().default(20),
+  monthlyLimit: z.number().int().nonnegative().nullable().optional(),
+  aiPaused: z.boolean().optional(),
 });
 export type Capabilities = z.infer<typeof capabilitiesSchema>;
 export const syncRequestSchema = z.object({
@@ -277,7 +279,7 @@ export const authSessionSchema = z.object({
 export type AuthSession = z.infer<typeof authSessionSchema>;
 /** Jeton aléatoire de 32 octets encodé en base64url (session, transaction OAuth, invitation). */
 export const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
-export const authStartRequestSchema = z.object({ invitation: tokenSchema.optional() }).strict();
+export const authStartRequestSchema = z.object({ invitation: tokenSchema.optional(), returnTo: z.literal('/admin').optional() }).strict();
 export const authStartResponseSchema = z.object({ url: z.string().url() }).strict();
 export const spaceNameSchema = z.string().trim().min(1).max(60);
 export const renameSpaceRequestSchema = z.object({ name: spaceNameSchema }).strict();

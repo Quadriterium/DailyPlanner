@@ -89,6 +89,25 @@ const source = readFileSync(new URL('../pwa/service-worker.js', import.meta.url)
   .replace('__VERSION__', 'test')
   .replace('__PRECACHE__', JSON.stringify(['/index.html', '/assets/app.css']));
 
+describe('Isolation de l’administration du cache PWA', () => {
+  it('laisse les navigations admin et les API au réseau, tout en conservant le planning hors ligne', () => {
+    const handlers: Record<string, (event: object) => void> = {};
+    const match = vi.fn().mockResolvedValue(new Response('planning'));
+    runInNewContext(source, {
+      self: { location: { origin: 'https://planner.example' }, addEventListener: (name: string, handler: typeof handlers[string]) => { handlers[name] = handler; } },
+      caches: { open: async () => ({ match }) }, fetch: vi.fn(), URL,
+    });
+    for (const path of ['/admin', '/admin/', '/admin/users', '/api/admin/users', '/api/admin/session']) {
+      const respondWith = vi.fn();
+      handlers.fetch({ request: { url: `https://planner.example${path}`, method: 'GET', mode: 'navigate' }, respondWith });
+      expect(respondWith).not.toHaveBeenCalled();
+    }
+    const respondWith = vi.fn();
+    handlers.fetch({ request: { url: 'https://planner.example/', method: 'GET', mode: 'navigate' }, respondWith });
+    expect(respondWith).toHaveBeenCalledOnce();
+  });
+});
+
 describe('Mise à jour imposée par la synchronisation', () => {
   let values: Map<string, string>;
   let reload: ReturnType<typeof vi.fn>;

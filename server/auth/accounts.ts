@@ -31,16 +31,16 @@ export class Accounts {
 
   // ---------- OAuth transactions ----------
 
-  async createTransaction(provider: string, invitation?: string) {
+  async createTransaction(provider: string, invitation?: string, returnTo?: '/admin') {
     const token = newToken();
     const codeVerifier = oauth.randomPKCECodeVerifier();
     const transaction = {
       token, state: oauth.randomState(), nonce: oauth.randomNonce(), codeVerifier,
       codeChallenge: await oauth.calculatePKCECodeChallenge(codeVerifier),
     };
-    this.db.prepare(`INSERT INTO auth_transactions (id_hash, provider, state, nonce, code_verifier, invitation_hash, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(hashToken(token), provider, transaction.state, transaction.nonce, codeVerifier,
-      invitation ? hashToken(invitation) : null, this.now() + transactionLifetime);
+    this.db.prepare(`INSERT INTO auth_transactions (id_hash, provider, state, nonce, code_verifier, invitation_hash, expires_at, return_to)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(hashToken(token), provider, transaction.state, transaction.nonce, codeVerifier,
+      invitation ? hashToken(invitation) : null, this.now() + transactionLifetime, returnTo ?? null);
     return transaction;
   }
 
@@ -56,6 +56,7 @@ export class Accounts {
       return {
         state: String(row.state), nonce: String(row.nonce), codeVerifier: String(row.code_verifier),
         invitationHash: row.invitation_hash === null ? null : String(row.invitation_hash),
+        returnTo: row.return_to === '/admin' ? '/admin' as const : undefined,
       };
     });
   }
@@ -281,6 +282,7 @@ export class Accounts {
     const now = this.now();
     this.store.transaction(() => {
       this.db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now);
+      this.db.prepare('DELETE FROM admin_sessions WHERE expires_at <= ?').run(now);
       this.db.prepare('DELETE FROM auth_transactions WHERE expires_at <= ?').run(now);
       this.db.prepare('DELETE FROM invitations WHERE expires_at <= ?').run(now - 30 * day);
     });
