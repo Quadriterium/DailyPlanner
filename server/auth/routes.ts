@@ -11,6 +11,9 @@ import { fakeProvider, registerFakeAuthorizationPage } from './fake.js';
 import { googleProvider } from './google.js';
 import { ProviderCancelledError, type IdentityProvider } from './provider.js';
 import { audit } from '../audit.js';
+import { isAdminUser } from '../admin-access.js';
+import { adminLifetime } from '../../shared/admin.js';
+import { hashToken } from './tokens.js';
 
 export interface RequestAuth {
   user: SessionUser | null;
@@ -107,7 +110,12 @@ export function registerAuth(app: FastifyInstance, store: Store, config: Config,
     if (!provider || !knownProvider(request)) return reply.code(404).send({ error: 'Connexion indisponible.' });
     const parsed = authStartRequestSchema.safeParse(request.body ?? {});
     if (!parsed.success) return reply.code(400).send({ error: 'Demande de connexion invalide.' });
-    const transaction = await accounts.createTransaction(provider.id, parsed.data.invitation);
+    if (parsed.data.returnTo && (request.headers.origin !== config.PUBLIC_ORIGIN ||
+        request.headers['sec-fetch-site'] === 'cross-site')) {
+      return reply.code(403).send({ error: 'Origine non autorisée pour la connexion admin.' });
+    }
+    if (parsed.data.returnTo && !config.adminUserIds.length) return reply.code(403).send({ error: 'Aucun administrateur configuré.' });
+    const transaction = await accounts.createTransaction(provider.id, parsed.data.invitation, parsed.data.returnTo);
     let url: URL;
     try { url = await provider.authorizationUrl(transaction); }
     catch (error) {
@@ -123,12 +131,14 @@ export function registerAuth(app: FastifyInstance, store: Store, config: Config,
       reply.clearCookie(names.oauth, cookieOptions);
       return reply.redirect(target, 303);
     };
-    const fail = (reason: AuthCallbackReason) => redirect(`/?auth=error&reason=${reason}`);
+    let returnTo = '/';
+    const fail = (reason: AuthCallbackReason) => redirect(`${returnTo}?auth=error&reason=${reason}`);
     if (!provider || !knownProvider(request)) return fail('invalid');
     const token = request.cookies[names.oauth];
     if (!token || !tokenSchema.safeParse(token).success) return fail('expired');
     const transaction = accounts.takeTransaction(token, provider.id);
     if (!transaction || transaction === 'expired') return fail('expired');
+    returnTo = transaction.returnTo ?? '/';
     let profile;
     try {
       // The tunnel reaches the server over HTTP: the public URL is rebuilt from PUBLIC_ORIGIN.
@@ -150,10 +160,24 @@ export function registerAuth(app: FastifyInstance, store: Store, config: Config,
         accounts.ensureHousehold(userId);
       }
       // A user who already has a household keeps the invitation unconsumed: the client asks for an explicit confirmation.
-      return { invitationFailed, joined, session: accounts.createSession(userId) };
+      return { invitationFailed, joined, userId, session: accounts.createSession(userId) };
     });
     setSessionCookie(reply, result.session.token, result.session.expiresAt);
     const who = { user: profile.email ?? profile.name };
+    if (transaction.returnTo === '/admin') {
+      if (!isAdminUser(store, config, result.userId)) {
+        audit(request, 'admin.login-denied', 'connexion admin refusée', who);
+        return redirect('/admin?auth=error&reason=forbidden');
+      }
+      store.transaction(() => {
+        store.db.prepare('INSERT INTO admin_sessions (token_hash, expires_at) VALUES (?, ?)')
+          .run(hashToken(result.session.token), now() + adminLifetime);
+        store.db.prepare('INSERT INTO admin_audit (user_id, action, target, details, created_at) VALUES (?, ?, ?, ?, ?)')
+          .run(result.userId, 'admin.login', result.userId, '{}', now());
+      });
+      audit(request, 'admin.login', 'connexion admin (30 minutes)', who);
+      return redirect('/admin?auth=ok');
+    }
     if (result.invitationFailed) {
       audit(request, 'auth.login', 'connexion (invitation invalide)', who);
       return redirect('/?auth=error&reason=invitation_invalid');

@@ -37,19 +37,19 @@ try {
     const users = listUsers(store);
     if (!users.length) console.log('Aucun compte.');
     for (const user of users) {
-      console.log(`${user.id.slice(0, 8)}  ${user.name}  ${user.email ?? '(sans e-mail)'}${user.emailVerified ? '' : ' (non vérifié)'}`);
+      console.log(`${user.id}  ${user.name}  ${user.email ?? '(sans e-mail)'}${user.emailVerified ? '' : ' (non vérifié)'}`);
       console.log(`  Foyer : ${user.spaceName ? `${user.spaceName} (${user.spaceId})` : 'aucun'}  ·  dernière connexion : ${date(user.lastLoginAt)}`);
     }
   } else if (command === 'spaces') {
     for (const space of listSpaces(store)) {
       console.log(`${space.id}  [${space.kind === 'common' ? 'commun' : 'foyer'}]  ${space.name}`);
       console.log(`  ${space.members} membre(s)  ·  ${space.records} repas/fiches  ·  créé le ${date(space.createdAt)}`);
-      console.log(`  IA : ${store.dailyLimit(space.id) === null ? 'sans limite' : '20 requêtes par jour'}`);
+      console.log(`  IA : ${store.dailyLimit(space.id) === null ? 'sans limite quotidienne' : `${store.dailyLimit(space.id)} requêtes par jour`}`);
     }
   } else if (command === 'ai-limit' && option('--space') && ['unlimited', 'default'].includes(option('--mode') ?? '')) {
     const spaceId = option('--space')!;
     store.setAiLimitExempt(spaceId, option('--mode') === 'unlimited');
-    console.log(`IA pour « ${store.space(spaceId)!.name} » : ${store.dailyLimit(spaceId) === null ? 'sans limite' : '20 requêtes par jour'}.`);
+    console.log(`IA pour « ${store.space(spaceId)!.name} » : ${store.dailyLimit(spaceId) === null ? 'sans limite quotidienne' : `${store.dailyLimit(spaceId)} requêtes par jour`}.`);
   } else if (command === 'assign-common' && email) {
     if (!args.includes('--confirm')) {
       console.error('Déplace toutes les données de l’espace commun vers le foyer de ce compte, puis vide l’espace commun. Ajoutez --confirm.');

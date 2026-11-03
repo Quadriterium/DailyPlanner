@@ -346,7 +346,7 @@ describe('API et stockage partagé', () => {
     const { capabilities } = syncResponseSchema.parse(response.json());
     expect(capabilities).toMatchObject({ callsToday: 211, callsThisMonth: 211, inputTokens: 1353, outputTokens: 495 });
     expect(response.json().capabilities.dailyLimit).toBeNull();
-    expect(response.json().capabilities).not.toHaveProperty('monthlyLimit');
+    expect(response.json().capabilities.monthlyLimit).toBeNull();
   });
   it('compte les échecs de génération sans bloquer les appels suivants ni le worker', async () => {
     await app.close();
@@ -610,7 +610,12 @@ describe('API et stockage partagé', () => {
     const legacy = new Store(persistentConfig);
     legacy.merge('common', [meal()]);
     for (let i = 0; i < 20; i++) legacy.reserveGeneration('common');
-    legacy.db.exec('DROP TABLE household_ai_usage; DROP TABLE ai_limit_exemptions; PRAGMA user_version = 2;');
+    legacy.db.exec(`
+      DROP TABLE household_ai_usage; DROP TABLE ai_limit_exemptions;
+      DROP TABLE admin_sessions; DROP TABLE admin_audit; DROP TABLE space_ai_policy; DROP TABLE global_ai_policy;
+      ALTER TABLE auth_transactions DROP COLUMN return_to;
+      PRAGMA user_version = 2;
+    `);
     legacy.close();
     try {
       for (let i = 0; i < 2; i++) {

@@ -18,6 +18,7 @@ import { AiQuotaError } from './database.js';
 import type { Config } from './config.js';
 import { registerAuth, type AuthOptions } from './auth/routes.js';
 import { audit, describeMutations, loggedUrl, logFailedRequest } from './audit.js';
+import { registerAdmin } from './admin-routes.js';
 
 const loopback = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 
@@ -45,6 +46,12 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     bodyLimit: 2 * 1024 * 1024,
   });
   app.addHook('onResponse', async (request, reply) => logFailedRequest(request, reply));
+  app.addHook('onSend', async (request, reply, payload) => {
+    if (/^\/admin(?:[/?]|$)/.test(request.url) || request.url.startsWith('/api/admin/')) {
+      reply.header('Cache-Control', 'no-store').header('X-Robots-Tag', 'noindex, nofollow');
+    }
+    return payload;
+  });
   await app.register(helmet, {
     contentSecurityPolicy: { directives: {
       defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"],
@@ -68,6 +75,7 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     )) return reply.code(403).send({ error: 'Origine non autorisée.' });
   });
   const { requireSpace } = registerAuth(app, store, config, options);
+  await registerAdmin(app, store, config, options.now ?? Date.now);
   app.get('/api/health', async () => ({ status: 'ok' }));
   app.post('/api/meals/generate', async (request, reply) => {
     const spaceId = requireSpace(request, reply);
@@ -216,7 +224,9 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     const status = typeof code === 'number' && code >= 400 && code < 500 ? code : 500;
     reply.code(status).send({ error: status === 429
       ? 'Trop de requêtes. Réessayez dans une minute.'
-      : status === 500 ? 'Erreur du serveur. Les modifications locales sont conservées.' : 'Requête refusée par le serveur.' });
+      : status === 500 ? request.url.startsWith('/api/admin/')
+        ? 'Erreur du serveur d’administration. Vérifiez le journal serveur avant de réessayer.'
+        : 'Erreur du serveur. Les modifications locales sont conservées.' : 'Requête refusée par le serveur.' });
   });
   return app;
 }

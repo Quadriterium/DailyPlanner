@@ -45,7 +45,7 @@ self.addEventListener('fetch', event => {
   const { request } = event;
   const url = new URL(request.url);
   if (request.method !== 'GET' || url.origin !== self.location.origin ||
-      url.pathname.startsWith('/api/')) return;
+      url.pathname.startsWith('/api/') || /^\/admin(?:\/|$)/.test(url.pathname)) return;
   if (request.mode === 'navigate') {
     // Legal pages are standalone documents, not the application shell.
     const page = LEGAL_PAGES.includes(url.pathname) ? `${url.pathname}.html` : '/index.html';

@@ -26,21 +26,23 @@ export function userByEmail(store: Store, email: string): string {
   return users[0].id;
 }
 
-export function listUsers(store: Store) {
-  return store.db.prepare(`SELECT users.id, users.display_name, users.email, users.email_verified, users.last_login_at, spaces.id AS space_id, spaces.name AS space_name
+export function listUsers(store: Store, page: { search: string; offset: number; limit: number } = { search: '', offset: 0, limit: -1 }) {
+  return store.db.prepare(`SELECT users.id, users.display_name, users.email, users.email_verified, users.created_at, users.last_login_at, spaces.id AS space_id, spaces.name AS space_name
     FROM users LEFT JOIN memberships ON memberships.user_id = users.id LEFT JOIN spaces ON spaces.id = memberships.space_id
-    ORDER BY users.last_login_at DESC, users.id`).all().map(row => ({
+    WHERE instr(lower(users.display_name || ' ' || COALESCE(users.email, '') || ' ' || users.id), lower(?)) > 0
+    ORDER BY users.last_login_at DESC, users.id LIMIT ? OFFSET ?`).all(page.search, page.limit, page.offset).map(row => ({
     id: String(row.id), name: String(row.display_name), email: row.email === null ? null : String(row.email),
-    emailVerified: Number(row.email_verified) === 1, lastLoginAt: Number(row.last_login_at),
+    emailVerified: Number(row.email_verified) === 1, createdAt: Number(row.created_at), lastLoginAt: Number(row.last_login_at),
     spaceId: row.space_id === null ? null : String(row.space_id), spaceName: row.space_name === null ? null : String(row.space_name),
   }));
 }
 
-export function listSpaces(store: Store) {
+export function listSpaces(store: Store, page: { search: string; offset: number; limit: number } = { search: '', offset: 0, limit: -1 }) {
   return store.db.prepare(`SELECT spaces.id, spaces.kind, spaces.name, spaces.created_at,
       (SELECT COUNT(*) FROM memberships WHERE space_id = spaces.id) AS members,
       (SELECT COUNT(*) FROM records WHERE space_id = spaces.id AND (key LIKE 'meal:%' OR key LIKE 'dish:%')) AS records
-    FROM spaces ORDER BY spaces.kind, spaces.created_at, spaces.id`).all().map(row => ({
+    FROM spaces WHERE instr(lower(spaces.name || ' ' || spaces.id), lower(?)) > 0
+    ORDER BY spaces.kind, spaces.created_at, spaces.id LIMIT ? OFFSET ?`).all(page.search, page.limit, page.offset).map(row => ({
     id: String(row.id), kind: String(row.kind), name: String(row.name), createdAt: Number(row.created_at),
     members: Number(row.members), records: Number(row.records),
   }));

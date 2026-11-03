@@ -9,12 +9,13 @@ import {
   type RecordData, type Settings,
 } from '../shared/model.js';
 import type { Config } from './config.js';
+import type { GlobalAiPolicy, SpaceAiPolicy } from '../shared/admin.js';
 
-export const schemaVersion = 4;
+export const schemaVersion = 5;
 export const dailyAiLimit = 20;
 export class AiQuotaError extends Error {
-  constructor() {
-    super('Limite de 20 requêtes IA atteinte pour ce foyer aujourd’hui. Réessayez demain (heure de Paris). Les recettes existantes restent disponibles.');
+  constructor(message = 'Limite de 20 requêtes IA atteinte pour ce foyer aujourd’hui. Réessayez demain (heure de Paris). Les recettes existantes restent disponibles.') {
+    super(message);
   }
 }
 export type SpaceKind = 'common' | 'household';
@@ -129,6 +130,30 @@ export class Store {
       `);
       this.db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('catalogId', ?)").run(randomUUID());
       this.db.exec('PRAGMA user_version = 4;');
+    });
+    this.transaction(() => {
+      if (Number(this.db.prepare('PRAGMA user_version').get()?.user_version) >= 5) return;
+      this.db.exec(`
+        ALTER TABLE auth_transactions ADD COLUMN return_to TEXT;
+        CREATE TABLE admin_sessions (
+          token_hash TEXT PRIMARY KEY REFERENCES sessions(token_hash) ON DELETE CASCADE,
+          expires_at INTEGER NOT NULL
+        );
+        CREATE TABLE admin_audit (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
+          action TEXT NOT NULL, target TEXT NOT NULL, details TEXT NOT NULL, created_at INTEGER NOT NULL
+        );
+        CREATE TABLE space_ai_policy (
+          space_id TEXT PRIMARY KEY REFERENCES spaces(id) ON DELETE CASCADE,
+          daily_limit INTEGER, monthly_limit INTEGER
+        );
+        CREATE TABLE global_ai_policy (
+          id INTEGER PRIMARY KEY CHECK (id = 1), paused INTEGER NOT NULL DEFAULT 0,
+          daily_limit INTEGER, monthly_limit INTEGER
+        );
+        INSERT INTO global_ai_policy (id) VALUES (1);
+        PRAGMA user_version = 5;
+      `);
     });
     this.ensureSpaceSettings(commonSpaceId);
     for (const row of this.db.prepare('SELECT space_id, data FROM analyses').all()) {
@@ -315,19 +340,64 @@ export class Store {
   }
 
   dailyLimit(spaceId: string): number | null {
+    const policy = this.db.prepare('SELECT daily_limit FROM space_ai_policy WHERE space_id = ?').get(spaceId);
+    if (policy) return policy.daily_limit === null ? null : Number(policy.daily_limit);
     return this.db.prepare('SELECT 1 FROM ai_limit_exemptions WHERE space_id = ?').get(spaceId) ? null : dailyAiLimit;
+  }
+
+  spaceAiPolicy(spaceId: string): SpaceAiPolicy {
+    if (!this.space(spaceId)) throw new Error('Foyer introuvable.');
+    const row = this.db.prepare('SELECT monthly_limit FROM space_ai_policy WHERE space_id = ?').get(spaceId);
+    return { dailyLimit: this.dailyLimit(spaceId), monthlyLimit: row?.monthly_limit == null ? null : Number(row.monthly_limit) };
+  }
+
+  setSpaceAiPolicy(spaceId: string, policy: SpaceAiPolicy) {
+    if (!this.space(spaceId)) throw new Error('Foyer introuvable.');
+    this.db.prepare(`INSERT INTO space_ai_policy (space_id, daily_limit, monthly_limit) VALUES (?, ?, ?)
+      ON CONFLICT(space_id) DO UPDATE SET daily_limit = excluded.daily_limit, monthly_limit = excluded.monthly_limit`)
+      .run(spaceId, policy.dailyLimit, policy.monthlyLimit);
+  }
+
+  globalAiPolicy(): GlobalAiPolicy {
+    const row = this.db.prepare('SELECT * FROM global_ai_policy WHERE id = 1').get()!;
+    return {
+      paused: Boolean(row.paused), dailyLimit: row.daily_limit === null ? null : Number(row.daily_limit),
+      monthlyLimit: row.monthly_limit === null ? null : Number(row.monthly_limit),
+    };
+  }
+
+  setGlobalAiPolicy(policy: GlobalAiPolicy) {
+    this.db.prepare('UPDATE global_ai_policy SET paused = ?, daily_limit = ?, monthly_limit = ? WHERE id = 1')
+      .run(policy.paused ? 1 : 0, policy.dailyLimit, policy.monthlyLimit);
   }
 
   setAiLimitExempt(spaceId: string, exempt: boolean) {
     if (!this.space(spaceId)) throw new Error('Foyer introuvable.');
-    if (exempt) this.db.prepare('INSERT OR IGNORE INTO ai_limit_exemptions (space_id) VALUES (?)').run(spaceId);
-    else this.db.prepare('DELETE FROM ai_limit_exemptions WHERE space_id = ?').run(spaceId);
+    this.transaction(() => {
+      if (exempt) this.db.prepare('INSERT OR IGNORE INTO ai_limit_exemptions (space_id) VALUES (?)').run(spaceId);
+      else this.db.prepare('DELETE FROM ai_limit_exemptions WHERE space_id = ?').run(spaceId);
+      this.db.prepare('UPDATE space_ai_policy SET daily_limit = ? WHERE space_id = ?').run(exempt ? null : dailyAiLimit, spaceId);
+    });
   }
 
-  private quotaReached(spaceId: string, day: string) {
-    const calls = Number(this.db.prepare('SELECT calls FROM household_ai_usage WHERE space_id = ? AND day = ?').get(spaceId, day)?.calls ?? 0);
-    const limit = this.dailyLimit(spaceId);
-    return limit !== null && calls >= limit;
+  private quotaError(spaceId: string, day: string): AiQuotaError | undefined {
+    const global = this.globalAiPolicy();
+    if (global.paused) return new AiQuotaError('Les nouveaux appels IA sont suspendus par l’administrateur. Les recettes existantes restent disponibles.');
+    const globalUsage = this.capabilities(new Date(`${day}T12:00:00Z`));
+    const usage = this.capabilities(new Date(`${day}T12:00:00Z`), spaceId);
+    const policy = this.spaceAiPolicy(spaceId);
+    if (global.dailyLimit !== null && globalUsage.callsToday >= global.dailyLimit) {
+      return new AiQuotaError('Plafond quotidien global d’appels IA atteint. Réessayez demain (heure de Paris).');
+    }
+    if (global.monthlyLimit !== null && globalUsage.callsThisMonth >= global.monthlyLimit) {
+      return new AiQuotaError('Plafond mensuel global d’appels IA atteint. Réessayez le mois prochain (heure de Paris).');
+    }
+    if (policy.dailyLimit !== null && usage.callsToday >= policy.dailyLimit) {
+      return new AiQuotaError(`Limite de ${policy.dailyLimit} requêtes IA atteinte pour ce foyer aujourd’hui. Réessayez demain (heure de Paris). Les recettes existantes restent disponibles.`);
+    }
+    if (policy.monthlyLimit !== null && usage.callsThisMonth >= policy.monthlyLimit) {
+      return new AiQuotaError(`Limite de ${policy.monthlyLimit} requêtes IA atteinte pour ce foyer ce mois-ci. Réessayez le mois prochain (heure de Paris).`);
+    }
   }
 
   private recordCall(spaceId: string, day: string) {
@@ -353,6 +423,8 @@ export class Store {
       inputTokens: Number(monthly.input_tokens),
       outputTokens: Number(monthly.output_tokens),
       dailyLimit: this.dailyLimit(spaceId ?? commonSpaceId),
+      monthlyLimit: this.spaceAiPolicy(spaceId ?? commonSpaceId).monthlyLimit,
+      aiPaused: this.globalAiPolicy().paused,
     };
   }
 
@@ -373,8 +445,9 @@ export class Store {
         const dish = this.get(spaceId, `dish:${analysis.dishId}`);
         if (dish?.type !== 'dish' || dish.archived || dish.details || dish.analysisKey !== analysis.analysisKey) continue;
         const day = parisDate();
-        if (this.quotaReached(spaceId, day)) {
-          if (!analysis.error) this.putAnalysis(spaceId, { ...analysis, error: new AiQuotaError().message });
+        const quota = this.quotaError(spaceId, day);
+        if (quota) {
+          if (analysis.error !== quota.message) this.putAnalysis(spaceId, { ...analysis, error: quota.message });
           continue;
         }
         this.putAnalysis(spaceId, { ...analysis, status: 'processing', error: null });
@@ -389,7 +462,8 @@ export class Store {
     if (!this.config.allowedModels.includes(this.settings(spaceId).model)) throw new Error('Choisissez un modèle IA autorisé dans les paramètres.');
     return this.transaction(() => {
       const day = parisDate();
-      if (this.quotaReached(spaceId, day)) throw new AiQuotaError();
+      const quota = this.quotaError(spaceId, day);
+      if (quota) throw quota;
       this.recordCall(spaceId, day);
       return day;
     });
@@ -557,10 +631,10 @@ export class Store {
 
   /** Returns false when no request matches the id or its unique prefix. */
   updateFeatureRequest(idOrPrefix: string, status: FeatureRequestStatus, note: string | null): boolean {
-    const matches = this.db.prepare('SELECT id FROM feature_requests WHERE id LIKE ?').all(`${idOrPrefix.replace(/[%_]/g, '')}%`);
+    const matches = this.db.prepare('SELECT id, updated_at FROM feature_requests WHERE id LIKE ?').all(`${idOrPrefix.replace(/[%_]/g, '')}%`);
     if (matches.length !== 1) return false;
     this.db.prepare('UPDATE feature_requests SET status = ?, note = ?, updated_at = ? WHERE id = ?')
-      .run(status, note, Date.now(), String(matches[0].id));
+      .run(status, note, Math.max(Date.now(), Number(matches[0].updated_at) + 1), String(matches[0].id));
     return true;
   }
 

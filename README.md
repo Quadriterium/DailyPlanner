@@ -162,7 +162,7 @@ Si un modèle déjà sélectionné est retiré de la liste autorisée, les analy
 | `OPENAI_MODEL` | `gpt-6-luna` | Modèle initial d’une nouvelle base |
 | `OPENAI_ALLOWED_MODELS` | `gpt-6-luna,gpt-6-sol,gpt-5.6-luna,gpt-5.6-terra` | Liste autorisée dans les paramètres |
 
-Chaque foyer dispose par défaut de **20 requêtes IA par jour**, renouvelées à minuit en `Europe/Paris`. Générations et enrichissements automatiques partagent le quota, échecs compris. Le contrôle est effectué côté serveur avant l’appel, y compris en cas de requêtes simultanées. Les enrichissements en attente reprennent automatiquement le lendemain ; la saisie manuelle et les recettes existantes restent utilisables. Il n’y a pas de quota mensuel ni de limite de génération par minute. Les anciennes variables `AI_DAILY_LIMIT` et `AI_MONTHLY_LIMIT` restent ignorées.
+Chaque foyer dispose par défaut de **20 requêtes IA par jour**, renouvelées à minuit en `Europe/Paris`. Générations, enrichissements automatiques et affinements de courses partagent le quota, échecs compris. Le contrôle est effectué côté serveur avant l’appel, y compris en cas de requêtes simultanées. L’interface admin permet de personnaliser les quotas quotidiens et mensuels des foyers, de fixer des plafonds globaux quotidiens/mensuels et de suspendre tous les nouveaux appels. Une valeur vide signifie « illimité », zéro interdit les nouveaux appels ; les exemptions des foyers ne contournent jamais les plafonds globaux. Par défaut, aucun plafond global ni mensuel n’est appliqué. Les appels déjà en cours ne sont pas annulés ; les recettes du catalogue restent disponibles sans appel OpenAI. Les analyses en attente reprennent quand le quota redevient disponible. Les anciennes variables `AI_DAILY_LIMIT` et `AI_MONTHLY_LIMIT` restent ignorées.
 
 Pendant une génération explicite, un dialogue bloquant indique la préparation du plat ; une animation discrète repère ensuite le repas ajouté au planning. Une nouvelle recette enrichie en arrière-plan affiche son état dans la fiche et se met à jour automatiquement, sans devoir la rouvrir.
 
@@ -171,6 +171,50 @@ Une seule analyse à la fois, délai de 45 secondes par appel, sortie plafonnée
 La lecture de la réponse ignore les messages intermédiaires explicitement marqués comme commentaires et exige un seul texte final contenant un objet JSON valide pour enregistrer une recette complète. Plusieurs textes finaux ou du texte ajouté après le JSON provoquent une erreur technique journalisée côté serveur. Pour une génération explicite, le réessai unique puis la conservation éventuelle du seul nom s’appliquent ; les détails techniques ne sont pas affichés au client.
 
 Les paramètres montrent les tentatives d’appel et les tokens des réponses traitées avec succès. Ce compteur de tokens n’est pas une facture : une réponse interrompue/invalide peut aussi avoir été facturée. **L’application ne plafonne pas les dépenses OpenAI.** Configurer les alertes et limites disponibles sur le projet OpenAI ; les restrictions du fournisseur restent applicables.
+
+### Administration graphique
+
+Ouvrir **`https://dailyplanner.fr/admin`** (ou `<PUBLIC_ORIGIN>/admin` en local).
+L’interface comporte quatre rubriques : tableau de bord, utilisateurs/foyers,
+OpenAI et administration (catalogue, demandes, sauvegardes et journal des actions).
+Les listes sont paginées, par 50 éléments. L’admin n’ouvre pas le carnet local
+et ne synchronise aucune donnée vers IndexedDB ; les appels API et la page
+ne sont pas mis en cache hors ligne.
+
+1. Configurer la connexion Google comme ci-dessous et activer la protection du
+   compte Google (passkey ou validation en deux étapes).
+2. Se connecter une première fois au planning avec le compte destiné à l’admin.
+3. Sur le serveur, exécuter `npm run admin -- users` et copier **l’UUID complet**
+   du bon compte (pas son e-mail ni son identifiant abrégé).
+4. Ajouter `ADMIN_USER_IDS=<UUID>` dans `.env`. Plusieurs UUID peuvent être
+   séparés par des virgules. Vide = personne n’a de droits admin.
+5. Reconstruire avec `npm run build`, redémarrer le serveur puis ouvrir `/admin`
+   et cliquer **Connexion admin avec Google**. La connexion normale au planning
+   ne suffit pas à ouvrir une session admin.
+
+Les droits sont vérifiés côté serveur à **chaque** requête : authentification
+activée, identifiant autorisé, identité Google avec e-mail vérifié et session
+admin dédiée de **30 minutes non glissantes**. Les écritures exigent l’origine
+exacte `PUBLIC_ORIGIN`, un jeton CSRF lié à la session et une confirmation
+explicite ; elles sont limitées et journalisées dans SQLite. Les corrections de
+catalogue et les réponses aux demandes refusent une version devenue obsolète.
+Fermer l’admin ne ferme pas la session du planning ; révoquer les sessions d’un
+compte ferme aussi ses accès admin. Retirer un UUID puis redémarrer retire ses
+droits, même si sa session n’a pas expiré.
+
+Le même client OAuth et le même callback Google sont utilisés : **ne pas ajouter
+`/admin` aux URI de redirection Google**. Le rôle administrateur est attribué par
+le serveur, pas par Google Cloud. Google peut réutiliser une connexion Google
+existante : l’application ne vérifie pas elle-même qu’un second facteur a été
+demandé à chaque connexion. Préparation détaillée :
+[administration et compte Google](docs/authentification-google.md#administration-graphique-et-compte-google).
+
+Le solde et le rechargement OpenAI restent dans le tableau de bord du fournisseur.
+L’interface gère des **quotas d’appels**, pas des crédits financiers ni un plafond
+en euros. Les secrets restent dans `.env`, jamais dans le navigateur.
+Les sauvegardes sont créées sur le serveur, sans téléchargement dans le client.
+Les suppressions de comptes, migrations de foyers et restaurations restent en
+ligne de commande, avec les sauvegardes et confirmations existantes.
 
 Les recettes/ingrédients IA sont des suggestions, pas une composition garantie, une certification allergène ou un conseil médical. Ils sont modifiables.
 
