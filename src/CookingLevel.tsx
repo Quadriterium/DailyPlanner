@@ -30,15 +30,23 @@ export function seasonalLevelCounts(dishes: Dish[], analyses: Analysis[], date: 
   return counts;
 }
 
-function CookingLevelMenu({ title, subtitle, preferred, counts, onChoose, onClose }: {
+function CookingLevelMenu({ title, subtitle, preferred, counts, vegetarianRequired, onChoose, onClose }: {
   title: string; subtitle: string; preferred: CookingLevel; counts?: Record<CookingLevel, number>;
-  onChoose: (level: CookingLevel) => void; onClose: () => void;
+  vegetarianRequired?: boolean;
+  onChoose: (level: CookingLevel, vegetarian: boolean) => void; onClose: () => void;
 }) {
+  const [vegetarian, setVegetarian] = useState(vegetarianRequired === true);
   return <Modal title={title} onClose={onClose}>
     <p className="modal-subtitle">{subtitle}</p>
+    {vegetarianRequired !== undefined && <>
+      <label className="checkbox-field"><input type="checkbox" checked={vegetarianRequired || vegetarian}
+        disabled={vegetarianRequired} onChange={event => setVegetarian(event.target.checked)} />Menu végétarien</label>
+      <p className="field-hint">{vegetarianRequired ? 'Activé par les paramètres du foyer pour ce repas.'
+        : 'Pour cette génération uniquement, sans modifier les paramètres.'}</p>
+    </>}
     <div className="level-menu">
       {cookingLevels.map(level => <button key={level} type="button" className={`level-choice ${level === preferred ? 'preferred' : ''}`}
-        disabled={counts?.[level] === 0} onClick={() => onChoose(level)}>
+        disabled={counts?.[level] === 0} onClick={() => onChoose(level, vegetarianRequired || vegetarian)}>
         <LevelGauge level={level} />
         <span className="level-choice-text"><strong>{cookingLevelLabels[level]}</strong>
           <small>{cookingLevelHints[level]}</small>
@@ -57,16 +65,17 @@ type LevelButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick' 
   /** Appui court : niveau des paramètres. */
   onPress: () => void;
   /** Appui long, clic droit ou touche Menu : niveau choisi dans le menu. */
-  onLevel: (level: CookingLevel) => void;
+  onLevel: (level: CookingLevel, vegetarian: boolean) => void;
   menuTitle: string;
   menuSubtitle: string;
   preferred?: CookingLevel;
   levelCounts?: () => Record<CookingLevel, number>;
+  vegetarianRequired?: boolean;
 };
 
 /** Bouton dont l'appui long ouvre un menu pour choisir le niveau de cuisine de cette action uniquement. */
 export function LevelButton({
-  children, onPress, onLevel, menuTitle, menuSubtitle, preferred = defaultCookingLevel, levelCounts, className, ...props
+  children, onPress, onLevel, menuTitle, menuSubtitle, preferred = defaultCookingLevel, levelCounts, vegetarianRequired, className, ...props
 }: LevelButtonProps) {
   const [menu, setMenu] = useState<Record<CookingLevel, number> | 'open' | null>(null);
   const press = useRef<{ timer?: number; x: number; y: number; opened: boolean }>({ x: 0, y: 0, opened: false });
@@ -110,7 +119,8 @@ export function LevelButton({
       {children}
     </button>
     {menu && <CookingLevelMenu title={menuTitle} subtitle={menuSubtitle} preferred={preferred}
+      vegetarianRequired={vegetarianRequired}
       counts={menu === 'open' ? undefined : menu} onClose={() => setMenu(null)}
-      onChoose={level => { setMenu(null); onLevel(level); }} />}
+      onChoose={(level, vegetarian) => { setMenu(null); onLevel(level, vegetarian); }} />}
   </>;
 }

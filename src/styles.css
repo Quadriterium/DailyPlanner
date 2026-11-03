@@ -54,6 +54,22 @@ h1 button span { color: #ad7652; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .section-heading h2 { font-size: 27px; margin-top: 6px; color: #604b39; }
 .section-heading .eyebrow { font-size: 9px; letter-spacing: 1.8px; }
+.shopping { max-width: 900px; margin: 0 auto; padding-bottom: 24px; }
+.shopping-period { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin: 20px 0; }
+.shopping-period label { flex: 1 1 160px; min-width: 0; }
+.shopping-period input { display: block; width: 100%; min-width: 0; margin-top: 6px; }
+.shopping-selection { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.shopping-meals { list-style: none; padding: 0; margin: 8px 0 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+.shopping-meals li + li { border-top: 1px solid var(--line); }
+.shopping-meals label { display: flex; align-items: center; gap: 14px; padding: 14px; min-height: 64px; cursor: pointer; }
+.shopping-meals input { flex-shrink: 0; width: 20px; height: 20px; accent-color: var(--olive); }
+.shopping-meals label > span { display: grid; gap: 5px; min-width: 0; overflow-wrap: anywhere; }
+.shopping-meals small { color: var(--muted); line-height: 1.4; }
+.shopping-meals strong { font-size: 15px; font-weight: 500; }
+.shopping-generate { margin: 12px 0; }
+.shopping-output { display: block; width: 100%; margin: 8px 0; line-height: 1.7; resize: vertical; }
+.shopping-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.shopping-actions button { flex: 1 1 200px; }
 .date-dash { color: #b0a18a; }
 .season-label { flex-shrink: 0; font-size: 11px; display: inline-flex; gap: 6px; align-items: center; border: 1px solid #e4d3bc; color: #996445; background: #f4ebde; padding: 8px 11px; border-radius: 30px; }
 .season-label.spring, .season-label.summer { color: #65704e; background: #eaf0e0; border-color: #d6dfc7; }
@@ -278,9 +294,9 @@ fieldset .season-filters { margin: 0; }
 .theme-schedule { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
 .theme-schedule label { display: flex; flex-direction: column; gap: 6px; color: #71634e; font-size: 12px; }
 .theme-schedule input { min-height: 44px; padding: 8px 12px; }
-.household-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-.household-options label { display: flex; flex-direction: column; gap: 6px; color: #71634e; font-size: 12px; }
-.household-options input { width: 100%; min-height: 42px; border: 1px solid var(--line); padding: 8px 10px; background: var(--paper); color: var(--ink); }
+.settings-advanced { margin-top: 16px; border-top: 1px solid var(--line); }
+.settings-advanced > summary { cursor: pointer; padding: 13px 0; font-size: 13px; font-weight: 500; color: var(--muted); }
+.settings-advanced > summary:hover { color: var(--ink); }
 .avoid-input { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; border: 1px solid var(--line); padding: 8px 10px; background: var(--paper); color: var(--ink); font: inherit; font-size: var(--field-font-size, 16px); resize: vertical; }
 .info-box { background: #f0eadc; padding: 12px 14px; border-radius: 10px; margin: 16px 0; }
 .feature-requests { list-style: none; margin: 18px 0 0; padding: 0; font-size: 13px; }
@@ -404,7 +420,7 @@ fieldset .season-filters { margin: 0; }
 [data-theme=dark] .level-choice.preferred, [data-theme=dark] .level-options .selected { border-color: #5f6a45; background: #2a2f22; }
 [data-theme=dark] .level-choice strong, [data-theme=dark] .level-option-text strong { color: #ecd8bb; }
 [data-theme=dark] .level-badge { background: #343b28; color: #cdd6ad; }
-[data-theme=dark] .household-options label, [data-theme=dark] .theme-schedule label { color: #cbbba1; }
+[data-theme=dark] .theme-schedule label { color: #cbbba1; }
 [data-theme=dark] .info-box { background: #2b241d; }
 [data-theme=dark] .privacy-note { color: #a3a88a; }
 [data-theme=dark] .inline-error { background: #3b2620; color: #f1a58a; }
@@ -423,9 +439,8 @@ fieldset .season-filters { margin: 0; }
   h1 button { font-size: 26px; }
   .install-shortcut { margin-left: auto; }
   .main-nav { order: 1; width: 100%; margin: 0; gap: 3px; border-radius: 12px; }
-  .main-nav button { padding: 0 13px; font-size: 12px; flex: 1; min-height: 40px; white-space: nowrap; gap: 7px; }
-  .main-nav .settings-nav { flex: 0; padding: 0 13px; }
-  .settings-nav span { display: none; }
+  .main-nav button { padding: 5px 6px; font-size: 11px; flex: 1; min-width: 0; min-height: 44px; gap: 4px; }
+  .main-nav .shopping-nav span { max-width: 70px; line-height: 1.2; }
   .section-heading { gap: 8px; }
   .section-heading h2 { font-size: 20px; margin-top: 5px; line-height: 1.3; }
   .section-heading .eyebrow { font-size: 8px; letter-spacing: 1.3px; }
@@ -470,7 +485,6 @@ fieldset .season-filters { margin: 0; }
   .settings-card { padding: 18px; }
   .settings-card h3 { font-size: 20px; }
   .settings-card dl { font-size: 11px; }
-  .household-options { grid-template-columns: 1fr; }
   .level-options { grid-template-columns: 1fr; }
   .settings-actions { gap: 6px 15px; }
   .connection-banner { font-size: 11px; padding: 10px; }
@@ -536,4 +550,7 @@ fieldset .season-filters { margin: 0; }
 }
 @media (max-width: 360px) {
   .account-banner .google-button.compact span { font-size: 11px; }
+}
+@media (max-width: 380px) {
+  .main-nav button { flex-direction: column; gap: 2px; padding: 5px 2px; font-size: 10px; line-height: 1.2; text-align: center; }
 }

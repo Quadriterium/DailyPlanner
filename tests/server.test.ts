@@ -56,6 +56,35 @@ describe('API et stockage partagé', () => {
     const sync = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [] } });
     expect(sync.json().capabilities).toMatchObject({ dailyLimit: 20, callsToday: 20, inputTokens: 200, outputTokens: 100 });
   });
+  it('affine une liste de courses en n’envoyant que les lignes, compte l’appel et signale les erreurs', async () => {
+    await app.close();
+    const list = { sections: [{ name: 'Crèmerie et œufs', items: ['Lait — 700 ml'] }] };
+    const aiRequest = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({
+      status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(list) }] }],
+      usage: { input_tokens: 30, output_tokens: 12 },
+    }))).mockResolvedValueOnce(new Response(JSON.stringify({
+      status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: '{"sections":[]}' }] }],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    })));
+    app = await buildApp(store, config, { logger: false, aiRequest });
+    const lines = ['lait — 666,667 ml'];
+    const response = await app.inject({ method: 'POST', url: '/api/shopping/refine', payload: { lines } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ list });
+    const body = JSON.parse(String(aiRequest.mock.calls[0][1]?.body));
+    expect(body.store).toBe(false);
+    expect(JSON.parse(body.input)).toEqual({ lignes: lines });
+    expect(body.instructions).toContain('rayon');
+    const failed = await app.inject({ method: 'POST', url: '/api/shopping/refine', payload: { lines } });
+    expect(failed.statusCode).toBe(502);
+    expect((await app.inject({ method: 'POST', url: '/api/shopping/refine', payload: { lines: [] } })).statusCode).toBe(400);
+    const sync = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [] } });
+    expect(sync.json().capabilities).toMatchObject({ callsToday: 2, inputTokens: 30, outputTokens: 12 });
+    for (let i = 0; i < 18; i++) store.reserveGeneration('common');
+    const refused = await app.inject({ method: 'POST', url: '/api/shopping/refine', payload: { lines } });
+    expect(refused.statusCode).toBe(429);
+    expect(aiRequest).toHaveBeenCalledTimes(2);
+  });
   it('partage le quota entre worker et génération, sans bloquer les autres foyers ou la synchronisation', async () => {
     for (let i = 0; i < 19; i++) store.reserveGeneration('common');
     const first = dish();
@@ -222,29 +251,32 @@ describe('API et stockage partagé', () => {
     }
     expect(store.settings('common').cookingLevel).toBe(4);
   });
-  it('signale un niveau IA différent de la demande sans enregistrer de plat ni relancer', async () => {
+  it('réessaie un niveau incorrect puis conserve seulement le nom avec un avertissement court', async () => {
     await app.close();
-    const aiRequest = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+    const aiRequest = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({
       status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text',
         text: JSON.stringify({ ...details, name: 'Nouvelle idée', seasons: ['autumn'], level: 2 }),
       }] }], usage: { input_tokens: 123, output_tokens: 45 },
     })));
     app = await buildApp(store, config, { logger: false, aiRequest });
     const response = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30', level: 1 } });
-    expect(response.statusCode).toBe(502);
-    expect(response.json().error).toContain('niveau de cuisine demandé');
-    expect(response.json()).not.toHaveProperty('details');
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      details: { name: 'Nouvelle idée', seasons: ['autumn'], ingredients: [], recipe: '' },
+      source: 'ai', warning: 'Oups, problème dans la génération.',
+    });
+    expect(store.catalog()).toEqual([]);
     expect(store.records('common').map(record => record.type)).toEqual(['settings']);
     expect(store.analyses('common')).toEqual([]);
     expect(store.settings('common').cookingLevel).toBe(2);
-    expect(store.capabilities().callsToday).toBe(1);
-    expect(aiRequest).toHaveBeenCalledOnce();
+    expect(store.capabilities().callsToday).toBe(2);
+    expect(aiRequest).toHaveBeenCalledTimes(2);
   });
-  it('refuse un doublon proposé par l’IA sans sauvegarder ni relancer automatiquement', async () => {
+  it('réessaie un doublon sans jamais conserver ce nom comme proposition partielle', async () => {
     await app.close();
     const recipe = dish({ name: 'Gratin de courge' });
     store.merge('common', [recipe]);
-    const aiRequest = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+    const aiRequest = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({
       status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text',
         text: JSON.stringify({ ...details, name: 'GRATIN  DE COURGE', seasons: ['autumn'] }),
       }] }],
@@ -253,10 +285,10 @@ describe('API et stockage partagé', () => {
     app = await buildApp(store, config, { logger: false, aiRequest });
     const response = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30' } });
     expect(response.statusCode).toBe(502);
-    expect(response.json().error).toContain('déjà créé ou déjà choisi');
+    expect(response.json()).toEqual({ error: 'Oups, problème dans la génération.' });
     expect(store.records('common')).toHaveLength(2);
-    expect(store.capabilities().callsToday).toBe(1);
-    expect(aiRequest).toHaveBeenCalledOnce();
+    expect(store.capabilities().callsToday).toBe(2);
+    expect(aiRequest).toHaveBeenCalledTimes(2);
   });
   it('génère un repas avec les compteurs partagés et sans créer de seconde analyse', async () => {
     await app.close();
@@ -318,17 +350,94 @@ describe('API et stockage partagé', () => {
   });
   it('compte les échecs de génération sans bloquer les appels suivants ni le worker', async () => {
     await app.close();
-    const aiRequest = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 503 }));
+    const aiRequest = vi.fn<typeof fetch>().mockImplementation(async () => new Response('{}', { status: 503 }));
     app = await buildApp(store, config, { logger: false, aiRequest });
     const generate = () => app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30' } });
     const failed = await generate();
     expect(failed.statusCode).toBe(502);
-    expect(failed.json().error).toContain('503');
+    expect(failed.json()).toEqual({ error: 'Oups, problème dans la génération.' });
     expect((await generate()).statusCode).toBe(502);
     store.merge('common', [dish()]);
     expect(store.claimAnalysis()).toBeDefined();
+    expect(aiRequest).toHaveBeenCalledTimes(4);
+    expect(store.capabilities().callsToday).toBe(5);
+  });
+  it('réessaie une fois un JSON invalide et ne publie que la recette valide du second appel', async () => {
+    await app.close();
+    const aiRequest = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text',
+          text: `${JSON.stringify({ ...details, name: 'Premier essai' })}\nTexte supplémentaire`,
+        }] }], usage: { input_tokens: 123, output_tokens: 45 },
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text',
+          text: JSON.stringify({ ...details, name: 'Second essai', seasons: ['autumn'] }),
+        }] }], usage: { input_tokens: 100, output_tokens: 50 },
+      })));
+    app = await buildApp(store, config, { logger: false, aiRequest });
+    const response = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30' } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ details: { ...details, name: 'Second essai', seasons: ['autumn'], servings: 4 }, source: 'ai' });
     expect(aiRequest).toHaveBeenCalledTimes(2);
-    expect(store.capabilities().callsToday).toBe(3);
+    expect(store.capabilities()).toMatchObject({ callsToday: 2, inputTokens: 100, outputTokens: 50 });
+  });
+  it.each(['suffixe', 'tronquée'])('conserve le dernier nom exploitable après deux réponses invalides : %s', async shape => {
+    await app.close();
+    let attempt = 0;
+    const aiRequest = vi.fn<typeof fetch>().mockImplementation(async () => {
+      const name = ++attempt === 1 ? 'Première idée' : 'Dernière idée';
+      return new Response(JSON.stringify({
+        status: shape === 'tronquée' ? 'incomplete' : 'completed',
+        output: [{ type: 'message', content: [{ type: 'output_text', text: shape === 'tronquée'
+          ? `{"name":${JSON.stringify(name)},"recipe":"interrompue`
+          : `${JSON.stringify({ ...details, name })}\nTexte supplémentaire`,
+        }] }], usage: { input_tokens: 123, output_tokens: 45 },
+      }));
+    });
+    app = await buildApp(store, config, { logger: false, aiRequest });
+    const response = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30' } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      details: { name: 'Dernière idée', seasons: ['autumn'], ingredients: [], recipe: '' },
+      source: 'ai', warning: 'Oups, problème dans la génération.',
+    });
+    expect(aiRequest).toHaveBeenCalledTimes(2);
+    expect(store.capabilities()).toMatchObject({ callsToday: 2, inputTokens: 0, outputTokens: 0 });
+    expect(store.catalog()).toEqual([]);
+    expect(store.analyses('common')).toEqual([]);
+    const partialDish = dish({ name: response.json().details.name, details: response.json().details });
+    store.merge('common', [partialDish]);
+    expect(store.claimAnalysis()).toBeUndefined();
+    expect(store.capabilities().callsToday).toBe(2);
+  });
+  it('garde le nom du premier essai si le second échoue sans réponse exploitable', async () => {
+    await app.close();
+    const aiRequest = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: '{"name":"Idée conservée","ingredients":null}' }] }],
+        usage: { input_tokens: 123, output_tokens: 45 },
+      })))
+      .mockRejectedValueOnce(new Error('Connexion interrompue'));
+    app = await buildApp(store, config, { logger: false, aiRequest });
+    const response = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30' } });
+    expect(response.json().details.name).toBe('Idée conservée');
+    expect(response.json().warning).toBe('Oups, problème dans la génération.');
+    expect(aiRequest).toHaveBeenCalledTimes(2);
+  });
+  it('ne dépasse pas le quota lors du réessai et garde le nom déjà reçu', async () => {
+    for (let index = 0; index < 19; index++) store.reserveGeneration('common');
+    await app.close();
+    const aiRequest = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: '{"name":"Dernière proposition","recipe":false}' }] }],
+      usage: { input_tokens: 123, output_tokens: 45 },
+    })));
+    app = await buildApp(store, config, { logger: false, aiRequest });
+    const response = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30' } });
+    expect(response.json().details.name).toBe('Dernière proposition');
+    expect(response.json().warning).toBe('Oups, problème dans la génération.');
+    expect(aiRequest).toHaveBeenCalledOnce();
+    expect(store.capabilities().callsToday).toBe(20);
   });
   it('explique une clé absente ou un modèle retiré', () => {
     for (const [overrides, message] of [

@@ -540,7 +540,8 @@ ce qui le rend reprenable après une coupure.
   hachage SHA-256.
 - Journaux : ne jamais journaliser cookies, jetons, codes OAuth (la query du retour Google
   contient `code` et `state` : masquer l'URL de cette route dans les journaux Fastify) ni corps
-  de `/api/invitations/*`.
+  de `/api/invitations/*`. Les requêtes réussies ne sont pas journalisées : seules les actions
+  utilisateur (`server/audit.ts`, attribuées à l'e-mail du compte) et les requêtes d'API en échec.
 - CSP : inchangée (la navigation vers Google n'est pas une requête `fetch`).
 - Pas de jeton d'accès ni de rafraîchissement Google stocké.
 

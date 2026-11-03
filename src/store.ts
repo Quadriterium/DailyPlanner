@@ -1,8 +1,10 @@
 import { useSyncExternalStore } from 'react';
+import { z } from 'zod';
+import { refinedShoppingListSchema, type RefinedShoppingList } from '../shared/shopping';
 import {
   addDays, apiErrorSchema, authSessionSchema, authStartResponseSchema, catalogCandidates, cookingLevelLabels, createdInvitationSchema, defaultCookingLevel,
-  defaultOpenAiModel, dishDetails, featureRequestListSchema, featureRequestSchema, generateMealResponseSchema, invitationPreviewSchema,
-  mealId, normalizedName, randomMealCandidates, recentMealNames, seasonForDate, spaceDetailsSchema, syncResponseSchema,
+  defaultOpenAiModel, dishDetails, featureRequestListSchema, featureRequestSchema, generateMealResponseSchema, generationErrorMessage, invitationPreviewSchema,
+  matchesDiet, mealId, normalizedName, randomMealCandidates, recentMealNames, seasonForDate, spaceDetailsSchema, syncResponseSchema, vegetarianForSlot,
   type AuthSession, type CatalogEntry, type CookingLevel, type CreatedInvitation, type Dish, type DishDetails, type FeatureRequest, type Household,
   type InvitationPreview, type Meal, type SessionSpace, type SessionUser, type Slot, type SpaceDetails,
 } from '../shared/model';
@@ -295,17 +297,19 @@ export function preferredCookingLevel(records: State['records']): CookingLevel {
 /** Shared recipes eligible for a random draw: not already in the household notebook, nor chosen around this date. */
 export function sharedRandomCandidates(
   date: string, level?: CookingLevel, records = state.records, analyses = state.analyses, entries = catalogEntries(),
+  vegetarian = false,
 ): CatalogEntry[] {
   const known = records.filter(record => record.type === 'dish').flatMap(dish =>
     [dish.name, dishDetails(dish, analyses.find(analysis => analysis.dishId === dish.id)).name]);
   const settings = records.find(record => record.type === 'settings');
   return catalogCandidates(entries, {
-    date, level, avoid: settings?.avoid ?? '', excludedNames: [...known, ...recentMealNames(records, analyses, date)],
+    date, level, vegetarian, avoid: settings?.avoid ?? '', excludedNames: [...known, ...recentMealNames(records, analyses, date)],
   });
 }
 
 export async function fillMeal(
   date: string, slot: Slot, start: string, mode: 'ai' | 'random', replacing?: Meal, index?: 1, level?: CookingLevel,
+  vegetarian = false,
 ) {
   if (mode === 'ai') requireServerFeatures();
   await refresh();
@@ -319,6 +323,7 @@ export async function fillMeal(
   } else if (previous?.type === 'meal' && previous.text.trim()) throw new Error('Ce créneau contient déjà un repas.');
   let generated: DishDetails | undefined;
   let generatedSource: string | undefined;
+  let warning: string | undefined;
   if (mode === 'ai') {
     await synchronize();
     requireServerFeatures();
@@ -331,22 +336,26 @@ export async function fillMeal(
     try {
       response = await fetch('/api/meals/generate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date, level: level ?? preferredCookingLevel(state.records) }),
-        cache: 'no-store', signal: AbortSignal.timeout(50_000),
+        body: JSON.stringify({
+          date, slot, level: level ?? preferredCookingLevel(state.records),
+          vegetarian: vegetarian || vegetarianForSlot(state.records.find(record => record.type === 'settings'), slot),
+        }),
+        cache: 'no-store', signal: AbortSignal.timeout(95_000),
       });
     } catch (error) {
-      throw new Error('Génération impossible : serveur inaccessible ou délai dépassé. Le créneau reste inchangé.', { cause: error });
+      throw new Error(generationErrorMessage, { cause: error });
     }
     const body: unknown = await response.json().catch(() => null);
     if (!response.ok) {
       noteAuthFailure(response, body);
-      throw new Error(apiError(body, `Génération refusée (HTTP ${response.status}).`));
+      throw new Error(response.status >= 500 ? generationErrorMessage : apiError(body, `Génération refusée (HTTP ${response.status}).`));
     }
     if (startEpoch !== epoch) throw new Error('Le compte ou le foyer a changé pendant la génération. Le créneau reste inchangé.');
     const result = generateMealResponseSchema.safeParse(body);
-    if (!result.success) throw new Error('Proposition IA invalide. Le créneau reste inchangé.');
+    if (!result.success) throw new Error(generationErrorMessage);
     generated = result.data.details;
     generatedSource = result.data.sourceUrl;
+    warning = result.data.warning;
     await refresh();
     const current = state.records.find(record => record.type === 'meal' && record.id === id);
     if (current?.mutationId !== previous?.mutationId) {
@@ -356,18 +365,21 @@ export async function fillMeal(
   const dishes = state.records.filter(record => record.type === 'dish');
   const meals = state.records.filter(record => record.type === 'meal');
   const randomLevel = level ?? preferredCookingLevel(state.records);
+  const requiredVegetarian = vegetarian || vegetarianForSlot(state.records.find(record => record.type === 'settings'), slot);
   let selected: Dish | undefined;
   let copied: { details: DishDetails; sourceUrl?: string } | undefined;
   if (generated) {
-    selected = dishes.find(dish => !dish.archived && (
+    if (!matchesDiet(generated, requiredVegetarian)) throw new Error('La proposition reçue n’est pas classée végétarienne. Le créneau reste inchangé.');
+    selected = dishes.find(dish => !dish.archived &&
+      matchesDiet(dishDetails(dish, state.analyses.find(analysis => analysis.dishId === dish.id)), requiredVegetarian) && (
       normalizedName(dish.name) === normalizedName(generated.name) ||
       normalizedName(dishDetails(dish, state.analyses.find(analysis => analysis.dishId === dish.id)).name) === normalizedName(generated.name)));
     if (!selected) copied = { details: generated, ...(generatedSource ? { sourceUrl: generatedSource } : {}) };
   } else {
-    const candidates = randomMealCandidates(dishes, state.analyses, meals, date, start, randomLevel);
+    const candidates = randomMealCandidates(dishes, state.analyses, meals, date, start, randomLevel, requiredVegetarian);
     const week = meals.filter(meal => meal.date >= start && meal.date <= addDays(start, 6) && meal.text.trim());
     const unused = candidates.filter(dish => !week.some(meal => meal.dishId === dish.id));
-    const shared = sharedRandomCandidates(date, randomLevel);
+    const shared = sharedRandomCandidates(date, randomLevel, state.records, state.analyses, catalogEntries(), requiredVegetarian);
     // Uniform draw over unused household dishes and suitable shared ones; household repeats only as a last resort.
     const pool: (Dish | CatalogEntry)[] = unused.length || shared.length ? [...unused, ...shared] : candidates;
     const choice = pool[Math.floor(Math.random() * pool.length)];
@@ -375,6 +387,7 @@ export async function fillMeal(
     else if (choice) copied = { details: choice.details, ...(choice.sourceUrl ? { sourceUrl: choice.sourceUrl } : {}) };
   }
   const details = copied?.details ?? (selected ? dishDetails(selected, state.analyses.find(analysis => analysis.dishId === selected!.id)) : undefined);
+  if (!details && requiredVegetarian) throw new Error(`Aucun repas de saison classé végétarien de niveau « ${cookingLevelLabels[randomLevel]} » dans le carnet ni le catalogue. Classez vos fiches dans le carnet, choisissez un autre niveau${serverFeaturesAvailable() ? ' ou utilisez la génération IA' : ''}.`);
   if (!details) throw new Error(randomMealCandidates(dishes, state.analyses, meals, date, start).length
     ? `Aucun repas de saison de niveau « ${cookingLevelLabels[randomLevel]} » dans le carnet ni le catalogue. Appuyez longuement sur le bouton pour choisir un autre niveau${serverFeaturesAvailable() ? ', ou utilisez la génération IA' : ''}.`
     : `Aucun repas de saison dans le carnet ni le catalogue. Ajoutez-en un${serverFeaturesAvailable() ? ' ou utilisez la génération IA' : ''}.`);
@@ -387,6 +400,7 @@ export async function fillMeal(
   drafts.push({ type: 'meal', id, date, slot, ...(index === 1 ? { index } : {}),
     text: details.name, dishId, household: replacing?.household ?? null });
   await save(drafts);
+  return warning;
 }
 
 export async function saveMealHousehold(meal: Meal, household: Household | null) {
@@ -550,6 +564,27 @@ export async function loadFeatureRequests(): Promise<FeatureRequest[]> {
 export async function submitFeatureRequest(text: string): Promise<FeatureRequest> {
   const body = await featureRequestCall({ text });
   return parsed(featureRequestSchema, typeof body === 'object' && body !== null && 'request' in body ? body.request : null);
+}
+
+export async function refineShopping(lines: string[]): Promise<RefinedShoppingList> {
+  requireServerFeatures();
+  let response: Response;
+  try {
+    response = await fetch('/api/shopping/refine', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lines }),
+      cache: 'no-store', signal: AbortSignal.timeout(75_000),
+    });
+  } catch (error) {
+    throw new Error('Serveur inaccessible ou délai dépassé. La liste exacte reste disponible.', { cause: error });
+  }
+  const body: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    noteAuthFailure(response, body);
+    throw new Error(apiError(body, `Demande refusée (HTTP ${response.status}).`));
+  }
+  const result = z.object({ list: refinedShoppingListSchema }).safeParse(body);
+  if (!result.success) throw new Error('Réponse serveur incompatible.');
+  return result.data.list;
 }
 
 // ---------- sign-in, sign-out, invitations ----------

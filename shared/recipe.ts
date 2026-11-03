@@ -22,6 +22,21 @@ function value(text: string): number {
   return Number(text.replace(/\s/g, '').replace(',', '.'));
 }
 
+/** Conservative reader for older, manually edited ingredient lines. */
+export function parseIngredient(text: string): Ingredient | undefined {
+  const measuredUnit = String.raw`(?:kilogrammes?|grammes?|milligrammes?|millilitres?|centilitres?|décilitres?|litres?|kg|mg|g|ml|cl|dl|l|c\.\s*à\s*(?:[sc]\.|soupe|café)|cuillères?\s+à\s+(?:soupe|café)|boîtes?|sachets?|gousses?|bottes?|pincées?)`;
+  const match = new RegExp(`^\\s*(${number})\\s*(?:(${measuredUnit})(?![\\p{L}])\\s*(?:de\\s+|d['’])?)?(.+?)\\s*$`, 'iu').exec(text);
+  if (!match) {
+    const reversed = /^(.+?)\s*:\s*(.+)$/.exec(text);
+    if (!reversed) return undefined;
+    return parseIngredient(`${reversed[2]} de ${reversed[1]}`);
+  }
+  const quantity = value(match[1]);
+  const name = match[3].replace(/^(?:de\s+|d['’])/i, '').trim();
+  if (!Number.isFinite(quantity) || quantity <= 0 || !/^[\p{L}]/u.test(name) || /^(?:à|et|ou)\s/i.test(name)) return undefined;
+  return { name, quantity, unit: match[2] ?? '' };
+}
+
 /** Kitchen-friendly precision: 330 g rather than 333,33 g, 3 oignons rather than 2,67. */
 function kitchenStep(quantity: number, unit: string): number {
   const name = unit.trim().toLocaleLowerCase('fr-FR');
@@ -101,5 +116,5 @@ export function scaleRecipe(details: DishDetails, target: number) {
     new RegExp(`(?<![\\d.,/])(?:${patterns.join('|')})(?![\\p{L}\\d])`, 'giu'),
     text => replacements.get(text.toLocaleLowerCase('fr-FR').replace(/\s/g, ''))!.replacement,
   ) : details.recipe).replace(portions, text => text.replace(/\d+/, format.format(target)));
-  return { ...details, ingredients, recipe, base, unscaled };
+  return { ...details, ingredients, recipe: details.preserveRecipe ? details.recipe : recipe, base, unscaled };
 }

@@ -232,6 +232,7 @@ export class Store {
     this.put(spaceId, {
       type: 'settings', id: 'global', model: this.config.OPENAI_MODEL,
       household: { ...defaultHousehold }, avoid: '', cookingLevel: defaultCookingLevel,
+      vegetarian: false, vegetarianDinners: false,
       modifiedAt: 0, mutationId: '00000000-0000-0000-0000-000000000000',
     });
   }
@@ -302,7 +303,9 @@ export class Store {
         this.put(spaceId, record);
         if (record.type === 'dish') {
           const current = this.analysis(spaceId, record.id);
-          if (!current || current.analysisKey !== record.analysisKey) this.putAnalysis(spaceId, {
+          if (!current || current.analysisKey !== record.analysisKey ||
+            (previous?.type === 'dish' && (record.sourceRecipe || previous.sourceRecipe) &&
+              (record.name !== previous.name || JSON.stringify(record.sourceRecipe) !== JSON.stringify(previous.sourceRecipe)))) this.putAnalysis(spaceId, {
             dishId: record.id, analysisKey: record.analysisKey,
             status: 'pending', details: null, error: null,
           });
@@ -392,16 +395,25 @@ export class Store {
     });
   }
 
-  finishAnalysis(spaceId: string, dish: Dish, details: DishDetails | null, error: string | null) {
+  finishAnalysis(spaceId: string, dish: Dish, details: DishDetails | null, error: string | null, sharing?: Analysis['sharing']): boolean {
     const current = this.get(spaceId, `dish:${dish.id}`);
     // An obsolete response must never replace a manual edit or a newer analysis.
-    if (current?.type !== 'dish' || current.analysisKey !== dish.analysisKey || current.details) return;
+    if (current?.type !== 'dish' || current.analysisKey !== dish.analysisKey || current.details ||
+      current.name !== dish.name || JSON.stringify(current.sourceRecipe) !== JSON.stringify(dish.sourceRecipe)) return false;
+    if (current.archived) {
+      this.putAnalysis(spaceId, {
+        dishId: dish.id, analysisKey: dish.analysisKey, status: 'pending', details: null, error: null,
+      });
+      return false;
+    }
     const name = this.analysis(spaceId, dish.id)?.name;
     this.putAnalysis(spaceId, {
       dishId: dish.id, analysisKey: dish.analysisKey,
       status: error ? 'error' : 'ready', details, error,
       ...(name ? { name } : {}),
+      ...(sharing ? { sharing } : {}),
     });
+    return true;
   }
 
   nameAnalysis(spaceId: string, dish: Dish, name: string) {
