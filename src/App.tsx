@@ -14,6 +14,7 @@ import {
 import { Confirm, GoogleButton } from './Account';
 import { checkForUpdate, pwaStatus, registerPwa } from './pwa';
 import { useTheme } from './theme';
+import { UserMessages } from './UserMessages';
 
 interface InstallEvent extends Event {
   prompt: () => Promise<void>;
@@ -251,7 +252,7 @@ export function App() {
         {tab === 'shopping' && <Shopping today={today} meals={meals} dishes={dishes} analyses={state.analyses} household={settings?.household}
           online={state.connection === 'online' && Boolean(state.capabilities?.aiConfigured)} onSignInRequired={requestAiSignIn} />}
         {tab === 'library' && <Library dishes={dishes} analyses={state.analyses} online={state.connection === 'online'} aiConfigured={Boolean(state.capabilities?.aiConfigured)} onSaved={() => setToast(true)} onSignInRequired={requestAiSignIn} />}
-        {tab === 'settings' && <Settings settings={settings} capabilities={state.capabilities} online={state.connection === 'online'} appearance={appearance}
+        {tab === 'settings' && <Settings settings={settings} dishes={dishes} analyses={state.analyses} capabilities={state.capabilities} online={state.connection === 'online'} appearance={appearance}
           lastSync={state.lastSync} pending={state.pending} syncing={state.syncing} onSync={() => void forceSync()} onInstall={() => void install()}
           auth={state.auth} reachable={state.reachable} onNotice={(title, text) => setNotice({ kind: 'info', title, text })} />}
       </>}
@@ -310,6 +311,8 @@ export function App() {
       }}>
       <p>Cet appareil contient {plural(state.legacyPending, 'modification')} non synchronisée{state.legacyPending > 1 ? 's' : ''} de l’ancien carnet commun. Importer les modifications non synchronisées de l’ancien carnet commun dans « {state.auth.space?.name} » ? « Annuler » les ignore définitivement sur cet appareil.</p>
     </Confirm>}
+    {state.auth.mode === 'signed-in' && state.auth.user && state.connection === 'online' && !notice && !invitation && !state.legacyPending &&
+      <UserMessages key={state.auth.user.id} />}
     {notice && <Modal title={notice.title} onClose={() => setNotice(null)}>
       <div className={`notice-icon ${notice.kind}`}>{notice.kind === 'error' ? <CloudOff size={27} /> : notice.kind === 'success' ? <Check size={27} /> : <Leaf size={27} />}</div>
       <p className="notice-text">{notice.text}</p>

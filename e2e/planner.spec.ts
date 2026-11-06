@@ -243,10 +243,15 @@ test('paramètres : mise à jour forcée sans service worker', async ({ browser,
   } finally { await context.close(); }
 });
 
-test('signal serveur : mise à jour avant validation du format, sans boucle ni perte locale', async ({ page, context }) => {
+test('signal serveur : nouvelle version appliquée avant validation du format, sans boucle ni perte locale', async ({ page, context }) => {
   await page.evaluate(async () => { await navigator.serviceWorker.ready; });
   await page.reload();
   await awaitSynced(page);
+  // A new script URL simulates a newly deployed build waiting to be activated.
+  await page.evaluate(async () => {
+    await navigator.serviceWorker.register('/sw.js?required-update-test', { updateViaCache: 'none' });
+  });
+  await expect.poll(() => page.evaluate(async () => Boolean((await navigator.serviceWorker.getRegistration())?.waiting))).toBe(true);
   await context.setOffline(true);
   const text = name('mise à jour obligatoire');
   await writeMeal(page, text);
@@ -266,10 +271,42 @@ test('signal serveur : mise à jour avant validation du format, sans boucle ni p
   await reloaded;
   await awaitSynced(page);
   await expect(cell(page)).toHaveText(text);
+  await expect.poll(() => page.evaluate(() => navigator.serviceWorker.controller?.scriptURL)).toContain('required-update-test');
   expect(await page.evaluate(() => sessionStorage.getItem('a-table-client-update'))).toBe(id);
   await forceSync(page);
   await expect(page.getByRole('dialog', { name: 'Tout est à jour' })).toBeVisible();
   expect(loads).toBe(1);
+});
+
+test('signal serveur : aucun rechargement à la première connexion ni pour une version déjà à jour', async ({ browser, baseURL }) => {
+  for (const serviceWorkers of ['allow', 'block'] as const) {
+    const context = await browser.newContext({ baseURL, serviceWorkers });
+    try {
+      await context.route('**/api/sync', async route => {
+        const response = await route.fetch();
+        await route.fulfill({ response, json: { ...await response.json(), forceClientUpdate: 'deja-a-jour' } });
+      });
+      const page = await context.newPage();
+      let loads = 0;
+      page.on('domcontentloaded', () => { if (page.url() !== 'about:blank') loads += 1; });
+      await page.goto('/');
+      await awaitSynced(page);
+      await expect.poll(() => page.evaluate(() => sessionStorage.getItem('a-table-client-update'))).toBe('deja-a-jour');
+      if (serviceWorkers === 'allow') {
+        await page.evaluate(async () => { await navigator.serviceWorker.ready; });
+        // A new tab of an installed app, controlled by the current service worker.
+        const tab = await context.newPage();
+        let tabLoads = 0;
+        tab.on('domcontentloaded', () => { if (tab.url() !== 'about:blank') tabLoads += 1; });
+        await tab.goto('/');
+        await awaitSynced(tab);
+        expect(await tab.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+        await expect.poll(() => tab.evaluate(() => sessionStorage.getItem('a-table-client-update'))).toBe('deja-a-jour');
+        expect(tabLoads).toBe(1);
+      }
+      expect(loads).toBe(1);
+    } finally { await context.close(); }
+  }
 });
 
 test('signal serveur : échec visible et nouvelle tentative sans perdre la file locale, sans PWA', async ({ browser, baseURL }) => {
@@ -288,8 +325,14 @@ test('signal serveur : échec visible et nouvelle tentative sans perdre la file 
       const response = await route.fetch();
       await route.fulfill({ response, json: { ...await response.json(), forceClientUpdate: 'retry-v2' } });
     });
-    await context.route('**/', route => route.request().resourceType() === 'fetch' && downloadFails
-      ? route.fulfill({ status: 503, body: 'Indisponible' }) : route.continue());
+    // The served HTML references a file the running page has not loaded: a new build is deployed.
+    await context.route('**/', async route => {
+      if (route.request().resourceType() !== 'fetch') return route.continue();
+      if (downloadFails) return route.fulfill({ status: 503, body: 'Indisponible' });
+      const response = await route.fetch();
+      const html = (await response.text()).replace(/(<script[^>]*src="[^"?]+)"/, '$1?nouvelle-version"');
+      await route.fulfill({ response, body: html });
+    });
     let loads = 0;
     page.on('domcontentloaded', () => { loads += 1; });
     await context.setOffline(false);

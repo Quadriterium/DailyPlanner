@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowUpRight, BookOpen, Check, Leaf, LoaderCircle, Minus, Pencil, Plus, Search, Shuffle, Sparkles, Trash2, Users } from 'lucide-react';
+import { ArrowUpRight, Ban, BookOpen, Check, Leaf, LoaderCircle, Minus, Pencil, Plus, RotateCcw, Search, Shuffle, Sparkles, Trash2, Users } from 'lucide-react';
 import {
   cookingLevelLabels, defaultHousehold, dishDetails, formatDate, formatPortions, householdCategories, householdCount, householdPortions, householdSchema,
   householdSummary, matchesDiet, mealDisplayName, mealHousehold, mealId, normalizedName, recipeUrl, seasonalDishes, seasonForDate, seasonLabels, vegetarianForSlot,
@@ -7,7 +7,7 @@ import {
 } from '../shared/model';
 import { EmptyState, GenerationProgress, Modal } from './components';
 import { LevelButton, LevelTag, seasonalLevelCounts } from './CookingLevel';
-import { errorMessage, fillMeal, save, saveMealHousehold, sharedRandomCandidates, signInHint, useServerFeatures } from './store';
+import { errorMessage, fillMeal, save, saveMealHousehold, setDishGenerationExcluded, sharedRandomCandidates, signInHint, useServerFeatures } from './store';
 import { useCatalog } from './catalog';
 import type { Draft } from './repository';
 import { newId } from './id';
@@ -49,6 +49,7 @@ export function MealEditor({ date, slot, start, index, meal, today, dishes, anal
   const defaultsCheckbox = useRef<HTMLInputElement>(null);
   const wasEditingGuests = useRef(false);
   const [managing, setManaging] = useState(false);
+  const [generationStatus, setGenerationStatus] = useState<string | null>(null);
   const manageButton = useRef<HTMLButtonElement>(null);
   const wasManaging = useRef(false);
   const guests = mealHousehold(meal, household);
@@ -137,6 +138,11 @@ export function MealEditor({ date, slot, start, index, meal, today, dishes, anal
           ...(url ? { sourceUrl: url } : shared?.sourceUrl ? { sourceUrl: shared.sourceUrl } : {}),
         });
       }
+    } else if (currentDish && !currentDish.excludedGenerationDates?.includes(date)) {
+      drafts.push({
+        ...currentDish,
+        excludedGenerationDates: [...new Set([...(currentDish.excludedGenerationDates ?? []), date])],
+      });
     }
     drafts.push({ type: 'meal', id: mealId(date, slot, index), date, slot, ...(index === 1 ? { index } : {}), text: value.trim(), dishId,
       household: value.trim() ? meal?.household ?? null : null });
@@ -148,6 +154,20 @@ export function MealEditor({ date, slot, start, index, meal, today, dishes, anal
       setError(errorMessage(cause));
       setBusy(false);
     }
+  }
+
+  async function toggleGenerationExclusion() {
+    if (!currentDish || busy) return;
+    const excluded = !currentDish.excludedFromGeneration;
+    setBusy(true);
+    setError(null);
+    setGenerationStatus(null);
+    try {
+      await setDishGenerationExcluded(currentDish.id, excluded);
+      setGenerationStatus(excluded ? 'Plat exclu des futures générations.' : 'Plat à nouveau autorisé dans les générations.');
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally { setBusy(false); }
   }
 
   async function replace(mode: 'ai' | 'random', level?: CookingLevel, vegetarianMenu = false) {
@@ -237,6 +257,7 @@ export function MealEditor({ date, slot, start, index, meal, today, dishes, anal
     {vegetarian && editing && <p className="field-hint">Suggestions et génération végétariennes pour ce repas. Les fiches non classées sont exclues ; la saisie libre reste possible.</p>}
     {!editing ? <>
       <h3 className="meal-detail-name">{displayName}</h3>
+      {currentDish?.excludedFromGeneration && <p className="field-hint">Exclu des générations automatiques.</p>}
       <button ref={guestsButton} className="meal-guests-chip" disabled={busy} onClick={editGuests}
         aria-haspopup="dialog"
         title={`${householdSummary(guests)} — modifier le nombre de personnes`}>
@@ -397,8 +418,13 @@ export function MealEditor({ date, slot, start, index, meal, today, dishes, anal
     <div className="action-grid flush" aria-busy={busy}>
       <button className="secondary-button" disabled={busy} onClick={() => { setText(displayName); setManaging(false); setEditing(true); }}><Pencil size={17} />Changer le plat</button>
       <button className="secondary-button danger" disabled={busy} onClick={() => void commit('')}><Trash2 size={16} />Supprimer</button>
+      {currentDish && <button className="secondary-button wide" disabled={busy} onClick={() => void toggleGenerationExclusion()}>
+        {currentDish.excludedFromGeneration ? <RotateCcw size={16} /> : <Ban size={16} />}
+        {currentDish.excludedFromGeneration ? 'Réautoriser les générations' : 'Exclure des générations'}
+      </button>}
       {levelButtons(busy, true)}
     </div>
+    {generationStatus && <p className="field-hint" role="status">{generationStatus}</p>}
     {error && <p className="inline-error" role="alert">{error}</p>}
   </Modal>}
   {filling === 'ai' && <GenerationProgress />}</>;

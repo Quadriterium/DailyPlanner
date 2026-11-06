@@ -116,6 +116,25 @@ describe('Contrats et versions', () => {
       expect(randomMealCandidates([autumn, all, dish({ creationSeason: 'summer' }), dish({ archived: true })],
         [], [], '2026-10-30', '2026-10-30')).toEqual([autumn, all]);
     });
+    it('exclut un plat supprimé uniquement à la date concernée', () => {
+      const excluded = dish({
+        name: 'Plat supprimé', details: { ...details, name: 'Plat supprimé' }, excludedGenerationDates: ['2026-10-30'],
+      });
+      expect(randomMealCandidates([excluded], [], [], '2026-10-30', '2026-10-30')).toEqual([]);
+      expect(randomMealCandidates([excluded], [], [], '2026-10-31', '2026-10-31')).toEqual([excluded]);
+    });
+    it('exclut durablement un plat et ses doublons de nom, puis permet de le réautoriser sans perdre les dates exclues', () => {
+      const excluded = dish({
+        name: 'nom brut', details: { ...details, name: 'Soupe maison' },
+        excludedFromGeneration: true, excludedGenerationDates: ['2026-10-30'],
+      });
+      const duplicate = dish({ name: ' SOUPE   maison ' });
+      expect(randomMealCandidates([excluded, duplicate], [], [], '2026-10-31', '2026-10-31')).toEqual([]);
+      const restored = { ...excluded, excludedFromGeneration: false };
+      expect(recordSchema.parse(restored)).toEqual(restored);
+      expect(randomMealCandidates([restored], [], [], '2026-10-30', '2026-10-30')).toEqual([]);
+      expect(randomMealCandidates([restored], [], [], '2026-10-31', '2026-10-31')).toEqual([restored]);
+    });
     it('évite les identifiants et noms déjà prévus, y compris au-delà du dimanche', () => {
       const used = dish();
       const sameName = dish({ name: '  SOUPE   maison ' });

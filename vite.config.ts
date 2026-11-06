@@ -32,6 +32,8 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       strictPort: true,
       proxy: {
+        // Legal pages are rendered by the API server from the details stored in SQLite.
+        '^/(confidentialite|conditions-utilisation)(\\?|$)': `http://127.0.0.1:${env.PORT || 3000}`,
         '/api': {
           target: `http://127.0.0.1:${env.PORT || 3000}`,
           // Hors authentification/admin, le proxy retire Origin pour les écritures locales ; les routes admin le conservent.

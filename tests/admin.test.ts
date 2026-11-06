@@ -11,11 +11,12 @@ import { Accounts } from '../server/auth/accounts';
 import { hashToken } from '../server/auth/tokens';
 import { backupDatabase } from '../server/maintenance';
 import {
-  adminAiSchema, adminAuditSchema, adminCatalogSchema, adminLifetime, adminOverviewSchema,
-  adminRequestsSchema, adminSessionSchema, adminSpacesSchema, adminUsersSchema,
+  adminAiSchema, adminAuditSchema, adminCatalogSchema, adminLegalSchema, adminLifetime, adminOverviewSchema,
+  adminRequestsSchema, adminSessionSchema, adminSpacesSchema, adminUsersSchema, defaultLegalInfo,
 } from '../shared/admin';
 import { commonSpaceId, parisDate, syncResponseSchema } from '../shared/model';
 import { details, dish } from './fixtures';
+import { sentMessageSchema, userMessagesSchema } from '../shared/messages';
 
 const origin = 'http://localhost:3000';
 const baseEnv = {
@@ -93,8 +94,9 @@ describe('droits administrateur et connexion Google', () => {
   it('refuse tous les appels protégés anonymes, ordinaires et non administrateurs', async () => {
     const otherCookies = { atable_session: accounts.createSession(otherId).token };
     for (const request of [
-      ...['overview', 'users', 'spaces', 'ai', 'catalog', 'requests', 'audit'].map(path => ({ method: 'GET' as const, url: `/api/admin/${path}` })),
-      { method: 'PATCH' as const, url: '/api/admin/ai', payload: { paused: true, dailyLimit: null, monthlyLimit: null, confirm: true } },
+      ...['overview', 'users', 'spaces', 'ai', 'catalog', 'requests', 'audit', 'legal'].map(path => ({ method: 'GET' as const, url: `/api/admin/${path}` })),
+      { method: 'PATCH' as const, url: '/api/admin/legal', payload: { info: defaultLegalInfo, expectedUpdatedAt: 0, confirm: true } },
+      { method: 'PATCH' as const, url: '/api/admin/ai', payload: { paused: true, dailyLimit: null, monthlyLimit: null, hourlyLimit: null, confirm: true } },
       { method: 'PATCH' as const, url: `/api/admin/spaces/${accounts.membership(otherId)!.id}/ai`, payload: {} },
       { method: 'PATCH' as const, url: `/api/admin/catalog/${randomUUID()}`, payload: {} },
       { method: 'POST' as const, url: `/api/admin/catalog/${randomUUID()}/removal`, payload: {} },
@@ -102,6 +104,7 @@ describe('droits administrateur et connexion Google', () => {
       { method: 'POST' as const, url: `/api/admin/users/${otherId}/revoke-sessions`, payload: { confirm: true } },
       { method: 'POST' as const, url: '/api/admin/backup', payload: { confirm: true } },
       { method: 'POST' as const, url: '/api/admin/logout', payload: { confirm: true } },
+      { method: 'POST' as const, url: '/api/admin/messages', payload: { text: 'Bonjour', userId: null, confirm: true } },
     ]) {
       expect((await app.inject({ ...request, remoteAddress: '127.0.0.2' })).statusCode).toBe(401);
       expect((await app.inject({ ...request, remoteAddress: '127.0.0.3', cookies: regularCookies })).statusCode).toBe(401);
@@ -111,6 +114,108 @@ describe('droits administrateur et connexion Google', () => {
     const publicSession = (await app.inject({ url: '/api/admin/session', cookies: otherCookies })).json();
     expect(publicSession).toMatchObject({ allowed: false, csrfToken: null });
     expect(JSON.stringify(publicSession)).not.toContain(adminId);
+  });
+
+  describe('messages administrateur', () => {
+    async function messages(sessionCookies = cookies) {
+      const response = await app.inject({ url: '/api/messages', cookies: sessionCookies });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['cache-control']).toBe('no-store');
+      return userMessagesSchema.parse(response.json()).messages;
+    }
+    async function dismiss(id: string, sessionCookies = cookies, headers = { origin }) {
+      return app.inject({ method: 'POST', url: `/api/messages/${id}/dismiss`, cookies: sessionCookies, headers });
+    }
+    it('cible un compte, pas son foyer, et ne masque définitivement que sur clic explicite', async () => {
+      const otherCookies = { atable_session: accounts.createSession(otherId).token };
+      const secondDevice = { atable_session: accounts.createSession(otherId).token };
+      store.db.prepare('UPDATE memberships SET space_id = ? WHERE user_id = ?')
+        .run(accounts.membership(adminId)!.id, otherId);
+      const response = await write('/api/admin/messages', { text: '  Bonjour\nBienvenue !  ', userId: otherId, confirm: true });
+      expect(response.statusCode).toBe(200);
+      const sent = sentMessageSchema.parse(response.json());
+      expect(sent.recipients).toBe(1);
+      expect(await messages()).toEqual([]);
+      expect(await messages(otherCookies)).toEqual([{ id: sent.id, text: 'Bonjour\nBienvenue !', createdAt: clock }]);
+      expect(await messages(secondDevice)).toHaveLength(1);
+      expect((await dismiss(sent.id)).statusCode).toBe(404);
+      expect((await dismiss(sent.id, otherCookies, { origin: 'https://evil.example' })).statusCode).toBe(403);
+      expect(await messages(secondDevice)).toHaveLength(1);
+      expect((await dismiss(sent.id, otherCookies)).json()).toEqual({ ok: true });
+      expect((await dismiss(sent.id, otherCookies)).statusCode).toBe(200);
+      expect(await messages(secondDevice)).toEqual([]);
+      const reconnected = (await signIn('other', false)).cookies;
+      expect(await messages(reconnected)).toEqual([]);
+      const journal = adminAuditSchema.parse((await app.inject({ url: '/api/admin/audit', cookies })).json());
+      expect(journal.entries[0]).toMatchObject({ action: 'admin.message-send', target: otherId });
+      expect(journal.entries[0].details).not.toContain('Bienvenue');
+    });
+    it('envoie à tous les inscrits, indépendamment des fermetures et sans inclure les futurs comptes', async () => {
+      const otherCookies = { atable_session: accounts.createSession(otherId).token };
+      const additional = Array.from({ length: 55 }, (_, index) => accounts.upsertUser('google', {
+        subject: `broadcast-${index}`, name: `Compte ${index}`, email: null, emailVerified: false, picture: null,
+      }));
+      const first = sentMessageSchema.parse((await write('/api/admin/messages', { text: 'Premier', userId: null, confirm: true })).json());
+      expect(first.recipients).toBe(57);
+      expect(store.pendingMessages(additional[54])).toHaveLength(1);
+      clock++;
+      const second = sentMessageSchema.parse((await write('/api/admin/messages', { text: 'Second', userId: null, confirm: true })).json());
+      expect((await messages()).map(item => item.id)).toEqual([first.id, second.id]);
+      expect((await dismiss(first.id)).statusCode).toBe(200);
+      expect((await messages()).map(item => item.id)).toEqual([second.id]);
+      expect((await messages(otherCookies)).map(item => item.id)).toEqual([first.id, second.id]);
+      const future = (await signIn('future', false)).cookies;
+      expect(await messages(future)).toEqual([]);
+    });
+    it('valide le texte, la cible, la confirmation, la session et la protection CSRF', async () => {
+      const valid = { text: 'Message', userId: otherId, confirm: true };
+      for (const payload of [
+        { ...valid, text: '' }, { ...valid, text: ' \n ' }, { ...valid, text: 'a'.repeat(4001) },
+        { ...valid, text: 42 }, { ...valid, userId: 'invalide' }, { ...valid, confirm: false },
+        { ...valid, surprise: true },
+      ]) expect((await write('/api/admin/messages', payload)).statusCode).toBe(400);
+      expect((await write('/api/admin/messages', { ...valid, userId: randomUUID() })).statusCode).toBe(404);
+      expect((await app.inject({ method: 'POST', url: '/api/admin/messages', cookies, headers: { origin }, payload: valid })).statusCode).toBe(403);
+      expect(store.db.prepare('SELECT COUNT(*) AS n FROM admin_messages').get()!.n).toBe(0);
+      const sent = await write('/api/admin/messages', { ...valid, text: 'a'.repeat(4000) });
+      expect(sent.statusCode).toBe(200);
+      expect((await app.inject({ url: '/api/messages' })).statusCode).toBe(401);
+      expect((await app.inject({ method: 'POST', url: `/api/messages/${sent.json().id}/dismiss` })).statusCode).toBe(401);
+      expect((await dismiss('invalide')).statusCode).toBe(400);
+      expect((await dismiss(randomUUID())).statusCode).toBe(404);
+      expect(store.pendingMessages(otherId)).toHaveLength(1);
+    });
+    it('migre le schéma 6 et conserve messages et fermetures après redémarrage et sauvegarde', () => {
+      const folder = mkdtempSync(join(tmpdir(), 'atable-messages-'));
+      const persistentConfig = readConfig({ DATABASE_PATH: join(folder, 'planner.sqlite') });
+      try {
+        const old = new Store(persistentConfig);
+        try {
+          old.db.exec('DROP TABLE user_messages; DROP TABLE admin_messages; PRAGMA user_version = 6;');
+        } finally { old.close(); }
+        const migrated = new Store(persistentConfig);
+        let id: string;
+        let pending: string;
+        let closed: string;
+        try {
+          const account = new Accounts(migrated, 30, () => clock);
+          id = account.upsertUser('google', { subject: 'persistent', name: 'Test', email: null, emailVerified: false, picture: null });
+          account.ensureHousehold(id);
+          closed = migrated.sendMessage('Fermé', id, clock).id;
+          pending = migrated.sendMessage('À lire', null, clock + 1).id;
+          expect(migrated.dismissMessage(id, closed, clock + 2)).toBe(true);
+        } finally { migrated.close(); }
+        const reopened = new Store(persistentConfig);
+        try {
+          expect(reopened.pendingMessages(id!).map(item => item.id)).toEqual([pending!]);
+          const backup = new DatabaseSync(backupDatabase(persistentConfig, 'messages-test'), { readOnly: true });
+          try {
+            expect(backup.prepare('SELECT COUNT(*) AS n FROM admin_messages').get()!.n).toBe(2);
+            expect(backup.prepare('SELECT dismissed_at FROM user_messages WHERE user_id = ? AND message_id = ?').get(id!, closed!)!.dismissed_at).toBe(clock + 2);
+          } finally { backup.close(); }
+        } finally { reopened.close(); }
+      } finally { rmSync(folder, { recursive: true }); }
+    });
   });
   it('refuse un autre compte, même si son e-mail imite celui de l’admin', async () => {
     const denied = await signIn('other');
@@ -163,7 +268,7 @@ describe('droits administrateur et connexion Google', () => {
 
 describe('écritures admin, CSRF et journal', () => {
   it('exige l’origine exacte, un jeton CSRF ASCII lié à la session et une confirmation', async () => {
-    const payload = { paused: true, dailyLimit: null, monthlyLimit: null, confirm: true };
+    const payload = { paused: true, dailyLimit: null, monthlyLimit: null, hourlyLimit: null, confirm: true };
     for (const headers of [
       {}, { origin }, { 'x-admin-csrf': csrf }, { origin: 'https://evil.example', 'x-admin-csrf': csrf },
       { origin, 'x-admin-csrf': '0'.repeat(64) }, { origin, 'x-admin-csrf': 'é'.repeat(64) },
@@ -177,6 +282,10 @@ describe('écritures admin, CSRF et journal', () => {
     expect((await write('/api/admin/ai', { ...payload, ADMIN_USER_IDS: otherId }, 'PATCH')).statusCode).toBe(400);
     expect(store.globalAiPolicy().paused).toBe(false);
     expect((await write('/api/admin/ai', payload, 'PATCH')).statusCode).toBe(200);
+    const hourlyPolicy = { paused: false, dailyLimit: null, monthlyLimit: null, hourlyLimit: 4, confirm: true };
+    expect((await write('/api/admin/ai', hourlyPolicy, 'PATCH')).statusCode).toBe(200);
+    expect(store.globalAiPolicy().hourlyLimit).toBe(4);
+    expect(adminAiSchema.parse((await app.inject({ url: '/api/admin/ai', cookies })).json()).hourlyCalls).toBe(0);
     const journal = adminAuditSchema.parse((await app.inject({ url: '/api/admin/audit', cookies })).json());
     expect(journal.entries[0]).toMatchObject({ action: 'admin.ai-global', userId: adminId, target: 'global' });
     expect(JSON.stringify(journal)).not.toContain(csrf);
@@ -186,12 +295,12 @@ describe('écritures admin, CSRF et journal', () => {
     const second = await signIn('admin');
     const result = await app.inject({
       method: 'PATCH', url: '/api/admin/ai', cookies: second.cookies,
-      headers: { origin, 'x-admin-csrf': csrf }, payload: { paused: true, dailyLimit: null, monthlyLimit: null, confirm: true },
+      headers: { origin, 'x-admin-csrf': csrf }, payload: { paused: true, dailyLimit: null, monthlyLimit: null, hourlyLimit: null, confirm: true },
     });
     expect(result.statusCode).toBe(403);
   });
   it('limite effectivement les écritures admin', async () => {
-    const payload = { paused: false, dailyLimit: null, monthlyLimit: null, confirm: true };
+    const payload = { paused: false, dailyLimit: null, monthlyLimit: null, hourlyLimit: null, confirm: true };
     for (let i = 0; i < 30; i++) expect((await write('/api/admin/ai', payload, 'PATCH')).statusCode).toBe(200);
     expect((await write('/api/admin/ai', payload, 'PATCH')).statusCode).toBe(429);
   });
@@ -291,21 +400,21 @@ describe('quotas appliqués à tous les appels IA', () => {
     const second = accounts.membership(otherId)!.id;
     store.setAiLimitExempt(first, true);
     store.setAiLimitExempt(second, true);
-    store.setGlobalAiPolicy({ paused: false, dailyLimit: 2, monthlyLimit: null });
+    store.setGlobalAiPolicy({ paused: false, dailyLimit: 2, monthlyLimit: null, hourlyLimit: null });
     const jobs = await Promise.allSettled([first, second, first].map(async id => store.reserveGeneration(id)));
     expect(jobs.filter(result => result.status === 'fulfilled')).toHaveLength(2);
     expect(jobs.filter(result => result.status === 'rejected')).toHaveLength(1);
     expect(store.capabilities().callsToday).toBe(2);
-    store.setGlobalAiPolicy({ paused: false, dailyLimit: null, monthlyLimit: 2 });
+    store.setGlobalAiPolicy({ paused: false, dailyLimit: null, monthlyLimit: 2, hourlyLimit: null });
     expect(() => store.reserveGeneration(first)).toThrow('mensuel global');
-    store.setGlobalAiPolicy({ paused: false, dailyLimit: null, monthlyLimit: null });
+    store.setGlobalAiPolicy({ paused: false, dailyLimit: null, monthlyLimit: null, hourlyLimit: null });
     expect(store.reserveGeneration(first)).toBe(parisDate());
   });
   it('la pause bloque génération, affinage et worker avant l’appel HTTP, sans bloquer la synchronisation', async () => {
     await app.close();
     const aiRequest = vi.fn<typeof fetch>();
     app = await buildApp(store, config, { logger: false, aiRequest, now: () => clock });
-    store.setGlobalAiPolicy({ paused: true, dailyLimit: null, monthlyLimit: null });
+    store.setGlobalAiPolicy({ paused: true, dailyLimit: null, monthlyLimit: null, hourlyLimit: null });
     const space = accounts.membership(adminId)!;
     store.merge(space.id, [dish()]);
     expect(store.claimAnalysis()).toBeUndefined();
@@ -322,13 +431,13 @@ describe('quotas appliqués à tous les appels IA', () => {
     const sync = await app.inject({ method: 'POST', url: '/api/sync', cookies, payload: { mutations: [] } });
     expect(sync.statusCode).toBe(200);
     expect(sync.json().capabilities.aiPaused).toBe(true);
-    store.setGlobalAiPolicy({ paused: false, dailyLimit: null, monthlyLimit: null });
+    store.setGlobalAiPolicy({ paused: false, dailyLimit: null, monthlyLimit: null, hourlyLimit: null });
     expect(store.claimAnalysis()?.spaceId).toBe(space.id);
   });
   it('renouvelle les limites quotidiennes et mensuelles à minuit à Paris, pas à minuit UTC', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-03-31T21:59:59Z'));
-    store.setGlobalAiPolicy({ paused: false, dailyLimit: 1, monthlyLimit: 1 });
+    store.setGlobalAiPolicy({ paused: false, dailyLimit: 1, monthlyLimit: 1, hourlyLimit: null });
     expect(store.reserveGeneration(commonSpaceId)).toBe('2026-03-31');
     expect(() => store.reserveGeneration(commonSpaceId)).toThrow('quotidien global');
     vi.setSystemTime(new Date('2026-03-31T22:00:00Z'));
@@ -345,14 +454,14 @@ describe('quotas appliqués à tous les appels IA', () => {
       try {
         legacy.setAiLimitExempt(commonSpaceId, true);
         legacy.reserveGeneration(commonSpaceId);
-        legacy.db.exec(`DROP TABLE admin_sessions; DROP TABLE admin_audit; DROP TABLE space_ai_policy; DROP TABLE global_ai_policy;
+        legacy.db.exec(`DROP TABLE ai_hourly_calls; DROP TABLE admin_sessions; DROP TABLE admin_audit; DROP TABLE space_ai_policy; DROP TABLE global_ai_policy;
           ALTER TABLE auth_transactions DROP COLUMN return_to; PRAGMA user_version = 4;`);
       } finally { legacy.close(); }
       const migrated = new Store(persistentConfig);
       try {
         expect(migrated.spaceAiPolicy(commonSpaceId)).toEqual({ dailyLimit: null, monthlyLimit: null });
         migrated.setSpaceAiPolicy(commonSpaceId, { dailyLimit: 3, monthlyLimit: 10 });
-        migrated.setGlobalAiPolicy({ paused: false, dailyLimit: 4, monthlyLimit: 100 });
+        migrated.setGlobalAiPolicy({ paused: false, dailyLimit: 4, monthlyLimit: 100, hourlyLimit: 12 });
         migrated.reserveGeneration(commonSpaceId);
         migrated.db.prepare('INSERT INTO admin_audit (user_id, action, target, details, created_at) VALUES (?, ?, ?, ?, ?)')
           .run(adminId, 'admin.ai-space', commonSpaceId, '{}', clock);
@@ -360,15 +469,50 @@ describe('quotas appliqués à tous les appels IA', () => {
       const reopened = new Store(persistentConfig);
       try {
         expect(reopened.spaceAiPolicy(commonSpaceId)).toEqual({ dailyLimit: 3, monthlyLimit: 10 });
-        expect(reopened.globalAiPolicy()).toEqual({ paused: false, dailyLimit: 4, monthlyLimit: 100 });
+        expect(reopened.globalAiPolicy()).toEqual({ paused: false, dailyLimit: 4, monthlyLimit: 100, hourlyLimit: 12 });
         expect(reopened.capabilities().callsToday).toBe(2);
         expect(reopened.db.prepare('SELECT COUNT(*) AS n FROM admin_audit').get()!.n).toBe(1);
         const backup = new DatabaseSync(backupDatabase(persistentConfig, 'admin-test'), { readOnly: true });
         try {
           expect(backup.prepare('SELECT COUNT(*) AS n FROM admin_audit').get()!.n).toBe(1);
-          expect(backup.prepare('SELECT monthly_limit FROM global_ai_policy').get()!.monthly_limit).toBe(100);
+          expect(backup.prepare('SELECT monthly_limit, hourly_limit FROM global_ai_policy').get()).toEqual({ monthly_limit: 100, hourly_limit: 12 });
         } finally { backup.close(); }
       } finally { reopened.close(); }
     } finally { rmSync(folder, { recursive: true }); }
+  });
+});
+
+describe('mentions légales', () => {
+  it('affiche les champs à compléter puis publie les informations saisies dans l’admin', async () => {
+    const before = await app.inject({ url: '/conditions-utilisation' });
+    expect(before.statusCode).toBe(200);
+    expect(before.headers['content-type']).toContain('text/html');
+    expect(before.headers['cache-control']).toBe('no-cache');
+    expect(before.body).toContain('[À COMPLÉTER : nom et prénom, ou raison sociale]');
+    expect(before.body).toContain('mailto:olivier-berthelot@hotmail.fr');
+    const current = adminLegalSchema.parse((await app.inject({ url: '/api/admin/legal', cookies })).json());
+    expect(current).toEqual({ info: defaultLegalInfo, updatedAt: 0 });
+    const info = {
+      ...defaultLegalInfo, firstName: 'Jeanne', lastName: '<Durand>', street: '1 rue des Lilas', postalCode: '75001', city: 'Paris',
+      phone: '01 02 03 04 05', email: 'contact@example.org', hostName: 'Jeanne Durand', hostAddress: '1 rue des Lilas, 75001 Paris',
+      hostingLocation: 'en France, à Paris', logRetention: '30 jours',
+    };
+    expect((await write('/api/admin/legal', { info: { ...info, email: 'invalide' }, expectedUpdatedAt: 0, confirm: true }, 'PATCH')).statusCode).toBe(400);
+    expect((await write('/api/admin/legal', { info, expectedUpdatedAt: 0, confirm: true }, 'PATCH')).statusCode).toBe(200);
+    expect((await write('/api/admin/legal', { info, expectedUpdatedAt: 0, confirm: true }, 'PATCH')).statusCode).toBe(409);
+    const terms = (await app.inject({ url: '/conditions-utilisation' })).body;
+    expect(terms).toContain('édité par Jeanne &lt;Durand&gt;');
+    expect(terms).toContain('1 rue des Lilas, 75001 Paris, France');
+    expect(terms).toContain('Directeur de la publication : Jeanne &lt;Durand&gt;');
+    expect(terms).not.toContain('<Durand>');
+    const privacy = (await app.inject({ url: '/confidentialite' })).body;
+    expect(privacy).toContain('mailto:contact@example.org');
+    expect(privacy).toContain('hébergé en France, à Paris');
+    expect(privacy).toContain('Journaux techniques : 30 jours');
+    expect(privacy).not.toContain('À COMPLÉTER');
+    const journal = adminAuditSchema.parse((await app.inject({ url: '/api/admin/audit', cookies })).json());
+    expect(journal.entries[0]).toMatchObject({ action: 'admin.legal-update', target: 'legal' });
+    expect(journal.entries[0].details).toContain('firstName');
+    expect(journal.entries[0].details).not.toContain('Jeanne');
   });
 });

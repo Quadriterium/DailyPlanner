@@ -264,6 +264,103 @@ test('génération rapide IA avec attente, sauvegarde de la fiche et rechargemen
   await expect(page.getByRole('button', { name: new RegExp(generated.name) })).toBeVisible();
 });
 
+test('un repas généré puis supprimé est exclu uniquement pour sa date', async ({ page }) => {
+  const generated = { ...details, name: 'Plat écarté', seasons: [seasonForDate(today)] };
+  await page.route('**/api/meals/generate', route => route.fulfill({ json: { details: generated } }));
+  let excluded = false;
+  page.on('request', request => {
+    if (!request.url().endsWith('/api/sync')) return;
+    const mutations = (request.postDataJSON() as { mutations: RecordData[] }).mutations;
+    excluded ||= mutations.some(record => record.type === 'dish' && record.name === generated.name &&
+      record.excludedGenerationDates?.includes(today));
+  });
+  await slot(page).getByRole('button', { name: /générer/ }).click();
+  await expect(slot(page).locator('.meal-cell')).toHaveText(generated.name);
+  await slot(page).locator('.meal-cell').click();
+  await manage(page);
+  await page.getByRole('button', { name: 'Supprimer', exact: true }).click();
+  await expect(slot(page).locator('.meal-cell')).toContainText('Créer un repas');
+  await expect.poll(() => excluded).toBe(true);
+
+  await slot(page).locator('.meal-cell').click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Choisir au hasard', exact: true }).click({ delay: 800 });
+  const levelMenu = page.getByRole('dialog', { name: 'Choisir au hasard', exact: true });
+  await expect(levelMenu.getByText('2 plats de saison', { exact: true })).toBeVisible();
+  await levelMenu.getByRole('button', { name: 'Fermer', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Qu’est-ce qu’on mange ?', exact: true }).getByRole('button', { name: 'Fermer', exact: true }).click();
+
+  await slot(page, addDays(today, 1)).locator('.meal-cell').click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Choisir au hasard', exact: true }).click({ delay: 800 });
+  const nextDayMenu = page.getByRole('dialog', { name: 'Choisir au hasard', exact: true });
+  await expect(nextDayMenu.getByText('3 plats de saison', { exact: true })).toBeVisible();
+});
+
+for (const origin of ['carnet', 'planning'] as const) {
+  test(`exclusion durable depuis le ${origin}, recherche et réautorisation dans les paramètres`, async ({ page }) => {
+    if (origin === 'carnet') {
+      await page.getByRole('button', { name: 'Mon carnet', exact: true }).click();
+      await page.getByRole('button', { name: new RegExp(unused.name) }).click();
+      await page.getByRole('button', { name: 'Exclure des générations', exact: true }).click();
+      await expect(page.getByRole('dialog')).toHaveCount(0);
+    } else {
+      await pickRandom(page);
+      await slot(page).locator('.meal-cell').click();
+      await manage(page);
+      await page.getByRole('button', { name: 'Exclure des générations', exact: true }).click();
+      await expect(page.getByRole('status').filter({ hasText: 'Plat exclu des futures générations.' })).toBeVisible();
+      await page.getByRole('dialog', { name: 'Modifier le repas', exact: true }).getByRole('button', { name: 'Fermer', exact: true }).click();
+      await page.getByRole('dialog', { name: 'Votre repas', exact: true }).getByRole('button', { name: 'Fermer', exact: true }).click();
+      await expect(slot(page).locator('.meal-cell')).toHaveText(unused.name);
+    }
+    await page.getByRole('button', { name: 'Mon planning', exact: true }).click();
+    await slot(page, addDays(today, 1)).locator('.meal-cell').click();
+    await page.getByRole('button', { name: 'Choisir au hasard', exact: true }).click({ delay: 800 });
+    const menu = page.getByRole('dialog', { name: 'Choisir au hasard', exact: true });
+    await expect(menu.getByText('1 plat de saison', { exact: true })).toBeVisible();
+    await menu.getByRole('button', { name: 'Fermer', exact: true }).click();
+    await page.getByRole('dialog', { name: 'Qu’est-ce qu’on mange ?', exact: true }).getByRole('button', { name: 'Fermer', exact: true }).click();
+
+    await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+    const exclusions = page.getByRole('region', { name: 'Plats exclus des générations', exact: true });
+    await expect(exclusions.getByRole('listitem')).toContainText(unused.name);
+    const search = exclusions.getByRole('searchbox');
+    await search.fill('introuvable');
+    await expect(exclusions.getByText('Aucun plat exclu ne correspond à cette recherche.', { exact: true })).toBeVisible();
+    await search.fill('GRATIN');
+    await expect(exclusions.getByRole('listitem')).toHaveCount(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+
+    await page.reload();
+    await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+    await expect(exclusions.getByRole('listitem')).toContainText(unused.name);
+    await page.route('**/api/sync', route => route.abort());
+    await exclusions.getByRole('button', { name: `Réautoriser ${unused.name}`, exact: true }).click();
+    await expect(exclusions.getByRole('listitem')).toHaveCount(0);
+    await expect(exclusions.getByRole('status')).toContainText('est à nouveau autorisé');
+    await page.reload();
+    await page.getByRole('button', { name: 'Paramètres', exact: true }).click();
+    await expect(exclusions.getByText('Aucun plat exclu des générations.', { exact: true })).toBeVisible();
+  });
+}
+
+test('une exclusion durable pendant une génération empêche la proposition devenue obsolète', async ({ page, context }) => {
+  let pending: Route | undefined;
+  await page.route('**/api/meals/generate', route => { pending = route; });
+  await slot(page).getByRole('button', { name: /générer/ }).click();
+  await expect.poll(() => Boolean(pending)).toBe(true);
+  const other = await context.newPage();
+  await other.route('**/api/sync', route => route.abort());
+  await other.goto('/');
+  await other.getByRole('button', { name: 'Mon carnet', exact: true }).click();
+  await other.getByRole('button', { name: new RegExp(unused.name) }).click();
+  await other.getByRole('button', { name: 'Exclure des générations', exact: true }).click();
+  await expect(other.getByRole('dialog')).toHaveCount(0);
+  await pending!.fulfill({ json: { source: 'catalog', details: unused.details } });
+  await expect(page.getByRole('dialog').getByRole('alert')).toContainText('Ce plat est exclu des générations');
+  await expect(slot(page).locator('.meal-cell')).toContainText('Créer un repas');
+  await other.close();
+});
+
 test('créneau vide : tirage et génération IA depuis le dialogue', async ({ page }) => {
   await slot(page).locator('.meal-cell').click();
   await page.getByRole('dialog').getByRole('button', { name: 'Choisir au hasard', exact: true }).click();

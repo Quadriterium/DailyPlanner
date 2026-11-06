@@ -5,7 +5,7 @@ export const adminLifetime = 30 * 60_000;
 const count = z.number().int().nonnegative();
 export const aiLimitSchema = count.max(1_000_000).nullable();
 export const spaceAiPolicySchema = z.object({ dailyLimit: aiLimitSchema, monthlyLimit: aiLimitSchema }).strict();
-export const globalAiPolicySchema = spaceAiPolicySchema.extend({ paused: z.boolean() }).strict();
+export const globalAiPolicySchema = spaceAiPolicySchema.extend({ hourlyLimit: aiLimitSchema, paused: z.boolean() }).strict();
 export type SpaceAiPolicy = z.infer<typeof spaceAiPolicySchema>;
 export type GlobalAiPolicy = z.infer<typeof globalAiPolicySchema>;
 export const adminSessionSchema = z.object({
@@ -32,7 +32,8 @@ export const adminSpacesSchema = z.object({
   })), more: z.boolean(),
 }).strict();
 export const adminAiSchema = z.object({
-  policy: globalAiPolicySchema, usage: capabilitiesSchema, configured: z.boolean(), allowedModels: z.array(z.string()),
+  policy: globalAiPolicySchema, usage: capabilitiesSchema, hourlyCalls: count,
+  configured: z.boolean(), allowedModels: z.array(z.string()),
 }).strict();
 export const adminCatalogSchema = z.object({
   entries: z.array(z.object({
@@ -63,6 +64,38 @@ export const adminCatalogCorrectionSchema = z.object({
 }).strict();
 export const adminCatalogRemovalSchema = z.object({
   removed: z.boolean(), expectedSeq: count, confirm: z.literal(true),
+}).strict();
+export const legalFieldMax = {
+  firstName: 80, lastName: 80, companyName: 160, registration: 160, street: 240, postalCode: 20, city: 120, country: 80,
+  phone: 40, email: 254, publicationDirector: 160, hostName: 160, hostAddress: 400, hostPhone: 40, hostingLocation: 240, logRetention: 240,
+} as const;
+const legalField = (key: keyof typeof legalFieldMax) => z.string().trim().max(legalFieldMax[key]);
+export const legalInfoSchema = z.object({
+  firstName: legalField('firstName'), lastName: legalField('lastName'),
+  companyName: legalField('companyName'), registration: legalField('registration'),
+  street: legalField('street'), postalCode: legalField('postalCode'), city: legalField('city'), country: legalField('country'),
+  phone: legalField('phone'), email: z.union([z.literal(''), z.string().trim().email().max(legalFieldMax.email)]),
+  publicationDirector: legalField('publicationDirector'),
+  hostName: legalField('hostName'), hostAddress: legalField('hostAddress'), hostPhone: legalField('hostPhone'),
+  hostingLocation: legalField('hostingLocation'), logRetention: legalField('logRetention'),
+}).strict();
+export type LegalInfo = z.infer<typeof legalInfoSchema>;
+export const legalFieldLabels: Record<keyof LegalInfo, string> = {
+  firstName: 'Prénom', lastName: 'Nom', companyName: 'Raison sociale (si société ou association)',
+  registration: 'SIRET / RCS (si professionnel)', street: 'Adresse (numéro et voie)', postalCode: 'Code postal',
+  city: 'Ville', country: 'Pays', phone: 'Téléphone', email: 'E-mail de contact',
+  publicationDirector: 'Directeur de la publication', hostName: 'Hébergeur (nom ou raison sociale)',
+  hostAddress: 'Adresse de l’hébergeur', hostPhone: 'Téléphone de l’hébergeur',
+  hostingLocation: 'Lieu d’hébergement du serveur', logRetention: 'Durée de conservation des journaux techniques',
+};
+export const defaultLegalInfo: LegalInfo = {
+  firstName: '', lastName: '', companyName: '', registration: '', street: '', postalCode: '', city: '', country: 'France',
+  phone: '', email: 'olivier-berthelot@hotmail.fr', publicationDirector: '',
+  hostName: '', hostAddress: '', hostPhone: '', hostingLocation: '', logRetention: '',
+};
+export const adminLegalSchema = z.object({ info: legalInfoSchema, updatedAt: count }).strict();
+export const adminLegalRequestSchema = z.object({
+  info: legalInfoSchema, expectedUpdatedAt: count, confirm: z.literal(true),
 }).strict();
 export const adminRequestUpdateSchema = z.object({
   status: z.enum(featureRequestStatuses), note: z.string().trim().max(1000).nullable(),

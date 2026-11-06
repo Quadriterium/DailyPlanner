@@ -80,13 +80,19 @@ description: "Comprendre et diagnostiquer la synchronisation À table ! : Indexe
 
 - Le build précache HTML, JS, CSS, manifeste et icônes sous une version calculée.
   L'installation doit télécharger tous ces fichiers pour réussir.
-- `/api/` n'est pas intercepté. Les navigations vers `/confidentialite` et`n  `/conditions-utilisation` reçoivent leur page HTML, jamais le shell.`n  Le shell est servi depuis le cache ; les données
+- `/api/` n'est pas intercepté. Les navigations vers `/confidentialite` et
+  `/conditions-utilisation` (rendues par le serveur depuis les mentions légales
+  de l'admin) passent par le réseau d'abord, avec la dernière copie en cache
+  hors ligne ; jamais le shell. Le shell est servi depuis le cache ; les données
   restent dans IndexedDB.
 - Par défaut, une mise à jour attend la fermeture des anciens clients.
   Le bouton « Forcer la mise à jour » retélécharge le shell avec `cache: 'reload'`,
   puis demande explicitement `skipWaiting` et la prise de contrôle si une version
   attend. Le rechargement suit uniquement un succès ; IndexedDB reste intact.
   Une installation échouée ne remplace pas l'ancienne.
+- Le signal serveur `forceClientUpdate` (`CLIENT_UPDATE_ID`) ne recharge que si la
+  page n'exécute pas la version servie (`runningLatestBuild` dans `src/pwa.ts`) :
+  première connexion et nouvel onglet déjà à jour ne rechargent pas.
 - Le quadruple tap et le bouton de synchronisation ne suppriment aucun cache et ne
   rechargent pas la page. Fermer tous les onglets ou utiliser le bouton distinct
   de mise à jour pour activer une nouvelle version.

@@ -123,7 +123,7 @@ description: "Comprendre ou faire évoluer l'interface À table ! : planning mid
 
 - Ordre des cartes de [Settings](../../../src/Settings.tsx) : Compte et foyer,
   Personnes à table (compteurs −/+ partagés avec la fenêtre « Convives du repas »),
-  Préférences alimentaires, Niveau de cuisine, Apparence, Intelligence artificielle,
+  Préférences alimentaires, Plats exclus des générations, Niveau de cuisine, Apparence, Intelligence artificielle,
   Synchronisation, Une idée pour l'application. Titres explicites, pas de paragraphe
   explicatif : seuls restent l'avertissement allergie, le statut du thème et les
   états (erreurs, hors ligne, invité). Le modèle, les compteurs mensuels, l'état du
@@ -132,6 +132,11 @@ description: "Comprendre ou faire évoluer l'interface À table ! : planning mid
 - Sous 520 px, les quatre onglets se partagent la largeur avec leur libellé ;
   sous 380 px, l'icône passe au-dessus du libellé.
 - Une correction de fiche ou un archivage ne réécrit pas les anciens menus.
+- Le carnet et la fenêtre « Modifier le repas » permettent d’exclure durablement
+  une fiche des générations, sans retirer le plat des menus ni du carnet.
+  Les paramètres disposent de la section « Plats exclus des générations » avec
+  recherche et bouton « Réautoriser », utilisable hors ligne. Cette liste ne
+  contient pas les exclusions limitées à la date d’un repas supprimé.
 - Les cartes du carnet et la recette d'un repas affichent le niveau (`LevelTag`) ;
   l'éditeur de fiche permet de le choisir ou de le retirer (second appui).
 - Le niveau de cuisine des paramètres est partagé entre appareils (radios

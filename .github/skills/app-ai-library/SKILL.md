@@ -98,11 +98,22 @@ Une ancienne réponse ne doit jamais écraser cette nouvelle demande.
   sans relance automatique. La proximité sémantique dépend du modèle.
 - `reserveGeneration()` vérifie la clé et le modèle autorisé, puis comptabilise
   la tentative avant l'appel (échecs compris), dans les mêmes compteurs que le worker.
+  Le plafond horaire global configurable dans l'admin compte sur une période glissante
+  de 60 minutes et reste désactivé par défaut.
 - Le client valide la réponse et enregistre localement le créneau et la nouvelle
   fiche complète dans une transaction. Les détails générés occupent
   `dish.details` : pas de deuxième enrichissement automatique.
 - Un nom équivalent réutilise une fiche active sans remplacer ses détails.
   Un créneau modifié pendant la requête n'est pas écrasé par la proposition.
+- Supprimer un repas exclut sa fiche liée des suggestions automatiques à cette
+  date (`excludedGenerationDates`) : les tirages locaux et IA la filtrent ce jour-là,
+  sans la retirer du carnet ni du catalogue partagé ou des autres dates.
+- L’action explicite « Exclure des générations » dans le carnet et dans
+  « Modifier le repas » active `dish.excludedFromGeneration` pour toutes les dates
+  du foyer. `generationExcludedNames` filtre les noms bruts et affichés dans les
+  tirages et leurs compteurs ; une proposition en vol devenue exclue est refusée.
+  Les paramètres listent ces seules exclusions durables, avec recherche et
+  réautorisation. Réautoriser conserve les exclusions limitées à une date.
 
 ## Affinage de la liste de courses
 
@@ -110,7 +121,8 @@ Une ancienne réponse ne doit jamais écraser cette nouvelle demande.
   appelle `refineShoppingList()` avec `settings.model` : seules les lignes exactes
   « ingrédient — quantité » sont envoyées, sans noms de repas, dates ni avertissements.
 - `reserveGeneration()` comptabilise l'appel avant la requête (limite quotidienne
-  partagée, 429 si atteinte) ; réponse JSON stricte `{ sections: [{ name, items }] }`
+  du foyer et plafond horaire global glissant de 60 minutes si activé en admin,
+  429 si une limite est atteinte) ; réponse JSON stricte `{ sections: [{ name, items }] }`
   validée par `refinedShoppingListSchema`, 3 000 tokens de sortie, 60 secondes.
 - L'IA regroupe par rayon et arrondit vers le haut ; rien n'est enregistré. Le client
   ajoute localement les avertissements (`refinedShoppingListText`) et peut revenir
@@ -171,8 +183,9 @@ Une ancienne réponse ne doit jamais écraser cette nouvelle demande.
 - Ne jamais afficher/lire une clé dans les réponses, logs ou fichiers client.
   `store: false` ne garantit pas l'absence de toute conservation par le fournisseur.
 - Les compteurs journaliers/mensuels utilisent `Europe/Paris` et persistent en SQLite.
-  Aucun quota d'appels ni plafond de dépenses n'est imposé par l'application ;
-  la génération n'a pas de limite par minute. Les restrictions OpenAI restent applicables.
+  Le plafond horaire global facultatif compte les réservations sur toute période
+  glissante de 60 minutes et persiste en SQLite. Aucun plafond de dépenses n'est
+  imposé par l'application ; les restrictions OpenAI restent applicables.
 - Un échec compte comme tentative et n'est pas relancé automatiquement.
   Une tâche interrompue au redémarrage devient une erreur à relancer explicitement.
 - Les tokens affichés concernent les réponses comptabilisées avec succès ; ce

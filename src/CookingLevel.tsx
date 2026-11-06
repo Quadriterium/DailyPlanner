@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { ChefHat } from 'lucide-react';
 import {
-  cookingLevelHints, cookingLevelLabels, cookingLevels, defaultCookingLevel, dishDetails, seasonalDishes,
+  cookingLevelHints, cookingLevelLabels, cookingLevels, defaultCookingLevel, dishDetails, randomMealCandidates,
   type Analysis, type CookingLevel, type Dish,
 } from '../shared/model';
 import { Modal } from './components';
@@ -19,11 +19,11 @@ export function LevelTag({ level }: { level: CookingLevel }) {
   return <span className="level-tag"><LevelGauge level={level} />{cookingLevelLabels[level]}</span>;
 }
 
-/** Nombre de plats de saison non archivés par niveau, pour le menu du choix au hasard. */
+/** Nombre de plats de saison disponibles au tirage par niveau. */
 export function seasonalLevelCounts(dishes: Dish[], analyses: Analysis[], date: string): Record<CookingLevel, number> {
   const analysisMap = new Map(analyses.map(analysis => [analysis.dishId, analysis]));
   const counts: Record<CookingLevel, number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
-  for (const dish of seasonalDishes(dishes, analyses, date)) {
+  for (const dish of randomMealCandidates(dishes, analyses, [], date, date)) {
     const level = dishDetails(dish, analysisMap.get(dish.id)).level;
     if (level) counts[level]++;
   }

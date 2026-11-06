@@ -6,9 +6,9 @@ import staticFiles from '@fastify/static';
 import type { FastifyRequest } from 'fastify';
 import { existsSync } from 'node:fs';
 import { randomInt } from 'node:crypto';
-import { join, resolve, sep } from 'node:path';
+import { resolve, sep } from 'node:path';
 import {
-  catalogCandidates, catalogDrawThreshold, catalogRequestSchema, createFeatureRequestSchema, generateMealRequestSchema, generationErrorMessage, isResetScoped,
+  catalogCandidates, catalogDrawThreshold, catalogRequestSchema, createFeatureRequestSchema, generateMealRequestSchema, generationErrorMessage, generationExcludedNames, isResetScoped,
   recentMealNames, seasonForDate, syncRequestSchema, vegetarianForSlot,
 } from '../shared/model.js';
 import { generateMeal, mealGenerationContext, refineShoppingList } from './ai.js';
@@ -19,6 +19,8 @@ import type { Config } from './config.js';
 import { registerAuth, type AuthOptions } from './auth/routes.js';
 import { audit, describeMutations, loggedUrl, logFailedRequest } from './audit.js';
 import { registerAdmin } from './admin-routes.js';
+import { privacyPage, termsPage } from './legal-pages.js';
+import { messageIdSchema, userMessagesSchema } from '../shared/messages.js';
 
 const loopback = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 
@@ -34,7 +36,7 @@ export function rateLimitKey(config: Pick<Config, 'TRUSTED_PROXY'>) {
 
 export { loggedUrl };
 
-const legalPages: Record<string, string> = { '/confidentialite': 'confidentialite.html', '/conditions-utilisation': 'conditions-utilisation.html' };
+const legalPages = { '/confidentialite': privacyPage, '/conditions-utilisation': termsPage };
 
 export async function buildApp(store: Store, config: Config, options: { logger?: boolean; staticRoot?: string; aiRequest?: typeof fetch } & AuthOptions = {}) {
   const app = Fastify({
@@ -77,6 +79,19 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
   const { requireSpace } = registerAuth(app, store, config, options);
   await registerAdmin(app, store, config, options.now ?? Date.now);
   app.get('/api/health', async () => ({ status: 'ok' }));
+  app.get('/api/messages', async (request, reply) => {
+    if (!request.auth.user) return reply.code(401).send({ error: 'Connectez-vous pour lire vos messages.', code: 'auth_required' });
+    return userMessagesSchema.parse({ messages: store.pendingMessages(request.auth.user.id) });
+  });
+  app.post('/api/messages/:id/dismiss', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (request, reply) => {
+    if (!request.auth.user) return reply.code(401).send({ error: 'Connectez-vous pour masquer ce message.', code: 'auth_required' });
+    const params = messageIdSchema.safeParse(request.params);
+    if (!params.success) return reply.code(400).send({ error: 'Identifiant de message invalide.' });
+    if (!store.dismissMessage(request.auth.user.id, params.data.id, (options.now ?? Date.now)())) {
+      return reply.code(404).send({ error: 'Message introuvable.' });
+    }
+    return { ok: true };
+  });
   app.post('/api/meals/generate', async (request, reply) => {
     const spaceId = requireSpace(request, reply);
     if (!spaceId) return reply;
@@ -92,8 +107,12 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     const records = store.records(spaceId);
     const analyses = store.analyses(spaceId);
     const catalog = store.catalog();
+    const excludedNames = [
+      ...recentMealNames(records, analyses, date),
+      ...generationExcludedNames(records.filter(record => record.type === 'dish'), analyses, date),
+    ];
     // Enough suitable shared recipes: draw one instead of paying for a new AI proposal.
-    const candidates = catalogCandidates(catalog, { date, level, vegetarian, avoid: settings.avoid, excludedNames: recentMealNames(records, analyses, date) });
+    const candidates = catalogCandidates(catalog, { date, level, vegetarian, avoid: settings.avoid, excludedNames });
     if (candidates.length >= catalogDrawThreshold) {
       const entry = candidates[randomInt(candidates.length)];
       audit(request, 'meal.generate', `suggestion du catalogue pour le ${date} : « ${entry.details.name} »`, { date, level, source: 'catalog' });
@@ -199,6 +218,12 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
       serverTime: Date.now(), capabilities: store.capabilities(new Date(), spaceId),
     };
   });
+  for (const [path, render] of Object.entries(legalPages)) {
+    app.get(path, (_request, reply) => {
+      const { info, updatedAt } = store.legalInfo();
+      return reply.type('text/html; charset=utf-8').header('Cache-Control', 'no-cache').send(render(info, updatedAt));
+    });
+  }
   const staticRoot = options.staticRoot ?? resolve('dist/client');
   if (existsSync(staticRoot)) {
     await app.register(staticFiles, {
@@ -208,9 +233,6 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
           ? 'public, max-age=31536000, immutable' : 'no-cache');
       },
     });
-    for (const [path, file] of Object.entries(legalPages)) {
-      if (existsSync(join(staticRoot, file))) app.get(path, (_request, reply) => reply.header('Cache-Control', 'no-cache').sendFile(file, { cacheControl: false }));
-    }
     app.setNotFoundHandler((request, reply) => {
       if (request.method === 'GET' && !request.url.startsWith('/api/') && request.headers.accept?.includes('text/html')) {
         return reply.sendFile('index.html', { cacheControl: false });
