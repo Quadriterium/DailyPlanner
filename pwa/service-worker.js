@@ -46,11 +46,21 @@ self.addEventListener('fetch', event => {
   const url = new URL(request.url);
   if (request.method !== 'GET' || url.origin !== self.location.origin ||
       url.pathname.startsWith('/api/') || /^\/admin(?:\/|$)/.test(url.pathname)) return;
-  if (request.mode === 'navigate') {
-    // Legal pages are standalone documents, not the application shell.
-    const page = LEGAL_PAGES.includes(url.pathname) ? `${url.pathname}.html` : '/index.html';
+  if (request.mode === 'navigate' && LEGAL_PAGES.includes(url.pathname)) {
+    // Legal pages are rendered by the server from the admin-managed details: network first, last copy offline.
+    event.respondWith((async () => {
+      const cache = await caches.open(CACHE);
+      try {
+        const response = await fetch(request);
+        if (response.ok) await cache.put(url.pathname, response.clone());
+        return response;
+      } catch (error) {
+        return (await cache.match(url.pathname)) ?? Response.error();
+      }
+    })());
+  } else if (request.mode === 'navigate') {
     event.respondWith(caches.open(CACHE).then(async cache =>
-      (await cache.match(page)) ?? fetch(request),
+      (await cache.match('/index.html')) ?? fetch(request),
     ));
   } else if (FILES.includes(url.pathname)) {
     event.respondWith(caches.open(CACHE).then(async cache =>

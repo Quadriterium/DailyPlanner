@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import { BookOpen, LayoutDashboard, LogOut, RefreshCw, Settings2, ShieldCheck, Sparkles, Users } from 'lucide-react';
+import { BookOpen, LayoutDashboard, LogOut, RefreshCw, Scale, Settings2, ShieldCheck, Sparkles, Users } from 'lucide-react';
 import { z } from 'zod';
 import {
-  adminAiSchema, adminAuditSchema, adminCatalogSchema, adminOverviewSchema, adminRequestsSchema,
-  adminSessionSchema, adminSpacesSchema, adminUsersSchema, globalAiPolicySchema, spaceAiPolicySchema,
-  type AdminCatalogEntry, type AdminSession, type GlobalAiPolicy, type SpaceAiPolicy,
+  adminAiSchema, adminAuditSchema, adminCatalogSchema, adminLegalSchema, adminOverviewSchema, adminRequestsSchema,
+  adminSessionSchema, adminSpacesSchema, adminUsersSchema, globalAiPolicySchema, legalFieldLabels, legalFieldMax, legalInfoSchema, spaceAiPolicySchema,
+  type AdminCatalogEntry, type AdminSession, type GlobalAiPolicy, type LegalInfo, type SpaceAiPolicy,
 } from '../shared/admin';
 import {
   authStartResponseSchema, cookingLevelLabels, cookingLevels, detailsSchema, featureRequestStatusLabels,
@@ -12,6 +12,7 @@ import {
   type Capabilities, type CookingLevel, type FeatureRequest, type Ingredient, type Season,
 } from '../shared/model';
 import { formatIngredient } from '../shared/recipe';
+import { sendMessageSchema, sentMessageSchema } from '../shared/messages';
 import { Modal } from './components';
 import './admin.css';
 
@@ -76,8 +77,9 @@ function Pager({ offset, more, setOffset }: { offset: number; more: boolean; set
     <button className="secondary-button" disabled={!more} onClick={() => setOffset(offset + 50)}>Suivant</button>
   </div>;
 }
-function Usage({ usage }: { usage: Capabilities }) {
+function Usage({ usage, hourlyCalls }: { usage: Capabilities; hourlyCalls?: number }) {
   return <dl className="admin-metrics">
+    {hourlyCalls !== undefined && <div><dt>Appels sur la dernière heure</dt><dd>{number(hourlyCalls)}</dd></div>}
     <div><dt>Appels aujourd’hui</dt><dd>{number(usage.callsToday)}</dd></div>
     <div><dt>Appels ce mois-ci</dt><dd>{number(usage.callsThisMonth)}</dd></div>
     <div><dt>Tokens d’entrée ce mois-ci</dt><dd>{number(usage.inputTokens)}</dd></div>
@@ -106,8 +108,10 @@ function Overview({ api }: { api: Api }) {
 function UserList({ api, confirmAction }: { api: Api; confirmAction: ConfirmAction }) {
   const [offset, setOffset] = useState(0);
   const [search, setSearch] = useState('');
+  const [recipient, setRecipient] = useState<{ id: string | null; name: string } | null>(null);
   const state = useData(api, `/admin/users${query(offset, search)}`, adminUsersSchema);
   return <section><h2>Comptes inscrits</h2>
+    <button className="secondary-button" onClick={() => setRecipient({ id: null, name: 'Tous les utilisateurs inscrits' })}>Envoyer un message à tous</button>
     <Search label="Rechercher un compte" onSearch={value => { setSearch(value); setOffset(0); }} />
     {!state.data ? <LoadState {...state} /> : <>
       {!state.data.users.length && <p>Aucun compte trouvé.</p>}
@@ -115,6 +119,7 @@ function UserList({ api, confirmAction }: { api: Api; confirmAction: ConfirmActi
         <h3>{user.name}</h3><p>{user.email ?? 'Sans e-mail'}{!user.emailVerified && ' · non vérifié'}</p>
         <p className="field-hint">Inscription : {date(user.createdAt)} · dernière connexion : {date(user.lastLoginAt)}</p>
         <p>Foyer : {user.spaceName ?? 'Aucun'}</p><code>{user.id}</code>
+        <button className="secondary-button" onClick={() => setRecipient({ id: user.id, name: user.name })}>Envoyer un message à {user.name}</button>
         <button className="secondary-button" onClick={() => confirmAction({
           title: 'Révoquer les sessions', text: `Déconnecter tous les appareils de ${user.name} ? Le compte et ses données seront conservés.`,
           run: async () => {
@@ -124,7 +129,36 @@ function UserList({ api, confirmAction }: { api: Api; confirmAction: ConfirmActi
         })}>Révoquer les sessions de {user.name}</button>
       </article>)}</div><Pager offset={offset} more={state.data.more} setOffset={setOffset} />
     </>}
+    {recipient && <Modal title="Envoyer un message" onClose={() => setRecipient(null)}>
+      <MessageForm recipient={recipient} api={api} confirmAction={confirmAction} />
+    </Modal>}
   </section>;
+}
+function MessageForm({ recipient, api, confirmAction }: {
+  recipient: { id: string | null; name: string }; api: Api; confirmAction: ConfirmAction;
+}) {
+  const [text, setText] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  return <form className="admin-form" onSubmit={event => {
+    event.preventDefault();
+    const parsed = sendMessageSchema.safeParse({ text, userId: recipient.id, confirm: true });
+    if (!parsed.success) { setError('Saisissez un message de 1 à 4 000 caractères.'); return; }
+    setError(null);
+    confirmAction({
+      title: 'Confirmer l’envoi', text: `Envoyer ce message à « ${recipient.name} » ? Il ne pourra pas être modifié après l’envoi.`,
+      run: async () => {
+        const result = await api('/admin/messages', sentMessageSchema, { method: 'POST', body: parsed.data });
+        return `Message envoyé à ${result.recipients} utilisateur(s).`;
+      },
+    });
+  }}>
+    <p>Destinataire : <strong>{recipient.name}</strong></p>
+    <label>Message<textarea rows={6} maxLength={4000} required value={text} onChange={event => setText(event.target.value)} /></label>
+    <p className="field-hint">Affiché à la prochaine ouverture ou reconnexion au serveur. Un clic le masque définitivement pour ce compte, sur tous ses appareils.
+      {recipient.id === null && ' Tous les comptes existants seront destinataires, même si la liste est filtrée ; les futurs inscrits ne le recevront pas.'}</p>
+    {error && <p className="inline-error" role="alert">{error}</p>}
+    <button className="primary-button">Envoyer le message</button>
+  </form>;
 }
 function SpaceList({ api, confirmAction, editable = false }: { api: Api; confirmAction: ConfirmAction; editable?: boolean }) {
   const [offset, setOffset] = useState(0);
@@ -153,24 +187,32 @@ function SpaceList({ api, confirmAction, editable = false }: { api: Api; confirm
 }
 function PolicyForm({ initial, onSubmit }: { initial: SpaceAiPolicy | GlobalAiPolicy; onSubmit: (policy: GlobalAiPolicy) => void }) {
   const global = 'paused' in initial;
+  const initialHourlyLimit = 'hourlyLimit' in initial ? initial.hourlyLimit : null;
   const [daily, setDaily] = useState(initial.dailyLimit?.toString() ?? '');
   const [monthly, setMonthly] = useState(initial.monthlyLimit?.toString() ?? '');
+  const [hourlyEnabled, setHourlyEnabled] = useState(initialHourlyLimit !== null);
+  const [hourly, setHourly] = useState(initialHourlyLimit?.toString() ?? '');
   const [paused, setPaused] = useState(global && initial.paused);
   const [error, setError] = useState<string | null>(null);
   function submit(event: FormEvent) {
     event.preventDefault();
     const result = globalAiPolicySchema.safeParse({
-      dailyLimit: daily.trim() ? Number(daily) : null, monthlyLimit: monthly.trim() ? Number(monthly) : null, paused,
+      dailyLimit: daily.trim() ? Number(daily) : null, monthlyLimit: monthly.trim() ? Number(monthly) : null,
+      hourlyLimit: global && hourlyEnabled ? hourly.trim() ? Number(hourly) : Number.NaN : null, paused,
     });
-    if (!result.success) { setError('Les plafonds doivent être des entiers de 0 à 1 000 000, ou laissés vides.'); return; }
+    if (!result.success) { setError('Les plafonds doivent être des entiers de 0 à 1 000 000 ; le plafond horaire activé doit être renseigné.'); return; }
     setError(null);
     onSubmit(result.data);
   }
   return <form className="admin-form" onSubmit={submit}>
     {global && <label className="admin-checkbox"><input type="checkbox" checked={paused} onChange={event => setPaused(event.target.checked)} />Suspendre tous les nouveaux appels IA</label>}
+    {global && <>
+      <label className="admin-checkbox"><input type="checkbox" checked={hourlyEnabled} onChange={event => setHourlyEnabled(event.target.checked)} />Activer le plafond horaire global</label>
+      {hourlyEnabled && <label>Plafond horaire global (période glissante de 60 minutes)<input type="number" min={0} max={1_000_000} step={1} required value={hourly} onChange={event => setHourly(event.target.value)} /></label>}
+    </>}
     <label>{global ? 'Plafond quotidien global' : 'Quota quotidien'}<input type="number" min={0} max={1_000_000} step={1} value={daily} onChange={event => setDaily(event.target.value)} /></label>
     <label>{global ? 'Plafond mensuel global' : 'Quota mensuel'}<input type="number" min={0} max={1_000_000} step={1} value={monthly} onChange={event => setMonthly(event.target.value)} /></label>
-    <p className="field-hint">En nombre d’appels. Vide = illimité ; 0 = aucun nouvel appel. Renouvellement selon l’heure de Paris. Les exemptions d’un foyer ne contournent pas les plafonds globaux.</p>
+    <p className="field-hint">En nombre d’appels. Vide = illimité ; 0 = aucun nouvel appel. Les plafonds quotidiens et mensuels se renouvellent selon l’heure de Paris.{global && ' Le plafond horaire global porte sur toute période glissante de 60 minutes.'} Les exemptions d’un foyer ne contournent pas les plafonds globaux.</p>
     {error && <p className="inline-error" role="alert">{error}</p>}<button className="primary-button">Enregistrer les limites</button>
   </form>;
 }
@@ -179,7 +221,7 @@ function Ai({ api, confirmAction }: { api: Api; confirmAction: ConfirmAction }) 
   return <section aria-label="OpenAI">
     {!state.data ? <LoadState {...state} /> : <div className="settings-card"><h3>Budget d’appels OpenAI</h3>
       <p>{state.data.configured ? 'Clé OpenAI configurée sur le serveur.' : 'Clé OpenAI absente : aucun appel possible.'}</p>
-      <Usage usage={state.data.usage} />
+      <Usage usage={state.data.usage} hourlyCalls={state.data.hourlyCalls} />
       <PolicyForm initial={state.data.policy} onSubmit={policy => confirmAction({
         title: 'Confirmer les limites globales', text: 'Ces limites s’appliqueront à tous les foyers. Les appels déjà en cours ne seront pas annulés.',
         run: async () => { await api('/admin/ai', okSchema, { method: 'PATCH', body: { ...policy, confirm: true } }); return 'Limites globales enregistrées.'; },
@@ -333,6 +375,47 @@ function Manage({ api, confirmAction }: { api: Api; confirmAction: ConfirmAction
   </section>;
 }
 
+function LegalEditor({ api, confirmAction }: { api: Api; confirmAction: ConfirmAction }) {
+  const state = useData(api, '/admin/legal', adminLegalSchema);
+  return <section aria-label="Mentions légales">
+    {!state.data ? <LoadState {...state} /> : <LegalForm key={state.data.updatedAt} initial={state.data.info} updatedAt={state.data.updatedAt} api={api} confirmAction={confirmAction} />}
+  </section>;
+}
+const legalGroups: { title: string; hint: string; fields: (keyof LegalInfo)[] }[] = [
+  { title: 'Éditeur et responsable du traitement', hint: 'Particulier : prénom et nom. Société ou association : raison sociale, et immatriculation si elle existe.',
+    fields: ['firstName', 'lastName', 'companyName', 'registration', 'street', 'postalCode', 'city', 'country', 'phone', 'email', 'publicationDirector'] },
+  { title: 'Hébergement', hint: 'Serveur auto-hébergé : indiquez vos propres coordonnées comme hébergeur.',
+    fields: ['hostName', 'hostAddress', 'hostPhone', 'hostingLocation', 'logRetention'] },
+];
+function LegalForm({ initial, updatedAt, api, confirmAction }: { initial: LegalInfo; updatedAt: number; api: Api; confirmAction: ConfirmAction }) {
+  const [info, setInfo] = useState(initial);
+  const [error, setError] = useState<string | null>(null);
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    const result = legalInfoSchema.safeParse(info);
+    if (!result.success) { setError('Vérifiez l’adresse e-mail et la longueur des champs.'); return; }
+    setError(null);
+    confirmAction({ title: 'Publier les mentions légales', text: 'Ces informations seront visibles publiquement sur les pages Conditions d’utilisation et Confidentialité.',
+      run: async () => {
+        await api('/admin/legal', okSchema, { method: 'PATCH', body: { info: result.data, expectedUpdatedAt: updatedAt, confirm: true } });
+        return 'Mentions légales publiées.';
+      } });
+  }
+  return <form className="admin-form settings-card" onSubmit={submit}>
+    <h3><Scale size={19} />Mentions légales</h3>
+    <p className="field-hint">Les champs vides apparaissent comme « À COMPLÉTER » sur les pages publiques.
+      {updatedAt ? ` Dernière publication : ${date(updatedAt)}.` : ' Valeurs par défaut, jamais publiées.'}</p>
+    {legalGroups.map(group => <fieldset key={group.title}><legend>{group.title}</legend><p className="field-hint">{group.hint}</p>
+      {group.fields.map(key => <label key={key}>{legalFieldLabels[key]}
+        <input type={key === 'email' ? 'email' : key.toLowerCase().includes('phone') ? 'tel' : 'text'} maxLength={legalFieldMax[key]}
+          value={info[key]} onChange={event => setInfo(current => ({ ...current, [key]: event.target.value }))} /></label>)}
+    </fieldset>)}
+    <p className="admin-actions"><a href="/conditions-utilisation" target="_blank" rel="noopener">Voir les conditions d’utilisation</a>
+      <a href="/confidentialite" target="_blank" rel="noopener">Voir la politique de confidentialité</a></p>
+    {error && <p className="inline-error" role="alert">{error}</p>}<button className="primary-button">Enregistrer les mentions légales</button>
+  </form>;
+}
+
 export function Admin() {
   const [session, setSession] = useState<AdminSession | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -408,7 +491,7 @@ export function Admin() {
   const active = Boolean(session?.allowed && csrf && session.expiresAt && session.expiresAt > Date.now());
   const nav = [
     ['overview', 'Tableau de bord', LayoutDashboard], ['users', 'Utilisateurs / foyers', Users],
-    ['ai', 'OpenAI', Sparkles], ['manage', 'Administration', Settings2],
+    ['ai', 'OpenAI', Sparkles], ['legal', 'Mentions légales', Scale], ['manage', 'Administration', Settings2],
   ] as const;
   let content: ReactNode;
   if (!active) content = <div className="settings-card admin-login"><h2>Accès administrateur</h2>
@@ -426,6 +509,7 @@ export function Admin() {
     {tab === 'overview' && <Overview api={api} />}
     {tab === 'users' && <><UserList api={api} confirmAction={confirmAction} /><SpaceList api={api} confirmAction={confirmAction} /></>}
     {tab === 'ai' && <Ai api={api} confirmAction={confirmAction} />}
+    {tab === 'legal' && <LegalEditor api={api} confirmAction={confirmAction} />}
     {tab === 'manage' && <Manage api={api} confirmAction={confirmAction} />}
   </div>;
   return <div className="app-shell admin-shell">

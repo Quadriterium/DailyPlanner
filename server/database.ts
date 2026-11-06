@@ -9,10 +9,12 @@ import {
   type RecordData, type Settings,
 } from '../shared/model.js';
 import type { Config } from './config.js';
-import type { GlobalAiPolicy, SpaceAiPolicy } from '../shared/admin.js';
+import { defaultLegalInfo, legalInfoSchema, type GlobalAiPolicy, type LegalInfo, type SpaceAiPolicy } from '../shared/admin.js';
+import { userMessageSchema } from '../shared/messages.js';
 
-export const schemaVersion = 5;
+export const schemaVersion = 7;
 export const dailyAiLimit = 20;
+export const hourlyAiWindow = 60 * 60_000;
 export class AiQuotaError extends Error {
   constructor(message = 'Limite de 20 requêtes IA atteinte pour ce foyer aujourd’hui. Réessayez demain (heure de Paris). Les recettes existantes restent disponibles.') {
     super(message);
@@ -155,6 +157,29 @@ export class Store {
         PRAGMA user_version = 5;
       `);
     });
+    this.transaction(() => {
+      if (Number(this.db.prepare('PRAGMA user_version').get()?.user_version) >= 6) return;
+      this.db.exec(`
+        ALTER TABLE global_ai_policy ADD COLUMN hourly_limit INTEGER;
+        CREATE TABLE ai_hourly_calls (created_at INTEGER NOT NULL);
+        CREATE INDEX ai_hourly_calls_created_at ON ai_hourly_calls(created_at);
+        PRAGMA user_version = 6;
+      `);
+    });
+    this.transaction(() => {
+      if (Number(this.db.prepare('PRAGMA user_version').get()?.user_version) >= 7) return;
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS admin_messages (
+          id TEXT PRIMARY KEY, text TEXT NOT NULL, created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS user_messages (
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          message_id TEXT NOT NULL REFERENCES admin_messages(id) ON DELETE CASCADE,
+          dismissed_at INTEGER, PRIMARY KEY (user_id, message_id)
+        );
+        PRAGMA user_version = 7;
+      `);
+    });
     this.ensureSpaceSettings(commonSpaceId);
     for (const row of this.db.prepare('SELECT space_id, data FROM analyses').all()) {
       const analysis = analysisSchema.parse(JSON.parse(String(row.data)));
@@ -231,6 +256,31 @@ export class Store {
         PRAGMA user_version = 2;
       `);
     });
+  }
+
+  sendMessage(text: string, userId: string | null, now: number) {
+    return this.transaction(() => {
+      const id = randomUUID();
+      this.db.prepare('INSERT INTO admin_messages (id, text, created_at) VALUES (?, ?, ?)').run(id, text, now);
+      const result = userId === null
+        ? this.db.prepare('INSERT INTO user_messages (user_id, message_id) SELECT id, ? FROM users').run(id)
+        : this.db.prepare('INSERT INTO user_messages (user_id, message_id) VALUES (?, ?)').run(userId, id);
+      return { id, recipients: Number(result.changes) };
+    });
+  }
+
+  pendingMessages(userId: string) {
+    return this.db.prepare(`SELECT m.id, m.text, m.created_at FROM admin_messages m
+      JOIN user_messages u ON u.message_id = m.id
+      WHERE u.user_id = ? AND u.dismissed_at IS NULL
+      ORDER BY m.created_at, m.id LIMIT 50`).all(userId).map(row => userMessageSchema.parse({
+      id: row.id, text: row.text, createdAt: Number(row.created_at),
+    }));
+  }
+
+  dismissMessage(userId: string, id: string, now: number): boolean {
+    return Number(this.db.prepare(`UPDATE user_messages SET dismissed_at = COALESCE(dismissed_at, ?)
+      WHERE user_id = ? AND message_id = ?`).run(now, userId, id).changes) > 0;
   }
 
   space(id: string): Space | undefined {
@@ -363,12 +413,27 @@ export class Store {
     return {
       paused: Boolean(row.paused), dailyLimit: row.daily_limit === null ? null : Number(row.daily_limit),
       monthlyLimit: row.monthly_limit === null ? null : Number(row.monthly_limit),
+      hourlyLimit: row.hourly_limit === null ? null : Number(row.hourly_limit),
     };
   }
 
   setGlobalAiPolicy(policy: GlobalAiPolicy) {
-    this.db.prepare('UPDATE global_ai_policy SET paused = ?, daily_limit = ?, monthly_limit = ? WHERE id = 1')
-      .run(policy.paused ? 1 : 0, policy.dailyLimit, policy.monthlyLimit);
+    this.db.prepare('UPDATE global_ai_policy SET paused = ?, daily_limit = ?, monthly_limit = ?, hourly_limit = ? WHERE id = 1')
+      .run(policy.paused ? 1 : 0, policy.dailyLimit, policy.monthlyLimit, policy.hourlyLimit);
+  }
+
+  /** Publisher and host details shown on the public legal pages; defaults apply until an admin saves them. */
+  legalInfo(): { info: LegalInfo; updatedAt: number } {
+    const row = this.db.prepare("SELECT value FROM meta WHERE key = 'legalInfo'").get();
+    if (!row) return { info: defaultLegalInfo, updatedAt: 0 };
+    const stored = JSON.parse(String(row.value)) as { info?: unknown; updatedAt?: unknown };
+    const info = legalInfoSchema.safeParse({ ...defaultLegalInfo, ...(stored.info as object) });
+    return { info: info.success ? info.data : defaultLegalInfo, updatedAt: Number(stored.updatedAt) || 0 };
+  }
+
+  setLegalInfo(info: LegalInfo, updatedAt: number) {
+    this.db.prepare(`INSERT INTO meta (key, value) VALUES ('legalInfo', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify({ info: legalInfoSchema.parse(info), updatedAt }));
   }
 
   setAiLimitExempt(spaceId: string, exempt: boolean) {
@@ -380,9 +445,19 @@ export class Store {
     });
   }
 
-  private quotaError(spaceId: string, day: string): AiQuotaError | undefined {
+  private quotaError(spaceId: string, day: string, now: number): AiQuotaError | undefined {
     const global = this.globalAiPolicy();
     if (global.paused) return new AiQuotaError('Les nouveaux appels IA sont suspendus par l’administrateur. Les recettes existantes restent disponibles.');
+    if (global.hourlyLimit !== null) {
+      const hourlyUsage = this.db.prepare(`SELECT COUNT(*) AS calls, MIN(created_at) AS oldest
+        FROM ai_hourly_calls WHERE created_at > ? AND created_at <= ?`).get(now - hourlyAiWindow, now)!;
+      if (Number(hourlyUsage.calls) >= global.hourlyLimit) {
+        if (global.hourlyLimit === 0) return new AiQuotaError('Le plafond horaire global est réglé à zéro ; les nouveaux appels IA sont bloqués.');
+        const oldest = Number(hourlyUsage.oldest);
+        const retryMinutes = Math.max(1, Math.ceil((oldest + hourlyAiWindow - now) / 60_000));
+        return new AiQuotaError(`Plafond horaire global de ${global.hourlyLimit} appels IA atteint. Réessayez dans ${retryMinutes} minute${retryMinutes > 1 ? 's' : ''}.`);
+      }
+    }
     const globalUsage = this.capabilities(new Date(`${day}T12:00:00Z`));
     const usage = this.capabilities(new Date(`${day}T12:00:00Z`), spaceId);
     const policy = this.spaceAiPolicy(spaceId);
@@ -400,9 +475,16 @@ export class Store {
     }
   }
 
-  private recordCall(spaceId: string, day: string) {
+  private recordCall(spaceId: string, day: string, now: number) {
     this.db.prepare('INSERT INTO household_ai_usage (space_id, day, calls) VALUES (?, ?, 1) ON CONFLICT(space_id, day) DO UPDATE SET calls = calls + 1').run(spaceId, day);
     this.db.prepare('INSERT INTO ai_usage (day, calls) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET calls = calls + 1').run(day);
+    this.db.prepare('DELETE FROM ai_hourly_calls WHERE created_at <= ?').run(now - hourlyAiWindow);
+    this.db.prepare('INSERT INTO ai_hourly_calls (created_at) VALUES (?)').run(now);
+  }
+
+  hourlyAiCalls(now = Date.now()): number {
+    return Number(this.db.prepare('SELECT COUNT(*) AS n FROM ai_hourly_calls WHERE created_at > ? AND created_at <= ?')
+      .get(now - hourlyAiWindow, now)!.n);
   }
 
   capabilities(now = new Date(), spaceId?: string): Capabilities {
@@ -444,14 +526,15 @@ export class Store {
         if (!allowed.get(spaceId)) continue;
         const dish = this.get(spaceId, `dish:${analysis.dishId}`);
         if (dish?.type !== 'dish' || dish.archived || dish.details || dish.analysisKey !== analysis.analysisKey) continue;
-        const day = parisDate();
-        const quota = this.quotaError(spaceId, day);
+        const now = Date.now();
+        const day = parisDate(new Date(now));
+        const quota = this.quotaError(spaceId, day, now);
         if (quota) {
           if (analysis.error !== quota.message) this.putAnalysis(spaceId, { ...analysis, error: quota.message });
           continue;
         }
         this.putAnalysis(spaceId, { ...analysis, status: 'processing', error: null });
-        this.recordCall(spaceId, day);
+        this.recordCall(spaceId, day, now);
         return { spaceId, dish, day };
       }
     });
@@ -461,10 +544,11 @@ export class Store {
     if (!this.config.OPENAI_API_KEY) throw new Error('La génération IA nécessite une clé OpenAI configurée sur le serveur.');
     if (!this.config.allowedModels.includes(this.settings(spaceId).model)) throw new Error('Choisissez un modèle IA autorisé dans les paramètres.');
     return this.transaction(() => {
-      const day = parisDate();
-      const quota = this.quotaError(spaceId, day);
+      const now = Date.now();
+      const day = parisDate(new Date(now));
+      const quota = this.quotaError(spaceId, day, now);
       if (quota) throw quota;
-      this.recordCall(spaceId, day);
+      this.recordCall(spaceId, day, now);
       return day;
     });
   }

@@ -114,6 +114,47 @@ describe('Génération à partir du catalogue', () => {
     expect(aiRequest).not.toHaveBeenCalled();
     expect(store.capabilities(new Date(), 'common').callsToday).toBe(0);
   });
+  it('exclut un plat du tirage uniquement à la date où il a été supprimé', async () => {
+    fill(catalogDrawThreshold);
+    const removed = store.catalog()[0];
+    store.merge('common', [dish({
+      name: removed.details.name, details: removed.details, excludedGenerationDates: ['2026-10-30'],
+    })]);
+    aiRequest.mockResolvedValue(aiAnswer(aiStructured('Nouveau plat du jour')));
+    const sameDay = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30', level: 2 } });
+    const nextDay = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-31', level: 2 } });
+    expect(sameDay.statusCode).toBe(200);
+    expect(sameDay.json()).toMatchObject({ source: 'ai', details: { name: 'Nouveau plat du jour' } });
+    expect(nextDay.statusCode).toBe(200);
+    expect(nextDay.json().source).toBe('catalog');
+    expect(store.catalog().map(item => item.details.name)).toContain(removed.details.name);
+    expect(aiRequest).toHaveBeenCalledOnce();
+  });
+  it('respecte une exclusion durable à toutes les dates et sa réautorisation conserve les exclusions datées', async () => {
+    fill(catalogDrawThreshold);
+    const entry = store.catalog()[0];
+    const excluded = dish({
+      name: entry.details.name, details: entry.details,
+      excludedFromGeneration: true, excludedGenerationDates: ['2026-10-30'],
+    });
+    store.merge('common', [excluded]);
+    aiRequest.mockImplementation(async () => aiAnswer({ ...aiStructured('Autre idée'), troll: true }));
+    for (const date of ['2026-10-30', '2026-10-31']) {
+      const response = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date, level: 2 } });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json().source).toBe('ai');
+    }
+    store.merge('common', [{
+      ...excluded, excludedFromGeneration: false, modifiedAt: excluded.modifiedAt + 1, mutationId: randomUUID(),
+    }]);
+    const restored = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-31', level: 2 } });
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json().source).toBe('catalog');
+    const dated = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30', level: 2 } });
+    expect(dated.json().source).toBe('ai');
+    expect(aiRequest).toHaveBeenCalledTimes(3);
+    expect(store.catalog().map(item => item.details.name)).toContain(entry.details.name);
+  });
   it('appelle l’IA et enrichit le catalogue quand les fiches adaptées sont insuffisantes', async () => {
     fill(catalogDrawThreshold - 1);
     fill(5, { level: 3 });

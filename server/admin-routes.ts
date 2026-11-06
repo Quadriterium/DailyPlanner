@@ -3,7 +3,7 @@ import { basename } from 'node:path';
 import { z } from 'zod';
 import {
   adminAiSchema, adminAuditSchema, adminCatalogCorrectionSchema, adminCatalogRemovalSchema, adminCatalogSchema,
-  adminConfirmSchema, adminGlobalPolicyRequestSchema, adminOverviewSchema, adminPageSchema, adminRequestsSchema,
+  adminConfirmSchema, adminGlobalPolicyRequestSchema, adminLegalRequestSchema, adminLegalSchema, adminOverviewSchema, adminPageSchema, adminRequestsSchema,
   adminRequestUpdateSchema, adminSessionSchema, adminSpacePolicyRequestSchema, adminSpacesSchema, adminUsersSchema,
 } from '../shared/admin.js';
 import type { Config } from './config.js';
@@ -15,6 +15,7 @@ import { hashToken } from './auth/tokens.js';
 import { audit } from './audit.js';
 import { backupDatabase, listSpaces, listUsers } from './maintenance.js';
 import { normalizedName } from '../shared/model.js';
+import { sendMessageSchema, sentMessageSchema } from '../shared/messages.js';
 
 const pageSize = 50;
 const uuid = z.object({ id: z.string().uuid() }).strict();
@@ -86,6 +87,14 @@ export async function registerAdmin(app: FastifyInstance, store: Store, config: 
       const users = listUsers(store, { ...page, limit: pageSize + 1 });
       return adminUsersSchema.parse({ users: users.slice(0, pageSize), more: users.length > pageSize });
     });
+    admin.post('/messages', async (request, reply) => {
+      const input = parsed(sendMessageSchema, request.body, reply);
+      if (!input) return reply;
+      if (input.userId && !accounts.user(input.userId)) return reply.code(404).send({ error: 'Compte introuvable.' });
+      const result = mutate(request, 'admin.message-send', input.userId ?? 'all', {}, () =>
+        store.sendMessage(input.text, input.userId, now()));
+      return sentMessageSchema.parse(result);
+    });
     admin.get('/spaces', async (request, reply) => {
       const page = parsed(adminPageSchema, request.query, reply);
       if (!page) return reply;
@@ -105,6 +114,7 @@ export async function registerAdmin(app: FastifyInstance, store: Store, config: 
     });
     admin.get('/ai', async () => adminAiSchema.parse({
       policy: store.globalAiPolicy(), usage: store.capabilities(new Date(now())),
+      hourlyCalls: store.hourlyAiCalls(now()),
       configured: Boolean(config.OPENAI_API_KEY), allowedModels: config.allowedModels,
     }));
     admin.patch('/ai', async (request, reply) => {
@@ -197,6 +207,20 @@ export async function registerAdmin(app: FastifyInstance, store: Store, config: 
         if (Number(row.updated_at) !== body.expectedUpdatedAt) return reply.code(409).send({ error: 'Cette demande a changé. Rechargez-la avant de répondre.' });
         mutate(request, 'admin.request-update', params.id, { status: body.status }, () =>
           store.updateFeatureRequest(params.id, body.status, body.note || null));
+        return { ok: true };
+      });
+    });
+    admin.get('/legal', async () => adminLegalSchema.parse(store.legalInfo()));
+    admin.patch('/legal', async (request, reply) => {
+      const body = parsed(adminLegalRequestSchema, request.body, reply);
+      if (!body) return reply;
+      return store.transaction(() => {
+        const current = store.legalInfo();
+        if (current.updatedAt !== body.expectedUpdatedAt) return reply.code(409).send({ error: 'Les mentions légales ont changé. Rechargez-les avant de les modifier.' });
+        // Only field names reach the audit trail: the values are personal data.
+        const changed = (Object.keys(body.info) as (keyof typeof body.info)[]).filter(key => body.info[key] !== current.info[key]);
+        const updatedAt = Math.max(now(), current.updatedAt + 1);
+        mutate(request, 'admin.legal-update', 'legal', { changed }, () => store.setLegalInfo(body.info, updatedAt));
         return { ok: true };
       });
     });

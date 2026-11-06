@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { buildApp } from '../server/app';
 import { readConfig } from '../server/config';
-import { Store } from '../server/database';
+import { hourlyAiWindow, Store } from '../server/database';
 import { addDays, defaultHousehold, parisDate, seasonForDate, syncResponseSchema } from '../shared/model';
 import { details, dish, meal } from './fixtures';
 
@@ -55,6 +55,48 @@ describe('API et stockage partagé', () => {
     expect(aiRequest).toHaveBeenCalledTimes(20);
     const sync = await app.inject({ method: 'POST', url: '/api/sync', payload: { mutations: [] } });
     expect(sync.json().capabilities).toMatchObject({ dailyLimit: 20, callsToday: 20, inputTokens: 200, outputTokens: 100 });
+  });
+  it('applique le plafond horaire global aux appels directs et au worker', async () => {
+    await app.close();
+    const list = { sections: [{ name: 'Crèmerie et œufs', items: ['Lait — 700 ml'] }] };
+    const aiRequest = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(list) }] }],
+      usage: { input_tokens: 30, output_tokens: 12 },
+    })));
+    app = await buildApp(store, config, { logger: false, aiRequest });
+    store.setGlobalAiPolicy({ paused: false, dailyLimit: null, monthlyLimit: null, hourlyLimit: 1 });
+
+    const concurrent = await Promise.all(Array.from({ length: 3 }, () =>
+      app.inject({ method: 'POST', url: '/api/shopping/refine', payload: { lines: ['Lait — 666 ml'] } })));
+    expect(concurrent.filter(response => response.statusCode === 200)).toHaveLength(1);
+    expect(concurrent.filter(response => response.statusCode === 429)).toHaveLength(2);
+    const blocked = await app.inject({ method: 'POST', url: '/api/meals/generate', payload: { date: '2026-10-30' } });
+    expect(blocked.statusCode).toBe(429);
+    expect(blocked.json().error).toContain('Plafond horaire global');
+
+    const pending = dish();
+    store.merge('common', [pending]);
+    expect(store.claimAnalysis()).toBeUndefined();
+    expect(store.analysis('common', pending.id)).toMatchObject({
+      status: 'pending', error: expect.stringContaining('Plafond horaire global'),
+    });
+    expect(aiRequest).toHaveBeenCalledTimes(1);
+    expect(store.hourlyAiCalls()).toBe(1);
+  });
+  it('applique une fenêtre glissante de 60 minutes, pas une heure calendaire', () => {
+    vi.useFakeTimers();
+    try {
+      const start = new Date('2026-11-05T12:00:00Z').getTime();
+      vi.setSystemTime(start);
+      store.setGlobalAiPolicy({ paused: false, dailyLimit: null, monthlyLimit: null, hourlyLimit: 1 });
+      store.reserveGeneration('common');
+
+      vi.setSystemTime(start + hourlyAiWindow - 1);
+      expect(() => store.reserveGeneration('common')).toThrow('Plafond horaire global');
+      vi.setSystemTime(start + hourlyAiWindow);
+      expect(store.reserveGeneration('common')).toBe('2026-11-05');
+      expect(store.hourlyAiCalls()).toBe(1);
+    } finally { vi.useRealTimers(); }
   });
   it('affine une liste de courses en n’envoyant que les lignes, compte l’appel et signale les erreurs', async () => {
     await app.close();
@@ -598,6 +640,7 @@ describe('API et stockage partagé', () => {
     try {
       expect(second.records('common')).toHaveLength(3);
       expect(second.capabilities().callsToday).toBe(21);
+      expect(second.hourlyAiCalls()).toBe(21);
       expect(second.capabilities(new Date(), 'common').callsToday).toBe(1);
       expect(second.capabilities(new Date(), exempt.id)).toMatchObject({ callsToday: 20, dailyLimit: null });
       expect(() => second.reserveGeneration(exempt.id)).not.toThrow();
@@ -612,7 +655,7 @@ describe('API et stockage partagé', () => {
     for (let i = 0; i < 20; i++) legacy.reserveGeneration('common');
     legacy.db.exec(`
       DROP TABLE household_ai_usage; DROP TABLE ai_limit_exemptions;
-      DROP TABLE admin_sessions; DROP TABLE admin_audit; DROP TABLE space_ai_policy; DROP TABLE global_ai_policy;
+      DROP TABLE ai_hourly_calls; DROP TABLE admin_sessions; DROP TABLE admin_audit; DROP TABLE space_ai_policy; DROP TABLE global_ai_policy;
       ALTER TABLE auth_transactions DROP COLUMN return_to;
       PRAGMA user_version = 2;
     `);

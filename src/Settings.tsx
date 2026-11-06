@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react';
 import {
-  Check, ChefHat, Clock3, Cloud, Download, Lightbulb, Minus, MonitorSmartphone, Moon, Plus, RefreshCw, Salad, Send, Settings2, ShieldCheck,
+  Ban, Check, ChefHat, Clock3, Cloud, Download, Lightbulb, Minus, MonitorSmartphone, Moon, Plus, RefreshCw, RotateCcw, Salad, Search, Send, Settings2, ShieldCheck,
   Sparkles, Sun, SunMoon, Users,
 } from 'lucide-react';
 import {
-  cookingLevelHints, cookingLevelLabels, cookingLevels, defaultCookingLevel, defaultHousehold, featureRequestStatusLabels, householdCategories,
-  type Capabilities, type CookingLevel, type FeatureRequest, type Household, type Settings as AppSettings,
+  cookingLevelHints, cookingLevelLabels, cookingLevels, defaultCookingLevel, defaultHousehold, dishDetails, featureRequestStatusLabels, householdCategories, normalizedName,
+  type Analysis, type Capabilities, type CookingLevel, type Dish, type FeatureRequest, type Household, type Settings as AppSettings,
 } from '../shared/model';
 import { LevelGauge } from './CookingLevel';
-import { errorMessage, loadFeatureRequests, save, serverFeaturesAvailable, signInHint, submitFeatureRequest, type AuthState } from './store';
+import { errorMessage, loadFeatureRequests, save, serverFeaturesAvailable, setDishGenerationExcluded, signInHint, submitFeatureRequest, type AuthState } from './store';
 import { AccountCard } from './Account';
 import { pwaStatus, refreshApp } from './pwa';
 import { timePattern, type ThemeControl, type ThemePreference } from './theme';
@@ -80,8 +80,45 @@ function FeatureRequests({ online, allowed }: { online: boolean; allowed: boolea
   </div>;
 }
 
-export function Settings({ settings, capabilities, online, appearance, lastSync, pending, syncing, onSync, onInstall, auth, reachable, onNotice }: {
+function ExcludedDishes({ dishes, analyses }: { dishes: Dish[]; analyses: Analysis[] }) {
+  const [query, setQuery] = useState('');
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [restored, setRestored] = useState<string | null>(null);
+  const analysisMap = new Map(analyses.map(analysis => [analysis.dishId, analysis]));
+  const excluded = dishes.filter(dish => dish.excludedFromGeneration)
+    .map(dish => ({ dish, details: dishDetails(dish, analysisMap.get(dish.id)) }));
+  const entries = excluded.filter(({ dish, details }) =>
+    [dish.name, details.name].some(name => normalizedName(name).includes(normalizedName(query))))
+    .sort((a, b) => a.details.name.localeCompare(b.details.name, 'fr'));
+  async function restore(dish: Dish, name: string) {
+    setPendingId(dish.id);
+    setError(null);
+    setRestored(null);
+    try {
+      await setDishGenerationExcluded(dish.id, false);
+      setRestored(name);
+    } catch (cause) { setError(errorMessage(cause)); }
+    finally { setPendingId(null); }
+  }
+  return <section className="settings-card" aria-labelledby="excluded-dishes-title">
+    <h3 id="excluded-dishes-title"><Ban size={19} />Plats exclus des générations</h3>
+    <label className="search-field"><Search size={18} /><input type="search" aria-label="Rechercher dans les plats exclus"
+      placeholder="Rechercher un plat exclu…" value={query} onChange={event => setQuery(event.target.value)} /></label>
+    {entries.length ? <ul className="excluded-dishes">{entries.map(({ dish, details }) => <li key={dish.id}>
+      <span>{details.name}</span>
+      <button className="secondary-button" disabled={pendingId !== null} aria-label={`Réautoriser ${details.name}`}
+        onClick={() => void restore(dish, details.name)}><RotateCcw size={16} />Réautoriser</button>
+    </li>)}</ul> : <p className="field-hint">{excluded.length
+      ? 'Aucun plat exclu ne correspond à cette recherche.' : 'Aucun plat exclu des générations.'}</p>}
+    {restored && <p className="field-hint" role="status">« {restored} » est à nouveau autorisé dans les générations.</p>}
+    {error && <p className="inline-error" role="alert">{error}</p>}
+  </section>;
+}
+
+export function Settings({ settings, dishes, analyses, capabilities, online, appearance, lastSync, pending, syncing, onSync, onInstall, auth, reachable, onNotice }: {
   settings?: AppSettings; capabilities: Capabilities | null; online: boolean; appearance: ThemeControl; lastSync: number | null;
+  dishes: Dish[]; analyses: Analysis[];
   pending: number; syncing: boolean; onSync: () => void; onInstall: () => void;
   auth: AuthState; reachable: boolean; onNotice: (title: string, text: string) => void;
 }) {
@@ -256,6 +293,7 @@ export function Settings({ settings, capabilities, online, appearance, lastSync,
       {avoidSaved && <p className="field-hint" role="status">Repas et ingrédients à éviter enregistrés.</p>}
       {preferencesError && <p className="inline-error" role="alert">{preferencesError}</p>}
     </div>
+    <ExcludedDishes dishes={dishes} analyses={analyses} />
     <div className="settings-card">
       <h3><ChefHat size={19} />Niveau de cuisine</h3>
       <fieldset disabled={!settings || pendingLevel !== null}><legend className="sr-only">Niveau de cuisine</legend>

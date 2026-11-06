@@ -89,6 +89,10 @@ export const sourceRecipeSchema = z.object({
   recipe: z.string().max(4000).refine(value => Boolean(value.trim()), 'Renseignez les étapes de la recette.'),
   servings: detailsSchema.shape.servings.unwrap(),
 }).strict();
+const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(
+  value => Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value,
+  'Date invalide',
+);
 export const dishSchema = z.object({
   type: z.literal('dish'),
   id: z.string().uuid(),
@@ -99,12 +103,10 @@ export const dishSchema = z.object({
   analysisKey: z.string().uuid(),
   details: detailsSchema.nullable(),
   archived: z.boolean(),
+  excludedFromGeneration: z.boolean().optional(),
+  excludedGenerationDates: z.array(dateSchema).optional(),
   ...version,
 }).strict();
-const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(
-  value => Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value,
-  'Date invalide',
-);
 export const mealSchema = z.object({
   type: z.literal('meal'),
   id: z.string(),
@@ -395,6 +397,12 @@ export function recentMealNames(records: RecordData[], analyses: Analysis[], dat
     });
 }
 
+export function generationExcludedNames(dishes: Dish[], analyses: Analysis[], date: string): Set<string> {
+  const analysisMap = new Map(analyses.map(analysis => [analysis.dishId, analysis]));
+  return new Set(dishes.filter(dish => dish.excludedFromGeneration || dish.excludedGenerationDates?.includes(date))
+    .flatMap(dish => [dish.name, dishDetails(dish, analysisMap.get(dish.id)).name].map(normalizedName)));
+}
+
 /** Fiches du catalogue de la saison du repas (ou de toute l'année), du niveau demandé, sans aliment à éviter ni nom exclu. */
 export function catalogCandidates(entries: CatalogEntry[], options: {
   date: string; level?: CookingLevel; avoid: string; excludedNames: Iterable<string>; vegetarian?: boolean;
@@ -422,10 +430,12 @@ export function randomMealCandidates(
   dishes: Dish[], analyses: Analysis[], meals: Meal[], date: string, start: string, level?: CookingLevel, vegetarian = false,
 ): Dish[] {
   const analysisMap = new Map(analyses.map(analysis => [analysis.dishId, analysis]));
+  const excludedNames = generationExcludedNames(dishes, analyses, date);
   const candidates = seasonalDishes(dishes, analyses, date)
     .filter(dish => {
       const details = dishDetails(dish, analysisMap.get(dish.id));
-      return (level === undefined || details.level === level) && matchesDiet(details, vegetarian);
+      return !excludedNames.has(normalizedName(dish.name)) && !excludedNames.has(normalizedName(details.name)) &&
+        (level === undefined || details.level === level) && matchesDiet(details, vegetarian);
     });
   const week = meals.filter(meal => meal.date >= start && meal.date <= addDays(start, 6) && meal.text.trim());
   const ids = new Set(week.map(meal => meal.dishId));

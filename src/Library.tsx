@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Archive, ArrowUpRight, Check, Leaf, LoaderCircle, Plus, RotateCcw, Search, Sparkles } from 'lucide-react';
+import { Archive, ArrowUpRight, Ban, Check, Leaf, LoaderCircle, Plus, RotateCcw, Search, Sparkles } from 'lucide-react';
 import {
   cookingLevelHints, cookingLevelLabels, cookingLevels, dishDetails, parisDate, recipeUrl, seasonForDate, seasonLabels, seasons, sourceRecipeSchema,
   type Analysis, type CookingLevel, type Dish, type Season,
 } from '../shared/model';
 import { EmptyState, Modal } from './components';
 import { LevelGauge, LevelTag } from './CookingLevel';
-import { errorMessage, save, signInHint, useServerFeatures } from './store';
+import { errorMessage, save, setDishGenerationExcluded, signInHint, useServerFeatures } from './store';
 import { newId } from './id';
 import { recipeServings } from '../shared/recipe';
 
@@ -49,6 +49,7 @@ export function Library({ dishes, analyses, online, aiConfigured, onSaved, onSig
           <h3>{details.name}</h3>
           <p>{details.seasons.map(season => seasonLabels[season]).join(' · ')}</p>
           {details.level && <LevelTag level={details.level} />}
+          {dish.excludedFromGeneration && <span className="generation-excluded-label">Exclu des générations</span>}
           <small className={analysis?.status === 'error' && !dish.details ? 'danger' : ''}><Sparkles size={12} />{status}</small>
         </button>;
       })}
@@ -153,12 +154,13 @@ function DishEditor({ dish, analysis, online, onClose, onSaved, onSignInRequired
     setServings(String(recipeServings(updated) ?? ''));
   }, [dish, analysis, dirty]);
 
-  async function persist(action: 'edit' | 'archive' | 'analyze') {
+  async function persist(action: 'edit' | 'archive' | 'analyze' | 'exclude') {
     if (action === 'analyze' && !serverFeatures) { onSignInRequired(); return; }
     setBusy(true);
     setError(null);
     try {
-      await save([action === 'archive' ? { ...dish, archived: !dish.archived }
+      if (action === 'exclude') await setDishGenerationExcluded(dish.id, !dish.excludedFromGeneration);
+      else await save([action === 'archive' ? { ...dish, archived: !dish.archived }
         : dish.sourceRecipe ? { ...dish, name: name.trim(), details: null, analysisKey: newId(),
           sourceRecipe: recipeSource(ingredients, recipe, servings) }
           : action === 'analyze' ? { ...dish, name: name.trim(), details: null, analysisKey: newId(),
@@ -231,6 +233,10 @@ function DishEditor({ dish, analysis, online, onClose, onSaved, onSignInRequired
       <div className="editor-actions"><button className="primary-button" disabled={busy || !name.trim() || !selectedSeasons.length}><Check size={17} />Enregistrer la fiche</button></div>
     </form>
     <div className="dish-secondary-actions">
+      <button className="text-button" disabled={busy} onClick={() => void persist('exclude')}>
+        {dish.excludedFromGeneration ? <RotateCcw size={16} /> : <Ban size={16} />}
+        {dish.excludedFromGeneration ? 'Réautoriser les générations' : 'Exclure des générations'}
+      </button>
       <button className="text-button" disabled={busy} onClick={() => void persist('archive')}>
         {dish.archived ? <RotateCcw size={16} /> : <Archive size={16} />}{dish.archived ? 'Restaurer ce repas' : 'Archiver ce repas'}
       </button>

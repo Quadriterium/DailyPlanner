@@ -97,17 +97,44 @@ function activateUpdate(worker: ServiceWorker) {
   });
 }
 
-export async function refreshApp() {
-  if (navigator.onLine === false) throw new Error('Le serveur est inaccessible hors ligne. Réessayez après reconnexion.');
-  const current = 'serviceWorker' in navigator && window.isSecureContext
+function shellFiles(page: Document, base: string) {
+  return new Set(Array.from(page.querySelectorAll('script[src], link[rel="stylesheet"], link[rel="modulepreload"]'))
+    .map(element => new URL(element.getAttribute('src') ?? element.getAttribute('href') ?? '', base).href));
+}
+
+async function serverShell() {
+  const response = await fetch(window.location.href, { cache: 'reload', signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) throw new Error('Le serveur est inaccessible. L’application n’a pas été rechargée.');
+  return shellFiles(new DOMParser().parseFromString(await response.text(), 'text/html'), response.url || window.location.href);
+}
+
+async function currentRegistration() {
+  return 'serviceWorker' in navigator && window.isSecureContext
     ? registration ?? await navigator.serviceWorker.getRegistration()
     : undefined;
+}
+
+/** True when the running page already uses the build currently served. */
+async function runningLatestBuild() {
+  const current = await currentRegistration();
+  const controller = current ? navigator.serviceWorker.controller : null;
+  if (!current || !controller) {
+    // Page loaded from the network (no service worker, first visit, hard reload): compare its files with the served HTML.
+    const served = await serverShell();
+    const loaded = shellFiles(document, window.location.href);
+    // Runtime preloads may add files, so only check that every served file is already loaded.
+    return Array.from(served).every(file => loaded.has(file));
+  }
+  await current.update();
+  if (current.installing) await waitForInstallation(current.installing);
+  return !current.waiting && controller === current.active;
+}
+
+export async function refreshApp() {
+  if (navigator.onLine === false) throw new Error('Le serveur est inaccessible hors ligne. Réessayez après reconnexion.');
+  const current = await currentRegistration();
   if (!current) {
-    const response = await fetch(window.location.href, { cache: 'reload', signal: AbortSignal.timeout(15_000) });
-    if (!response.ok) throw new Error('Le serveur est inaccessible. L’application n’a pas été rechargée.');
-    const document = new DOMParser().parseFromString(await response.text(), 'text/html');
-    const files = new Set(Array.from(document.querySelectorAll('script[src], link[rel="stylesheet"], link[rel="modulepreload"]'))
-      .map(element => new URL(element.getAttribute('src') ?? element.getAttribute('href') ?? '', response.url || window.location.href).href));
+    const files = await serverShell();
     await Promise.all(Array.from(files, async file => {
       const asset = await fetch(file, { cache: 'reload', signal: AbortSignal.timeout(15_000) });
       if (!asset.ok) throw new Error('Impossible de télécharger tous les fichiers de l’application.');
@@ -126,6 +153,10 @@ export async function refreshApp() {
 export async function applyRequiredClientUpdate(id: string): Promise<boolean> {
   const key = 'a-table-client-update';
   if (sessionStorage.getItem(key) === id) return false;
+  if (await runningLatestBuild()) {
+    sessionStorage.setItem(key, id);
+    return false;
+  }
   await refreshApp();
   // Per-tab acknowledgement survives reload without letting another tab skip its own update.
   sessionStorage.setItem(key, id);

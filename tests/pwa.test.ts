@@ -106,6 +106,24 @@ describe('Isolation de l’administration du cache PWA', () => {
     handlers.fetch({ request: { url: 'https://planner.example/', method: 'GET', mode: 'navigate' }, respondWith });
     expect(respondWith).toHaveBeenCalledOnce();
   });
+  it('sert les pages légales depuis le réseau et garde la dernière copie pour le hors-ligne', async () => {
+    const handlers: Record<string, (event: object) => void> = {};
+    const stored = new Map<string, Response>();
+    const cache = { match: async (key: string) => stored.get(key), put: async (key: string, response: Response) => { stored.set(key, response); } };
+    const fetch = vi.fn().mockResolvedValueOnce(new Response('mentions à jour')).mockRejectedValueOnce(new TypeError('offline'));
+    runInNewContext(source, {
+      self: { location: { origin: 'https://planner.example' }, addEventListener: (name: string, handler: typeof handlers[string]) => { handlers[name] = handler; } },
+      caches: { open: async () => cache }, fetch, URL, Response,
+    });
+    const navigate = async () => {
+      let response: Promise<Response> | undefined;
+      handlers.fetch({ request: { url: 'https://planner.example/confidentialite', method: 'GET', mode: 'navigate' }, respondWith: (value: Promise<Response>) => { response = value; } });
+      return (await response!).text();
+    };
+    expect(await navigate()).toBe('mentions à jour');
+    expect(await navigate()).toBe('mentions à jour');
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('Mise à jour imposée par la synchronisation', () => {
@@ -123,20 +141,36 @@ describe('Mise à jour imposée par la synchronisation', () => {
     vi.stubGlobal('navigator', {});
     vi.stubGlobal('window', { location: { href: 'http://planner.local/', reload }, isSecureContext: false });
     vi.stubGlobal('DOMParser', class {
-      parseFromString() { return { querySelectorAll: () => [] }; }
+      parseFromString() { return files('/assets/index-v2.js'); }
     });
+    vi.stubGlobal('document', files('/assets/index-v1.js'));
     vi.stubGlobal('fetch', fetchSite);
+  });
+  function files(...sources: string[]) {
+    return { querySelectorAll: () => sources.map(source => ({ getAttribute: (name: string) => name === 'src' ? source : null })) };
+  }
+
+  it('ne télécharge ni ne recharge si la page exécute déjà la version servie', async () => {
+    vi.stubGlobal('document', files('/assets/index-v2.js', '/assets/preloaded-chunk.js'));
+    expect(await applyRequiredClientUpdate('breaking-v2')).toBe(false);
+    expect(fetchSite).toHaveBeenCalledTimes(1);
+    expect(reload).not.toHaveBeenCalled();
+    expect(values.get('a-table-client-update')).toBe('breaking-v2');
+    expect(await applyRequiredClientUpdate('breaking-v2')).toBe(false);
+    expect(fetchSite).toHaveBeenCalledTimes(1);
   });
 
   it('télécharge avant rechargement et ne traite chaque identifiant qu’une fois par onglet', async () => {
     reload.mockImplementation(() => {
       expect(values.get('a-table-client-update')).toBe('breaking-v2');
-      expect(fetchSite).toHaveBeenCalledTimes(1);
+      // Version check, then HTML and its new script.
+      expect(fetchSite).toHaveBeenCalledTimes(3);
+      expect(fetchSite).toHaveBeenLastCalledWith('http://planner.local/assets/index-v2.js', expect.objectContaining({ cache: 'reload' }));
     });
     expect(await applyRequiredClientUpdate('breaking-v2')).toBe(true);
     expect(reload).toHaveBeenCalledTimes(1);
     expect(await applyRequiredClientUpdate('breaking-v2')).toBe(false);
-    expect(fetchSite).toHaveBeenCalledTimes(1);
+    expect(fetchSite).toHaveBeenCalledTimes(3);
     reload.mockReset();
     expect(await applyRequiredClientUpdate('breaking-v3')).toBe(true);
     expect(reload).toHaveBeenCalledTimes(1);

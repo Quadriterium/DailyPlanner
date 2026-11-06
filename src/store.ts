@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { refinedShoppingListSchema, type RefinedShoppingList } from '../shared/shopping';
 import {
   addDays, apiErrorSchema, authSessionSchema, authStartResponseSchema, catalogCandidates, cookingLevelLabels, createdInvitationSchema, defaultCookingLevel,
-  defaultOpenAiModel, dishDetails, featureRequestListSchema, featureRequestSchema, generateMealResponseSchema, generationErrorMessage, invitationPreviewSchema,
+  defaultOpenAiModel, dishDetails, featureRequestListSchema, featureRequestSchema, generateMealResponseSchema, generationErrorMessage, generationExcludedNames, invitationPreviewSchema,
   matchesDiet, mealId, normalizedName, randomMealCandidates, recentMealNames, seasonForDate, spaceDetailsSchema, syncResponseSchema, vegetarianForSlot,
   type AuthSession, type CatalogEntry, type CookingLevel, type CreatedInvitation, type Dish, type DishDetails, type FeatureRequest, type Household,
   type InvitationPreview, type Meal, type SessionSpace, type SessionUser, type Slot, type SpaceDetails,
@@ -294,6 +294,13 @@ export function preferredCookingLevel(records: State['records']): CookingLevel {
   return settings?.cookingLevel ?? defaultCookingLevel;
 }
 
+export async function setDishGenerationExcluded(dishId: string, excluded: boolean): Promise<void> {
+  await refresh();
+  const dish = state.records.find(record => record.type === 'dish' && record.id === dishId);
+  if (!dish || dish.type !== 'dish') throw new Error('Cette fiche n’est plus disponible. Actualisez le carnet.');
+  await save([{ ...dish, excludedFromGeneration: excluded }]);
+}
+
 /** Shared recipes eligible for a random draw: not already in the household notebook, nor chosen around this date. */
 export function sharedRandomCandidates(
   date: string, level?: CookingLevel, records = state.records, analyses = state.analyses, entries = catalogEntries(),
@@ -369,6 +376,9 @@ export async function fillMeal(
   let selected: Dish | undefined;
   let copied: { details: DishDetails; sourceUrl?: string } | undefined;
   if (generated) {
+    if (generationExcludedNames(dishes, state.analyses, date).has(normalizedName(generated.name))) {
+      throw new Error('Ce plat est exclu des générations pour ce jour. Le créneau reste inchangé.');
+    }
     if (!matchesDiet(generated, requiredVegetarian)) throw new Error('La proposition reçue n’est pas classée végétarienne. Le créneau reste inchangé.');
     selected = dishes.find(dish => !dish.archived &&
       matchesDiet(dishDetails(dish, state.analyses.find(analysis => analysis.dishId === dish.id)), requiredVegetarian) && (
