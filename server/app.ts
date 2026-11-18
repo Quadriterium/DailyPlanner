@@ -19,6 +19,7 @@ import type { Config } from './config.js';
 import { registerAuth, type AuthOptions } from './auth/routes.js';
 import { audit, describeMutations, loggedUrl, logFailedRequest } from './audit.js';
 import { registerAdmin } from './admin-routes.js';
+import { registerPush } from './push.js';
 import { privacyPage, termsPage } from './legal-pages.js';
 import { messageIdSchema, userMessagesSchema } from '../shared/messages.js';
 
@@ -78,6 +79,7 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
   });
   const { requireSpace } = registerAuth(app, store, config, options);
   await registerAdmin(app, store, config, options.now ?? Date.now);
+  registerPush(app, store, config, options.now ?? Date.now);
   app.get('/api/health', async () => ({ status: 'ok' }));
   app.get('/api/messages', async (request, reply) => {
     if (!request.auth.user) return reply.code(401).send({ error: 'Connectez-vous pour lire vos messages.', code: 'auth_required' });

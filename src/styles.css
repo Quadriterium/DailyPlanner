@@ -299,6 +299,9 @@ fieldset .season-filters { margin: 0; }
 .theme-schedule { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
 .theme-schedule label { display: flex; flex-direction: column; gap: 6px; color: #71634e; font-size: 12px; }
 .theme-schedule input { min-height: 44px; padding: 8px 12px; }
+.reminder-options { margin-top: 12px; }
+.reminder-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.reminder-row input[type=time] { min-height: 44px; padding: 8px 12px; }
 .settings-advanced { margin-top: 16px; border-top: 1px solid var(--line); }
 .settings-advanced > summary { cursor: pointer; padding: 13px 0; font-size: 13px; font-weight: 500; color: var(--muted); }
 .settings-advanced > summary:hover { color: var(--ink); }

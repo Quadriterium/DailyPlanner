@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { capabilitiesSchema, detailsSchema, featureRequestSchema, featureRequestStatuses, recipeUrlSchema, sessionUserSchema } from './model.js';
+import { analysisSchema, capabilitiesSchema, detailsSchema, dishSchema, featureRequestSchema, featureRequestStatuses, recipeUrlSchema, sessionUserSchema } from './model.js';
 
 export const adminLifetime = 30 * 60_000;
 const count = z.number().int().nonnegative();
@@ -42,6 +42,14 @@ export const adminCatalogSchema = z.object({
   })), more: z.boolean(),
 }).strict();
 export type AdminCatalogEntry = z.infer<typeof adminCatalogSchema>['entries'][number];
+export const adminAnalysesSchema = z.object({
+  entries: z.array(z.object({
+    spaceId: z.string(), spaceName: z.string().nullable(), dish: dishSchema, analysis: analysisSchema,
+    // Structural retry eligibility; configuration and quotas only delay the queued work.
+    eligible: z.boolean(), blockedReason: z.string().nullable(),
+  })), more: z.boolean(),
+}).strict();
+export type AdminAnalysisEntry = z.infer<typeof adminAnalysesSchema>['entries'][number];
 export const adminRequestsSchema = z.object({
   requests: z.array(z.object({ request: featureRequestSchema, spaceId: z.string(), spaceName: z.string().nullable() })),
   more: z.boolean(),
@@ -56,6 +64,13 @@ export const adminPageSchema = z.object({
   search: z.string().trim().max(200).default(''),
 }).strict();
 export const adminConfirmSchema = z.object({ confirm: z.literal(true) }).strict();
+export const adminAnalysesPageSchema = adminPageSchema.extend({
+  status: z.enum(['all', 'pending', 'processing', 'error', 'ready']).default('all'),
+}).strict();
+export const adminAnalysisRetrySchema = z.object({
+  expectedAnalysisKey: z.string().uuid(), expectedUpdatedAt: z.number().int().nonnegative(),
+  confirm: z.literal(true),
+}).strict();
 export const adminGlobalPolicyRequestSchema = globalAiPolicySchema.extend({ confirm: z.literal(true) }).strict();
 export const adminSpacePolicyRequestSchema = spaceAiPolicySchema.extend({ confirm: z.literal(true) }).strict();
 export const adminCatalogCorrectionSchema = z.object({

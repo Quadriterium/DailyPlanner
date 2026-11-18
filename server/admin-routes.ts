@@ -1,8 +1,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { basename } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
-  adminAiSchema, adminAuditSchema, adminCatalogCorrectionSchema, adminCatalogRemovalSchema, adminCatalogSchema,
+  adminAiSchema, adminAnalysesPageSchema, adminAnalysesSchema, adminAnalysisRetrySchema, adminAuditSchema, adminCatalogCorrectionSchema, adminCatalogRemovalSchema, adminCatalogSchema,
   adminConfirmSchema, adminGlobalPolicyRequestSchema, adminLegalRequestSchema, adminLegalSchema, adminOverviewSchema, adminPageSchema, adminRequestsSchema,
   adminRequestUpdateSchema, adminSessionSchema, adminSpacePolicyRequestSchema, adminSpacesSchema, adminUsersSchema,
 } from '../shared/admin.js';
@@ -14,7 +15,7 @@ import { cookieNames } from './auth/routes.js';
 import { hashToken } from './auth/tokens.js';
 import { audit } from './audit.js';
 import { backupDatabase, listSpaces, listUsers } from './maintenance.js';
-import { normalizedName } from '../shared/model.js';
+import { analysisSchema, dishSchema, normalizedName, type Analysis, type Dish } from '../shared/model.js';
 import { sendMessageSchema, sentMessageSchema } from '../shared/messages.js';
 
 const pageSize = 50;
@@ -91,8 +92,12 @@ export async function registerAdmin(app: FastifyInstance, store: Store, config: 
       const input = parsed(sendMessageSchema, request.body, reply);
       if (!input) return reply;
       if (input.userId && !accounts.user(input.userId)) return reply.code(404).send({ error: 'Compte introuvable.' });
-      const result = mutate(request, 'admin.message-send', input.userId ?? 'all', {}, () =>
-        store.sendMessage(input.text, input.userId, now()));
+      const result = mutate(request, 'admin.message-send', input.userId ?? 'all', { push: Boolean(input.push) }, () => {
+        const sent = store.sendMessage(input.text, input.userId, now());
+        if (!input.push) return sent;
+        const pushed = store.queuePush(input.userId ?? 'all', { title: 'Message de l’administrateur', body: input.text.slice(0, 240), url: '/', tag: `message-${sent.id}` });
+        return { ...sent, pushed };
+      });
       return sentMessageSchema.parse(result);
     });
     admin.get('/spaces', async (request, reply) => {
@@ -132,6 +137,71 @@ export async function registerAdmin(app: FastifyInstance, store: Store, config: 
       const { confirm, ...limits } = policy;
       mutate(request, 'admin.ai-space', params.id, limits, () => store.setSpaceAiPolicy(params.id, limits));
       return { ok: true };
+    });
+    function structuralBlock(dish: Dish, analysis: Analysis): string | null {
+      if (dish.archived) return 'Fiche archivée.';
+      if (dish.details) return 'Cette fiche possède des détails manuels.';
+      if (dish.analysisKey !== analysis.analysisKey) return 'Clé d’analyse obsolète.';
+      if (analysis.status === 'processing') return 'Analyse en cours de traitement.';
+      return null;
+    }
+    function safeError(error: string | null): string | null {
+      if (error === null) return null;
+      for (const secret of [config.OPENAI_API_KEY, store.config.OPENAI_API_KEY]) {
+        if (secret) error = error.split(secret).join('[secret masqué]');
+      }
+      return error.replace(/\bBearer\s+\S+/gi, 'Bearer [secret masqué]')
+        .replace(/\bsk-[a-zA-Z0-9_-]+/g, '[secret masqué]')
+        .replace(/\b((?:api[_-]?key|authorization|access[_-]?token|refresh[_-]?token|cookie)\s*[:=]\s*)[^\s,;]+/gi, '$1[secret masqué]');
+    }
+    admin.get('/analyses', async (request, reply) => {
+      const page = parsed(adminAnalysesPageSchema, request.query, reply);
+      if (!page) return reply;
+      const rows = store.db.prepare(`SELECT a.space_id, a.data AS analysis, r.data AS dish, s.name AS space_name
+        FROM analyses a JOIN records r ON r.space_id = a.space_id AND r.key = 'dish:' || a.dish_id
+        LEFT JOIN spaces s ON s.id = a.space_id
+        WHERE json_extract(r.data, '$.type') = 'dish'
+          AND (? = 'all' OR json_extract(a.data, '$.status') = ?)
+          AND (instr(lower(json_extract(r.data, '$.name')), lower(?)) > 0
+            OR instr(lower(COALESCE(json_extract(a.data, '$.name'), '')), lower(?)) > 0
+            OR instr(lower(COALESCE(s.name, '')), lower(?)) > 0
+            OR instr(lower(COALESCE(json_extract(a.data, '$.error'), '')), lower(?)) > 0)
+        ORDER BY json_extract(a.data, '$.updatedAt') DESC, a.space_id, a.dish_id
+        LIMIT ? OFFSET ?`).all(page.status, page.status, page.search, page.search, page.search, page.search, pageSize + 1, page.offset);
+      return adminAnalysesSchema.parse({
+        entries: rows.slice(0, pageSize).map(row => {
+          const dish = dishSchema.parse(JSON.parse(String(row.dish)));
+          const analysis = analysisSchema.parse(JSON.parse(String(row.analysis)));
+          const spaceId = String(row.space_id);
+          const block = structuralBlock(dish, analysis);
+          return {
+            spaceId, spaceName: row.space_name === null ? null : String(row.space_name), dish,
+            analysis: { ...analysis, error: safeError(analysis.error) },
+            eligible: block === null, blockedReason: block ?? store.analysisBlockedReason(spaceId, now()),
+          };
+        }), more: rows.length > pageSize,
+      });
+    });
+    admin.post('/analyses/:spaceId/:dishId/retry', async (request, reply) => {
+      const params = parsed(z.object({
+        spaceId: z.union([z.string().uuid(), z.literal('common')]), dishId: z.string().uuid(),
+      }).strict(), request.params, reply);
+      const body = parsed(adminAnalysisRetrySchema, request.body, reply);
+      if (!params || !body) return reply;
+      return store.transaction(() => {
+        const dish = store.get(params.spaceId, `dish:${params.dishId}`);
+        const analysis = store.analysis(params.spaceId, params.dishId);
+        if (dish?.type !== 'dish' || !analysis) return reply.code(404).send({ error: 'Fiche ou analyse introuvable.' });
+        if (analysis.analysisKey !== body.expectedAnalysisKey || analysis.updatedAt !== body.expectedUpdatedAt ||
+          structuralBlock(dish, analysis) || dish.modifiedAt >= Number.MAX_SAFE_INTEGER) {
+          return reply.code(409).send({ error: 'Cette fiche ou analyse a changé ou ne peut pas être relancée. Rechargez-la.' });
+        }
+        mutate(request, 'admin.analysis-retry', `${params.spaceId}/${params.dishId}`, { expectedAnalysisKey: body.expectedAnalysisKey }, () =>
+          store.merge(params.spaceId, [{
+            ...dish, analysisKey: randomUUID(), modifiedAt: Math.max(now(), dish.modifiedAt + 1), mutationId: randomUUID(),
+          }]));
+        return { ok: true };
+      });
     });
     admin.get('/catalog', async (request, reply) => {
       const page = parsed(adminPageSchema, request.query, reply);

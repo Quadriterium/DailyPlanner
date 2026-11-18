@@ -80,17 +80,23 @@ npm run admin -- revoke-sessions --email <adresse-du-compte>
 
 ### Rubriques et limites
 
-- **Tableau de bord** : comptes, foyers, sessions actives, recettes, demandes,
-  états d’analyse et compteurs IA globaux.
-- **Utilisateurs / foyers** : listes recherchables et paginées, inscription,
-  dernière connexion, rattachement et révocation des sessions.
-- **OpenAI** : quotas quotidiens/mensuels par foyer, plafonds globaux, pause
-  des nouveaux appels et compteurs de tokens. Les plafonds portent sur les
-  **appels**, pas sur les euros ; le solde/rechargement reste chez OpenAI.
-- **Administration** : correction/retrait/restauration des recettes communes,
-  réponses aux demandes, sauvegarde SQLite sur le serveur et journal des actions.
-  Les corrections refusent les versions devenues obsolètes et ne modifient pas
-  les copies privées déjà présentes dans les carnets.
+- **Pilotage** : tableau de bord avec raccourcis vers les listes, **Analyses**
+  (recherche par fiche, foyer ou erreur, filtres de statut, consultation et relance
+  confirmée), **Budget IA** (plafonds globaux, pause et compteurs).
+  Les plafonds portent sur les **appels**, pas sur les euros ; le
+  solde/rechargement reste chez OpenAI.
+- **Communauté** : **Utilisateurs** (comptes, messages et révocation des sessions),
+  **Foyers et quotas** (espaces partagés et limites quotidiennes/mensuelles),
+  **Demandes** (suivi et réponses aux utilisateurs).
+- **Contenu et serveur** : **Catalogue commun** (correction, retrait, restauration),
+  **Mentions légales**, **Sauvegardes** SQLite sur le serveur et **Journal** des actions.
+  Les corrections refusent les versions devenues obsolètes et ne modifient pas les
+  copies privées déjà présentes dans les carnets.
+
+La fiche d’analyse affiche les données serveur du foyer, sans ouvrir son carnet
+local. Une relance crée une nouvelle demande et respecte les quotas, la suspension
+et la configuration du serveur ; elle ne réécrit pas le planning. Les fiches
+archivées, corrigées manuellement, obsolètes ou déjà en cours ne sont pas relançables.
 
 Les opérations destructives sur les comptes, déplacements de foyers,
 restaurations de base et changements de secrets restent en ligne de commande.
@@ -344,14 +350,14 @@ Référence : [créer un tunnel depuis le tableau de bord](https://developers.cl
    `TRUSTED_PROXY=cloudflare`. **Ne pas** ouvrir le port 3000 sur la box ni dans le pare-feu.
 5. Réglages Cloudflare de la zone :
    - garder *Always Use HTTPS* ;
+   - activer HSTS après vérification de l'accès HTTPS, avec `max-age=31536000` ;
+     ne pas activer `includeSubDomains` ni le préchargement sans les avoir validés ;
    - désactiver **Rocket Loader** (réécrit les scripts, incompatible avec la CSP) ;
    - ne pas activer de règle de cache sur `/api/*` ni sur le HTML ; les réponses API envoient
      déjà `Cache-Control: no-store` ;
    - si *Bot Fight Mode* provoque des défis sur `/api/sync`, le désactiver : un défi casse la
      synchronisation en arrière-plan ;
    - **ne pas** placer Cloudflare Access devant tout le site : cela interdirait le mode invité.
-6. Caddy devient inutile dans ce montage (le tunnel fournit le HTTPS).
-
 **Ne publier la route du tunnel qu'après implémentation et validation de l'authentification
 avec `AUTH_ENABLED=true`.** L'application actuelle sans authentification expose les données
 communes et les appels IA à quiconque accède à son adresse.

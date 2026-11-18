@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
-  analysisSchema, catalogEntrySchema, commonSpaceId, compareVersions, defaultCookingLevel, defaultHousehold, featureRequestSchema, normalizedName,
+  analysisSchema, catalogEntrySchema, commonSpaceId, compareVersions, defaultCookingLevel, defaultHousehold, featureRequestSchema, featureRequestStatusLabels, normalizedName,
   parisDate, recordKey, recordSchema,
   type Analysis, type Capabilities, type CatalogEntry, type CatalogResponse, type Dish, type DishDetails, type FeatureRequest, type FeatureRequestStatus,
   type RecordData, type Settings,
@@ -11,8 +11,9 @@ import {
 import type { Config } from './config.js';
 import { defaultLegalInfo, legalInfoSchema, type GlobalAiPolicy, type LegalInfo, type SpaceAiPolicy } from '../shared/admin.js';
 import { userMessageSchema } from '../shared/messages.js';
+import { pushPayloadSchema, type PushPayload } from '../shared/push.js';
 
-export const schemaVersion = 7;
+export const schemaVersion = 8;
 export const dailyAiLimit = 20;
 export const hourlyAiWindow = 60 * 60_000;
 export class AiQuotaError extends Error {
@@ -180,6 +181,23 @@ export class Store {
         PRAGMA user_version = 7;
       `);
     });
+    this.transaction(() => {
+      if (Number(this.db.prepare('PRAGMA user_version').get()?.user_version) >= 8) return;
+      // Web Push: one row per device; user_id NULL in the outbox targets the administrators.
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+          endpoint TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          p256dh TEXT NOT NULL, auth TEXT NOT NULL, lunch_reminder TEXT, dinner_reminder TEXT,
+          last_lunch_day TEXT, last_dinner_day TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS push_subscriptions_user ON push_subscriptions(user_id);
+        CREATE TABLE IF NOT EXISTS push_outbox (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+          payload TEXT NOT NULL, created_at INTEGER NOT NULL
+        );
+        PRAGMA user_version = 8;
+      `);
+    });
     this.ensureSpaceSettings(commonSpaceId);
     for (const row of this.db.prepare('SELECT space_id, data FROM analyses').all()) {
       const analysis = analysisSchema.parse(JSON.parse(String(row.data)));
@@ -281,6 +299,44 @@ export class Store {
   dismissMessage(userId: string, id: string, now: number): boolean {
     return Number(this.db.prepare(`UPDATE user_messages SET dismissed_at = COALESCE(dismissed_at, ?)
       WHERE user_id = ? AND message_id = ?`).run(now, userId, id).changes) > 0;
+  }
+
+  /**
+   * Queues a notification for the devices of `userId`, of every subscribed user (`'all'`) or of the administrators (`null`,
+   * resolved at delivery). Returns the number of queued users; nothing is stored when Web Push is not configured.
+   */
+  queuePush(userId: string | null | 'all', payload: PushPayload): number {
+    if (!this.config.push) return 0;
+    const data = JSON.stringify(pushPayloadSchema.parse(payload));
+    const now = Date.now();
+    if (userId === null) {
+      this.db.prepare('INSERT INTO push_outbox (user_id, payload, created_at) VALUES (NULL, ?, ?)').run(data, now);
+      return 1;
+    }
+    return Number(this.db.prepare(`INSERT INTO push_outbox (user_id, payload, created_at)
+      SELECT DISTINCT user_id, ?, ? FROM push_subscriptions${userId === 'all' ? '' : ' WHERE user_id = ?'}`)
+      .run(data, now, ...(userId === 'all' ? [] : [userId])).changes);
+  }
+
+  /** Alerts the administrators once per period when a global AI ceiling is reached (not for a ceiling set to zero). */
+  private alertGlobalQuota(day: string, now: number) {
+    if (!this.config.push) return;
+    const policy = this.globalAiPolicy();
+    const usage = this.capabilities(new Date(`${day}T12:00:00Z`));
+    const alerts: { key: string; period: string; reached: boolean; body: string }[] = [
+      { key: 'daily', period: day, reached: policy.dailyLimit !== null && policy.dailyLimit > 0 && usage.callsToday >= policy.dailyLimit,
+        body: `Plafond quotidien global atteint (${policy.dailyLimit} appels). Les nouveaux appels IA sont bloqués jusqu’à minuit.` },
+      { key: 'monthly', period: day.slice(0, 7), reached: policy.monthlyLimit !== null && policy.monthlyLimit > 0 && usage.callsThisMonth >= policy.monthlyLimit,
+        body: `Plafond mensuel global atteint (${policy.monthlyLimit} appels). Les nouveaux appels IA sont bloqués jusqu’au mois prochain.` },
+      { key: 'hourly', period: String(Math.floor(now / hourlyAiWindow)), reached: policy.hourlyLimit !== null && policy.hourlyLimit > 0 && this.hourlyAiCalls(now) >= policy.hourlyLimit,
+        body: `Plafond horaire global atteint (${policy.hourlyLimit} appels sur 60 minutes).` },
+    ];
+    for (const alert of alerts.filter(item => item.reached)) {
+      const key = `pushAlert:${alert.key}`;
+      if (this.db.prepare('SELECT value FROM meta WHERE key = ?').get(key)?.value === alert.period) continue;
+      this.db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, alert.period);
+      this.queuePush(null, { title: 'Plafond IA atteint', body: alert.body, url: '/admin', tag: `ai-limit-${alert.key}` });
+    }
   }
 
   space(id: string): Space | undefined {
@@ -487,6 +543,16 @@ export class Store {
       .get(now - hourlyAiWindow, now)!.n);
   }
 
+  /** Read-only worker diagnostic: never reserves calls or updates an analysis. */
+  analysisBlockedReason(spaceId: string, now = Date.now()): string | null {
+    if (!this.config.OPENAI_API_KEY) return 'Clé OpenAI non configurée sur le serveur.';
+    const settings = this.get(spaceId, 'settings:global');
+    if (settings?.type !== 'settings' || !this.config.allowedModels.includes(settings.model)) {
+      return 'Modèle IA non autorisé ou paramètres manquants.';
+    }
+    return this.quotaError(spaceId, parisDate(new Date(now)), now)?.message ?? null;
+  }
+
   capabilities(now = new Date(), spaceId?: string): Capabilities {
     const today = parisDate(now);
     const table = spaceId ? 'household_ai_usage' : 'ai_usage';
@@ -530,11 +596,13 @@ export class Store {
         const day = parisDate(new Date(now));
         const quota = this.quotaError(spaceId, day, now);
         if (quota) {
+          this.alertGlobalQuota(day, now);
           if (analysis.error !== quota.message) this.putAnalysis(spaceId, { ...analysis, error: quota.message });
           continue;
         }
         this.putAnalysis(spaceId, { ...analysis, status: 'processing', error: null });
         this.recordCall(spaceId, day, now);
+        this.alertGlobalQuota(day, now);
         return { spaceId, dish, day };
       }
     });
@@ -543,14 +611,21 @@ export class Store {
   reserveGeneration(spaceId: string): string {
     if (!this.config.OPENAI_API_KEY) throw new Error('La génération IA nécessite une clé OpenAI configurée sur le serveur.');
     if (!this.config.allowedModels.includes(this.settings(spaceId).model)) throw new Error('Choisissez un modèle IA autorisé dans les paramètres.');
-    return this.transaction(() => {
+    const result = this.transaction(() => {
       const now = Date.now();
       const day = parisDate(new Date(now));
       const quota = this.quotaError(spaceId, day, now);
-      if (quota) throw quota;
+      // Returned rather than thrown: the administrator alert must be committed with the refusal.
+      if (quota) {
+        this.alertGlobalQuota(day, now);
+        return quota;
+      }
       this.recordCall(spaceId, day, now);
+      this.alertGlobalQuota(day, now);
       return day;
     });
+    if (result instanceof AiQuotaError) throw result;
+    return result;
   }
 
   finishAnalysis(spaceId: string, dish: Dish, details: DishDetails | null, error: string | null, sharing?: Analysis['sharing']): boolean {
@@ -708,18 +783,30 @@ export class Store {
   addFeatureRequest(spaceId: string, text: string, userId: string | null = null): FeatureRequest {
     const now = Date.now();
     const request = featureRequestSchema.parse({ id: randomUUID(), text, status: 'received', note: null, createdAt: now, updatedAt: now });
-    this.db.prepare('INSERT INTO feature_requests (id, text, status, note, created_at, updated_at, space_id, user_id) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)')
-      .run(request.id, request.text, request.status, now, now, spaceId, userId);
+    this.transaction(() => {
+      this.db.prepare('INSERT INTO feature_requests (id, text, status, note, created_at, updated_at, space_id, user_id) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)')
+        .run(request.id, request.text, request.status, now, now, spaceId, userId);
+      this.queuePush(null, { title: 'Nouvelle demande d’évolution', body: text.slice(0, 240), url: '/admin' });
+    });
     return request;
   }
 
-  /** Returns false when no request matches the id or its unique prefix. */
+  /** Returns false when no request matches the id or its unique prefix. The author is notified of a changed answer. */
   updateFeatureRequest(idOrPrefix: string, status: FeatureRequestStatus, note: string | null): boolean {
-    const matches = this.db.prepare('SELECT id, updated_at FROM feature_requests WHERE id LIKE ?').all(`${idOrPrefix.replace(/[%_]/g, '')}%`);
-    if (matches.length !== 1) return false;
-    this.db.prepare('UPDATE feature_requests SET status = ?, note = ?, updated_at = ? WHERE id = ?')
-      .run(status, note, Math.max(Date.now(), Number(matches[0].updated_at) + 1), String(matches[0].id));
-    return true;
+    return this.transaction(() => {
+      const matches = this.db.prepare('SELECT id, updated_at, status, note, user_id FROM feature_requests WHERE id LIKE ?').all(`${idOrPrefix.replace(/[%_]/g, '')}%`);
+      if (matches.length !== 1) return false;
+      const [row] = matches;
+      this.db.prepare('UPDATE feature_requests SET status = ?, note = ?, updated_at = ? WHERE id = ?')
+        .run(status, note, Math.max(Date.now(), Number(row.updated_at) + 1), String(row.id));
+      if (row.user_id !== null && (row.status !== status || (row.note ?? null) !== note)) {
+        this.queuePush(String(row.user_id), {
+          title: 'Réponse à votre demande d’évolution',
+          body: `${featureRequestStatusLabels[status]}${note ? ` · ${note}` : ''}`.slice(0, 240), url: '/', tag: `request-${String(row.id)}`,
+        });
+      }
+      return true;
+    });
   }
 
   close() { this.db.close(); }

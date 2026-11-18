@@ -2,6 +2,8 @@ import { readConfig } from '../server/config';
 import { Store } from '../server/database';
 import { buildApp } from '../server/app';
 import { Accounts } from '../server/auth/accounts';
+import { randomUUID } from 'node:crypto';
+import type { Dish } from '../shared/model';
 
 const config = readConfig();
 if (!config.AUTH_TEST_PROVIDER || config.NODE_ENV !== 'test' || config.DATABASE_PATH !== ':memory:') {
@@ -15,6 +17,20 @@ store.db.prepare(`INSERT INTO users (id, display_name, email, email_verified, cr
 store.db.prepare('INSERT INTO identities (provider, subject, user_id, email, created_at) VALUES (?, ?, ?, ?, ?)')
   .run('google', 'admin-e2e', id, 'admin-e2e@example.org', now);
 const space = new Accounts(store, 30).ensureHousehold(id);
+for (const project of ['pixel-chrome', 'tablette-chrome', 'desktop-chrome', 'firefox']) {
+  const dish: Dish = {
+    type: 'dish', id: randomUUID(), name: `Gratin à relancer ${project}`, creationSeason: 'autumn',
+    archived: false, details: null, analysisKey: randomUUID(), modifiedAt: now, mutationId: randomUUID(),
+    sourceRecipe: { ingredients: ['500 g de pommes de terre'], recipe: 'Cuire les pommes de terre au four.', servings: 4 },
+  };
+  store.merge(space.id, [dish]);
+  store.finishAnalysis(space.id, dish, null, 'Le fournisseur IA a refusé la demande de test.');
+}
+const archived: Dish = {
+  type: 'dish', id: randomUUID(), name: 'Soupe archivée', creationSeason: 'autumn',
+  archived: true, details: null, analysisKey: randomUUID(), modifiedAt: now, mutationId: randomUUID(),
+};
+store.merge(space.id, [archived]);
 store.addFeatureRequest(space.id, 'Ajouter une rubrique de test admin', id);
 store.addToCatalog({
   name: 'Soupe admin', seasons: ['all'], ingredients: ['500 g de carottes'], recipe: 'Faire cuire les carottes.',

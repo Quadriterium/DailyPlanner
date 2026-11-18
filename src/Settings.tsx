@@ -10,6 +10,7 @@ import {
 import { LevelGauge } from './CookingLevel';
 import { errorMessage, loadFeatureRequests, save, serverFeaturesAvailable, setDishGenerationExcluded, signInHint, submitFeatureRequest, type AuthState } from './store';
 import { AccountCard } from './Account';
+import { Notifications } from './Notifications';
 import { pwaStatus, refreshApp } from './pwa';
 import { timePattern, type ThemeControl, type ThemePreference } from './theme';
 
@@ -324,6 +325,7 @@ export function Settings({ settings, dishes, analyses, capabilities, online, app
       <p className="field-hint" role="status">{themeStatus}</p>
       {themeError && <p className="inline-error" role="alert">{themeError}</p>}
     </div>
+    <Notifications auth={auth} online={online} />
     <div className="settings-card">
       <h3><Sparkles size={19} />Intelligence artificielle</h3>
       {!allowed ? <p className="info-box">{signInHint}.</p> : <>

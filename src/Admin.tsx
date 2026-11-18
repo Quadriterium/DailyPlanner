@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import { BookOpen, LayoutDashboard, LogOut, RefreshCw, Scale, Settings2, ShieldCheck, Sparkles, Users } from 'lucide-react';
+import { Activity, ArrowUpRight, BookOpen, DatabaseBackup, History, House, LayoutDashboard, LogOut, MessageSquare, RefreshCw, Scale, ShieldCheck, Sparkles, Users } from 'lucide-react';
 import { z } from 'zod';
 import {
-  adminAiSchema, adminAuditSchema, adminCatalogSchema, adminLegalSchema, adminOverviewSchema, adminRequestsSchema,
+  adminAiSchema, adminAnalysesSchema, adminAuditSchema, adminCatalogSchema, adminLegalSchema, adminOverviewSchema, adminRequestsSchema,
   adminSessionSchema, adminSpacesSchema, adminUsersSchema, globalAiPolicySchema, legalFieldLabels, legalFieldMax, legalInfoSchema, spaceAiPolicySchema,
-  type AdminCatalogEntry, type AdminSession, type GlobalAiPolicy, type LegalInfo, type SpaceAiPolicy,
+  type AdminAnalysisEntry, type AdminCatalogEntry, type AdminSession, type GlobalAiPolicy, type LegalInfo, type SpaceAiPolicy,
 } from '../shared/admin';
 import {
-  authStartResponseSchema, cookingLevelLabels, cookingLevels, detailsSchema, featureRequestStatusLabels,
+  authStartResponseSchema, cookingLevelLabels, cookingLevels, detailsSchema, dishDetails, featureRequestStatusLabels,
   featureRequestStatuses, recipeUrlSchema, seasonLabels, seasons,
   type Capabilities, type CookingLevel, type FeatureRequest, type Ingredient, type Season,
 } from '../shared/model';
 import { formatIngredient } from '../shared/recipe';
 import { sendMessageSchema, sentMessageSchema } from '../shared/messages';
+import { pushTestSchema } from '../shared/push';
 import { Modal } from './components';
 import './admin.css';
 
@@ -24,6 +25,28 @@ const date = (time: number) => new Intl.DateTimeFormat('fr-FR', { dateStyle: 'sh
 const number = (value: number) => value.toLocaleString('fr-FR');
 const message = (error: unknown) => error instanceof Error ? error.message : 'Erreur inattendue lors de l’administration.';
 const query = (offset: number, search: string) => `?${new URLSearchParams({ offset: String(offset), search })}`;
+const analysisLabels = { all: 'Toutes', error: 'En erreur', pending: 'En attente', processing: 'En cours', ready: 'Terminées' } as const;
+type AnalysisFilter = keyof typeof analysisLabels;
+const navigationGroups = [
+  { title: 'Pilotage', items: [
+    { id: 'overview', label: 'Tableau de bord', icon: LayoutDashboard, hint: 'Les indicateurs essentiels et les actions à suivre.' },
+    { id: 'analyses', label: 'Analyses', icon: Activity, hint: 'Suivre les traitements IA, comprendre les erreurs et relancer une fiche.' },
+    { id: 'ai', label: 'Budget IA', icon: Sparkles, hint: 'Consommation OpenAI, plafonds globaux et suspension des appels.' },
+  ] },
+  { title: 'Communauté', items: [
+    { id: 'users', label: 'Utilisateurs', icon: Users, hint: 'Comptes, messages et gestion des sessions.' },
+    { id: 'spaces', label: 'Foyers et quotas', icon: House, hint: 'Espaces partagés et limites propres à chaque foyer.' },
+    { id: 'requests', label: 'Demandes', icon: MessageSquare, hint: 'Les idées des utilisateurs et vos réponses.' },
+  ] },
+  { title: 'Contenu et serveur', items: [
+    { id: 'catalog', label: 'Catalogue commun', icon: BookOpen, hint: 'Corriger, retirer ou restaurer les recettes partagées.' },
+    { id: 'legal', label: 'Mentions légales', icon: Scale, hint: 'Les informations publiées sur les pages légales.' },
+    { id: 'backup', label: 'Sauvegardes', icon: DatabaseBackup, hint: 'Créer un instantané de la base sur le serveur.' },
+    { id: 'audit', label: 'Journal', icon: History, hint: 'La traçabilité des interventions administrateur.' },
+  ] },
+] as const;
+type AdminPage = (typeof navigationGroups)[number]['items'][number]['id'];
+type Navigate = (page: AdminPage, filter?: AnalysisFilter) => void;
 
 async function request<T>(path: string, schema: z.ZodType<T>, csrfToken: string | null, options?: { method: 'POST' | 'PATCH'; body: object }) {
   const response = await fetch(`/api${path}`, {
@@ -87,22 +110,106 @@ function Usage({ usage, hourlyCalls }: { usage: Capabilities; hourlyCalls?: numb
   </dl>;
 }
 
-function Overview({ api }: { api: Api }) {
+function Overview({ api, navigate }: { api: Api; navigate: Navigate }) {
   const state = useData(api, '/admin/overview', adminOverviewSchema);
   if (!state.data) return <LoadState {...state} />;
   const data = state.data;
+  const metrics = [
+    { label: 'Comptes inscrits', value: data.users, page: 'users' },
+    { label: 'Foyers', value: data.spaces, page: 'spaces' },
+    { label: 'Recettes du catalogue', value: data.catalog, page: 'catalog' },
+    { label: 'Demandes à traiter', value: data.requests, page: 'requests' },
+  ] as const;
   return <section aria-label="Tableau de bord">
-    <div className="admin-cards">{[
-      ['Comptes inscrits', data.users], ['Foyers', data.spaces], ['Sessions utilisateur actives', data.activeSessions],
-      ['Recettes du catalogue', data.catalog], ['Demandes à traiter', data.requests], ['Analyses en erreur', data.analyses.error],
-    ].map(([label, value]) => <div className="settings-card admin-stat" key={label}><h3>{label}</h3><strong>{value}</strong></div>)}</div>
+    <div className="admin-hero"><div><p className="eyebrow">VUE D’ENSEMBLE</p><h2>À table, côté coulisses.</h2>
+      <p>Les foyers, les recettes et les traitements, au même endroit.</p></div><ShieldCheck size={42} strokeWidth={1.2} /></div>
+    <div className="admin-cards">{metrics.map(item => <button className="settings-card admin-stat" key={item.label} onClick={() => navigate(item.page)}>
+      <span>{item.label}<ArrowUpRight size={16} /></span><strong>{number(item.value)}</strong></button>)}</div>
+    <div className="settings-card"><h3><Activity size={19} />File des analyses</h3>
+      <div className="admin-queue">{(['error', 'pending', 'processing'] as const).map(status =>
+        <button key={status} className={`admin-queue-item status-${status}`} onClick={() => navigate('analyses', status)}>
+          <strong>{number(data.analyses[status])}</strong><span>{analysisLabels[status]}</span><ArrowUpRight size={16} /></button>)}</div>
+      <p className="field-hint">Ouvrez un statut pour consulter les fiches concernées. Les erreurs ne sont pas relancées automatiquement.</p>
+    </div>
     <div className="settings-card"><h3><Sparkles size={19} />Consommation IA globale</h3><Usage usage={data.usage} />
       <p>{data.policy.paused ? 'Nouveaux appels IA suspendus.' : 'Nouveaux appels IA autorisés, dans les limites configurées.'}</p></div>
     <div className="settings-card"><h3>État du serveur</h3>
-      <p>{data.analyses.pending} analyse(s) en attente · {data.analyses.processing} en cours.</p>
+      <p>{number(data.activeSessions)} session(s) utilisateur active(s).</p>
       <p>En service depuis {Math.floor(data.uptime / 60)} minute(s) · schéma SQLite {data.schemaVersion}.</p>
-      <p className="field-hint">Actualisé le {date(data.serverTime)}. Les erreurs détaillées restent dans le journal serveur.</p></div>
+      <p className="field-hint">Actualisé le {date(data.serverTime)}.</p></div>
   </section>;
+}
+
+function Analyses({ api, confirmAction, initialFilter }: { api: Api; confirmAction: ConfirmAction; initialFilter: AnalysisFilter }) {
+  const [offset, setOffset] = useState(0);
+  const [search, setSearch] = useState('');
+  const [status, setStatus] = useState(initialFilter);
+  const [selected, setSelected] = useState<AdminAnalysisEntry | null>(null);
+  const state = useData(api, `/admin/analyses${query(offset, search)}&status=${status}`, adminAnalysesSchema);
+  function retry(entry: AdminAnalysisEntry) {
+    confirmAction({
+      title: 'Relancer l’analyse',
+      text: `Remettre « ${dishDetails(entry.dish, entry.analysis).name} » dans la file IA ? Cette nouvelle tentative consommera un appel lors de son traitement. Les menus ne changent pas.`,
+      run: async () => {
+        await api(`/admin/analyses/${encodeURIComponent(entry.spaceId)}/${entry.dish.id}/retry`, okSchema, { method: 'POST',
+          body: { expectedAnalysisKey: entry.analysis.analysisKey, expectedUpdatedAt: entry.analysis.updatedAt, confirm: true } });
+        return 'Analyse remise en attente. Elle démarrera automatiquement lorsque la configuration et les quotas le permettront.';
+      },
+    });
+  }
+  return <section aria-label="Analyses">
+    <details className="settings-card admin-explainer"><summary>Que fait une analyse ?</summary>
+      <p>L’IA enrichit un nom ou un lien avec des saisons, un niveau de cuisine, des ingrédients et une recette. Pour une recette saisie, elle standardise les ingrédients et valide son partage, sans réécrire le titre ni les étapes.</p>
+      <p>Le serveur traite automatiquement les fiches admissibles, une à la fois. Chaque tentative compte dans les quotas, même en cas d’erreur. Une erreur nécessite une relance explicite.</p>
+      <p>Relancer remplace le résultat IA de cette fiche, pas les textes du planning. Les fiches archivées ou corrigées manuellement ne sont pas retraitées.</p>
+    </details>
+    <div className="admin-filter-bar" aria-label="Filtrer les analyses">{(Object.keys(analysisLabels) as AnalysisFilter[]).map(value =>
+      <button key={value} aria-pressed={status === value} onClick={() => { setStatus(value); setOffset(0); }}>{analysisLabels[value]}</button>)}</div>
+    <Search label="Rechercher une fiche, un foyer ou une erreur" onSearch={value => { setSearch(value); setOffset(0); }} />
+    {!state.data ? <LoadState {...state} /> : <>
+      {!state.data.entries.length && <div className="settings-card"><h3>Aucune analyse dans cette sélection</h3><p className="field-hint">Essayez un autre statut ou une autre recherche.</p></div>}
+      <div className="admin-list">{state.data.entries.map(entry => <article className="settings-card admin-analysis-card" key={`${entry.spaceId}:${entry.dish.id}`}>
+        <div className="admin-card-heading"><span className={`admin-status status-${entry.analysis.status}`}>{analysisLabels[entry.analysis.status]}</span>
+          <span className="field-hint">{date(entry.analysis.updatedAt)}</span></div>
+        <h3>{dishDetails(entry.dish, entry.analysis).name}</h3><p className="field-hint">{entry.spaceName ?? entry.spaceId}</p>
+        {entry.analysis.error && <p className="inline-error admin-text">{entry.analysis.error}</p>}
+        {entry.blockedReason && <p className="field-hint">{entry.blockedReason}</p>}
+        <button className="secondary-button" onClick={() => setSelected(entry)}>Ouvrir la fiche</button>
+      </article>)}</div>
+      <Pager offset={offset} more={state.data.more} setOffset={setOffset} />
+    </>}
+    {selected && <AnalysisSheet entry={selected} onClose={() => setSelected(null)} retry={() => retry(selected)} />}
+  </section>;
+}
+
+function AnalysisSheet({ entry, onClose, retry }: { entry: AdminAnalysisEntry; onClose: () => void; retry: () => void }) {
+  const { dish, analysis } = entry;
+  const details = dishDetails(dish, analysis);
+  const canRetry = entry.eligible;
+  return <Modal title="Fiche de l’analyse" onClose={onClose} wide>
+    <div className="admin-analysis-sheet">
+      <div><span className={`admin-status status-${analysis.status}`}>{analysisLabels[analysis.status]}</span>
+        <h3>{details.name}</h3><p className="field-hint">Foyer : {entry.spaceName ?? entry.spaceId} · Mise à jour : {date(analysis.updatedAt)}</p></div>
+      {analysis.error && <div className="inline-error admin-text" role="alert"><strong>Erreur du traitement</strong><p>{analysis.error}</p></div>}
+      {entry.blockedReason && <p className="info-box">{entry.blockedReason}</p>}
+      <dl className="admin-sheet-metadata"><div><dt>Saisie d’origine</dt><dd>{dish.name}</dd></div>
+        <div><dt>Type de traitement</dt><dd>{dish.sourceRecipe ? 'Validation d’une recette saisie' : dish.sourceUrl ? 'Import d’un lien' : 'Enrichissement d’un nom'}</dd></div>
+        <div><dt>Saisons</dt><dd>{details.seasons.map(value => seasonLabels[value]).join(' · ')}</dd></div>
+        <div><dt>Niveau de cuisine</dt><dd>{details.level ? cookingLevelLabels[details.level] : 'Non renseigné'}</dd></div>
+        <div><dt>Portions de référence</dt><dd>{dish.sourceRecipe?.servings ?? details.servings ?? 'Non renseignées'}</dd></div>
+        {analysis.sharing && <div><dt>Partage au catalogue</dt><dd>{analysis.sharing === 'approved' ? 'Validé' : 'Refusé'}</dd></div>}
+      </dl>
+      {dish.sourceUrl && <a href={dish.sourceUrl} target="_blank" rel="noopener noreferrer">Voir la recette d’origine</a>}
+      <div><h4>Ingrédients</h4>{(dish.sourceRecipe?.ingredients ?? details.ingredients).length
+        ? <ul>{(dish.sourceRecipe?.ingredients ?? details.ingredients).map((ingredient, index) => <li key={index}>{ingredient}</li>)}</ul>
+        : <p className="field-hint">Pas encore disponibles.</p>}</div>
+      <div><h4>Recette</h4><p className="admin-text">{dish.sourceRecipe?.recipe ?? (details.recipe || 'Pas encore disponible.')}</p></div>
+      <details><summary>Identifiants techniques</summary><p>Foyer : <code>{entry.spaceId}</code></p><p>Fiche : <code>{dish.id}</code></p><p>Analyse : <code>{analysis.analysisKey}</code></p></details>
+      <p className="field-hint">Cette consultation ne modifie pas le carnet. Une relance attendra son tour et respectera les quotas et la suspension IA.</p>
+      <button className="primary-button" disabled={!canRetry} onClick={retry}><RefreshCw size={17} />Relancer l’IA</button>
+      {!canRetry && <p className="field-hint">Relance indisponible : fiche archivée, corrigée manuellement, analyse déjà en cours ou demande obsolète.</p>}
+    </div>
+  </Modal>;
 }
 
 function UserList({ api, confirmAction }: { api: Api; confirmAction: ConfirmAction }) {
@@ -112,6 +219,13 @@ function UserList({ api, confirmAction }: { api: Api; confirmAction: ConfirmActi
   const state = useData(api, `/admin/users${query(offset, search)}`, adminUsersSchema);
   return <section><h2>Comptes inscrits</h2>
     <button className="secondary-button" onClick={() => setRecipient({ id: null, name: 'Tous les utilisateurs inscrits' })}>Envoyer un message à tous</button>
+    <button className="secondary-button" onClick={() => confirmAction({
+      title: 'Tester les notifications', text: 'Envoyer une notification de test aux appareils de votre compte ? Activez-les d’abord dans les paramètres de l’application, sur chaque téléphone.',
+      run: async () => {
+        const result = await api('/push/test', pushTestSchema, { method: 'POST', body: {} });
+        return result.devices ? `Notification envoyée à ${result.devices} appareil(s).` : 'Aucun appareil abonné : activez les notifications dans les paramètres de l’application.';
+      },
+    })}>Tester les notifications</button>
     <Search label="Rechercher un compte" onSearch={value => { setSearch(value); setOffset(0); }} />
     {!state.data ? <LoadState {...state} /> : <>
       {!state.data.users.length && <p>Aucun compte trouvé.</p>}
@@ -138,17 +252,18 @@ function MessageForm({ recipient, api, confirmAction }: {
   recipient: { id: string | null; name: string }; api: Api; confirmAction: ConfirmAction;
 }) {
   const [text, setText] = useState('');
+  const [push, setPush] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return <form className="admin-form" onSubmit={event => {
     event.preventDefault();
-    const parsed = sendMessageSchema.safeParse({ text, userId: recipient.id, confirm: true });
+    const parsed = sendMessageSchema.safeParse({ text, userId: recipient.id, confirm: true, push });
     if (!parsed.success) { setError('Saisissez un message de 1 à 4 000 caractères.'); return; }
     setError(null);
     confirmAction({
-      title: 'Confirmer l’envoi', text: `Envoyer ce message à « ${recipient.name} » ? Il ne pourra pas être modifié après l’envoi.`,
+      title: 'Confirmer l’envoi', text: `Envoyer ce message à « ${recipient.name} »${push ? ', avec une notification' : ''} ? Il ne pourra pas être modifié après l’envoi.`,
       run: async () => {
         const result = await api('/admin/messages', sentMessageSchema, { method: 'POST', body: parsed.data });
-        return `Message envoyé à ${result.recipients} utilisateur(s).`;
+        return `Message envoyé à ${result.recipients} utilisateur(s).${result.pushed === undefined ? '' : ` Notification pour ${result.pushed} utilisateur(s) ayant activé un appareil.`}`;
       },
     });
   }}>
@@ -156,6 +271,8 @@ function MessageForm({ recipient, api, confirmAction }: {
     <label>Message<textarea rows={6} maxLength={4000} required value={text} onChange={event => setText(event.target.value)} /></label>
     <p className="field-hint">Affiché à la prochaine ouverture ou reconnexion au serveur. Un clic le masque définitivement pour ce compte, sur tous ses appareils.
       {recipient.id === null && ' Tous les comptes existants seront destinataires, même si la liste est filtrée ; les futurs inscrits ne le recevront pas.'}</p>
+    <label className="checkbox-field"><input type="checkbox" checked={push} onChange={event => setPush(event.target.checked)} />Envoyer aussi une notification</label>
+    <p className="field-hint">Sur les appareils où les notifications sont activées ; les 240 premiers caractères seulement.</p>
     {error && <p className="inline-error" role="alert">{error}</p>}
     <button className="primary-button">Envoyer le message</button>
   </form>;
@@ -231,7 +348,6 @@ function Ai({ api, confirmAction }: { api: Api; confirmAction: ConfirmAction }) 
       <a href="https://platform.openai.com/settings/organization/billing/overview" target="_blank" rel="noopener noreferrer">Solde, rechargement et facturation sur OpenAI</a>
       <p className="field-hint">Le solde financier OpenAI n’est ni lu ni modifié par cette interface.</p>
     </div>}
-    <SpaceList api={api} confirmAction={confirmAction} editable />
   </section>;
 }
 
@@ -360,8 +476,8 @@ function Audit({ api }: { api: Api }) {
     </>}
   </section>;
 }
-function Manage({ api, confirmAction }: { api: Api; confirmAction: ConfirmAction }) {
-  return <section aria-label="Administration">
+function Backups({ api, confirmAction }: { api: Api; confirmAction: ConfirmAction }) {
+  return <section aria-label="Sauvegardes">
     <div className="settings-card"><h3>Sauvegarde du serveur</h3><p>Créer un instantané SQLite dans le dossier de sauvegardes du serveur. Aucun téléchargement de données personnelles dans le navigateur.</p>
       <button className="secondary-button" onClick={() => confirmAction({
         title: 'Créer une sauvegarde', text: 'Créer une sauvegarde de la base sur le serveur ? Elle contiendra les données de tous les foyers.',
@@ -371,7 +487,7 @@ function Manage({ api, confirmAction }: { api: Api; confirmAction: ConfirmAction
         },
       })}>Créer une sauvegarde</button>
       <p className="field-hint">Les suppressions de comptes, déplacements de foyers, restaurations et changements de secrets restent réservés aux commandes sur le serveur.</p>
-    </div><Catalog api={api} confirmAction={confirmAction} /><Requests api={api} confirmAction={confirmAction} /><Audit api={api} />
+    </div>
   </section>;
 }
 
@@ -420,7 +536,8 @@ export function Admin() {
   const [session, setSession] = useState<AdminSession | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [tab, setTab] = useState('overview');
+  const [tab, setTab] = useState<AdminPage>('overview');
+  const [analysisFilter, setAnalysisFilter] = useState<AnalysisFilter>('all');
   const [revision, setRevision] = useState(0);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
@@ -489,10 +606,8 @@ export function Admin() {
     finally { setBusy(false); }
   }
   const active = Boolean(session?.allowed && csrf && session.expiresAt && session.expiresAt > Date.now());
-  const nav = [
-    ['overview', 'Tableau de bord', LayoutDashboard], ['users', 'Utilisateurs / foyers', Users],
-    ['ai', 'OpenAI', Sparkles], ['legal', 'Mentions légales', Scale], ['manage', 'Administration', Settings2],
-  ] as const;
+  const navigate: Navigate = (page, filter = 'all') => { setTab(page); setAnalysisFilter(filter); setNotice(null); };
+  const currentPage = navigationGroups.flatMap(group => [...group.items]).find(item => item.id === tab)!;
   let content: ReactNode;
   if (!active) content = <div className="settings-card admin-login"><h2>Accès administrateur</h2>
     <p>Connexion Google réservée aux comptes autorisés. Aucun mot de passe Google n’est transmis à l’application.</p>
@@ -506,11 +621,17 @@ export function Admin() {
     {error && <button className="secondary-button" onClick={() => void loadSession()}>Vérifier la connexion</button>}
   </div>;
   else content = <div key={`${tab}-${revision}`}>
-    {tab === 'overview' && <Overview api={api} />}
-    {tab === 'users' && <><UserList api={api} confirmAction={confirmAction} /><SpaceList api={api} confirmAction={confirmAction} /></>}
+    <div className="admin-page-heading"><p className="eyebrow">ESPACE ADMINISTRATEUR</p><h2>{currentPage.label}</h2><p>{currentPage.hint}</p></div>
+    {tab === 'overview' && <Overview api={api} navigate={navigate} />}
+    {tab === 'analyses' && <Analyses api={api} confirmAction={confirmAction} initialFilter={analysisFilter} />}
+    {tab === 'users' && <UserList api={api} confirmAction={confirmAction} />}
+    {tab === 'spaces' && <SpaceList api={api} confirmAction={confirmAction} editable />}
     {tab === 'ai' && <Ai api={api} confirmAction={confirmAction} />}
     {tab === 'legal' && <LegalEditor api={api} confirmAction={confirmAction} />}
-    {tab === 'manage' && <Manage api={api} confirmAction={confirmAction} />}
+    {tab === 'catalog' && <Catalog api={api} confirmAction={confirmAction} />}
+    {tab === 'requests' && <Requests api={api} confirmAction={confirmAction} />}
+    {tab === 'backup' && <Backups api={api} confirmAction={confirmAction} />}
+    {tab === 'audit' && <Audit api={api} />}
   </div>;
   return <div className="app-shell admin-shell">
     <header className="admin-header"><div><p className="eyebrow">À TABLE !</p><h1><ShieldCheck size={26} />Administration</h1></div>
@@ -521,12 +642,15 @@ export function Admin() {
             run: async () => { await api('/admin/logout', okSchema, { method: 'POST', body: { confirm: true } }); return 'Session admin fermée.'; },
           })}><LogOut size={16} />Quitter l’admin</button></>}
       </div></header>
-    {active && <><p className="field-hint">Connecté : {session?.user?.email ?? session?.user?.name} · fin de session : {date(session!.expiresAt!)}</p>
-      <nav className="admin-nav" aria-label="Administration">{nav.map(([id, label, Icon]) =>
-        <button key={id} aria-current={tab === id ? 'page' : undefined} onClick={() => { setTab(id); setNotice(null); }}><Icon size={18} />{label}</button>)}</nav></>}
-    {error && <p className="inline-error" role="alert">{error}</p>}
-    {notice && <p className="info-box" role="status">{notice}</p>}
-    <main>{content}</main>
+    {active && <p className="field-hint admin-session">Connecté : {session?.user?.email ?? session?.user?.name} · fin de session : {date(session!.expiresAt!)}</p>}
+    <div className={active ? 'admin-layout' : undefined}>
+      {active && <nav className="admin-nav" aria-label="Administration">{navigationGroups.map(group =>
+        <div className="admin-nav-group" key={group.title}><p className="eyebrow">{group.title}</p>
+          {group.items.map(({ id, label, icon: Icon }) => <button key={id} aria-current={tab === id ? 'page' : undefined}
+            onClick={() => navigate(id)}><Icon size={18} />{label}</button>)}</div>)}</nav>}
+      <main>{error && <p className="inline-error" role="alert">{error}</p>}
+        {notice && <p className="info-box" role="status">{notice}</p>}{content}</main>
+    </div>
     {confirmation && active && <Modal title={confirmation.title} onClose={() => { if (!busy) setConfirmation(null); }} dismissible={!busy}>
       <p>{confirmation.text}</p>{confirmError && <p className="inline-error" role="alert">{confirmError}</p>}
       <div className="confirm-actions"><button className="secondary-button" disabled={busy} onClick={() => setConfirmation(null)}>Annuler</button>

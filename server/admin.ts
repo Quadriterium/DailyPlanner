@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import webpush from 'web-push';
 import { readConfig } from './config.js';
 import { Store } from './database.js';
 import { Accounts } from './auth/accounts.js';
@@ -26,7 +27,19 @@ function usage() {
   console.error('        npm run admin -- catalog-correct --id <identifiant> --file <fiche.json>');
   console.error('        npm run admin -- catalog-remove --id <identifiant>');
   console.error('        npm run admin -- catalog-restore --id <identifiant>');
+  console.error('        npm run admin -- vapid-keys');
   process.exitCode = 1;
+}
+
+if (command === 'vapid-keys') {
+  // Needs no configuration: generates the keys to put in .env.
+  const keys = webpush.generateVAPIDKeys();
+  console.log('Ajoutez ces lignes à .env (gardez la clé privée secrète), puis redémarrez le serveur :');
+  console.log(`VAPID_PUBLIC_KEY=${keys.publicKey}`);
+  console.log(`VAPID_PRIVATE_KEY=${keys.privateKey}`);
+  console.log('VAPID_SUBJECT=mailto:vous@exemple.fr');
+  console.log('Changer ces clés plus tard oblige chaque appareil à réactiver les notifications.');
+  process.exit(0);
 }
 
 const config = readConfig();

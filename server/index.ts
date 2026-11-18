@@ -3,18 +3,20 @@ import { Store } from './database.js';
 import { buildApp } from './app.js';
 import { AiWorker } from './ai.js';
 import { Accounts } from './auth/accounts.js';
+import { Notifier } from './push.js';
 
 const config = readConfig();
 const store = new Store(config);
 const app = await buildApp(store, config);
 const worker = new AiWorker(store, config, message => app.log.error({ component: 'openai' }, message));
 const accounts = new Accounts(store, config.AUTH_SESSION_DAYS);
+const notifier = new Notifier(store, config, (message, error) => app.log.error({ component: 'push', err: error }, message));
 function purge() {
   try { accounts.purge(); }
   catch (error) { app.log.error(error); }
 }
 purge();
-const timer = setInterval(() => { void worker.tick(); }, 5000);
+const timer = setInterval(() => { void worker.tick(); void notifier.tick(); }, 5000);
 const purgeTimer = setInterval(purge, 3_600_000);
 let stopping = false;
 async function shutdown() {
@@ -23,6 +25,7 @@ async function shutdown() {
   clearInterval(timer);
   clearInterval(purgeTimer);
   await worker.stop();
+  await notifier.stop();
   await app.close();
   store.close();
   process.exitCode = 0;

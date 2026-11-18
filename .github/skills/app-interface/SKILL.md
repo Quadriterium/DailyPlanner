@@ -123,7 +123,8 @@ description: "Comprendre ou faire évoluer l'interface À table ! : planning mid
 
 - Ordre des cartes de [Settings](../../../src/Settings.tsx) : Compte et foyer,
   Personnes à table (compteurs −/+ partagés avec la fenêtre « Convives du repas »),
-  Préférences alimentaires, Plats exclus des générations, Niveau de cuisine, Apparence, Intelligence artificielle,
+  Préférences alimentaires, Plats exclus des générations, Niveau de cuisine, Apparence, Notifications,
+  Intelligence artificielle,
   Synchronisation, Une idée pour l'application. Titres explicites, pas de paragraphe
   explicatif : seuls restent l'avertissement allergie, le statut du thème et les
   états (erreurs, hors ligne, invité). Le modèle, les compteurs mensuels, l'état du
@@ -158,6 +159,17 @@ description: "Comprendre ou faire évoluer l'interface À table ! : planning mid
 - Le thème sombre surcharge les couleurs via `[data-theme=dark]` dans les
   styles : toute nouvelle couleur claire doit recevoir son équivalent sombre.
   Les jours vont du marron pastel (lundi) au doré pastel (dimanche).
+- Notifications push ([Notifications](../../../src/Notifications.tsx),
+  [client](../../../src/push.ts), [serveur](../../../server/push.ts)) : un
+  interrupteur par appareil et deux rappels (midi/soir, heure de Paris).
+  `enablePush` appelle `Notification.requestPermission()` avant tout autre
+  `await` (geste utilisateur exigé par iOS). Sur iPhone hors écran d'accueil, en
+  HTTP ou en `npm run dev`, la carte explique pourquoi c'est indisponible. Les
+  événements sont mis en file par `Store.queuePush` dans la transaction qui les
+  déclenche (`user_id NULL` = administrateurs, résolus à l'envoi) ; le `Notifier`
+  vide `push_outbox` et envoie les rappels, avec une liste blanche des services push.
+  Le service worker affiche (`push`), ouvre un chemin de même origine
+  (`notificationclick`) et renouvelle l'abonnement (`pushsubscriptionchange`).
 
 ## Vérification ciblée
 

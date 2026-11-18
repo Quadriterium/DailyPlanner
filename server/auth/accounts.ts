@@ -80,6 +80,9 @@ export class Accounts {
         VALUES (?, ?, ?, ?, ?, ?, ?)`).run(userId, profile.name, profile.email, profile.emailVerified ? 1 : 0, profile.picture, now, now);
       this.db.prepare('INSERT INTO identities (provider, subject, user_id, email, created_at) VALUES (?, ?, ?, ?, ?)')
         .run(provider, profile.subject, userId, profile.email, now);
+      this.store.queuePush(null, {
+        title: 'Nouveau compte', body: `${profile.name}${profile.email ? ` (${profile.email})` : ''} vient de s’inscrire.`.slice(0, 240), url: '/admin',
+      });
       return userId;
     });
   }
@@ -167,8 +170,12 @@ export class Accounts {
     this.db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hashToken(token));
   }
 
+  /** Also forgets the user's notification devices: a disconnected phone must stop receiving them. */
   revokeSessions(userId: string): number {
-    return Number(this.db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId).changes);
+    return this.store.transaction(() => {
+      this.db.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').run(userId);
+      return Number(this.db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId).changes);
+    });
   }
 
   // ---------- household management ----------

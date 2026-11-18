@@ -22,6 +22,9 @@ const envSchema = z.object({
     .refine(value => /^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 365, 'AUTH_SESSION_DAYS doit être un entier de 1 à 365.')
     .transform(Number),
   TRUSTED_PROXY: z.enum(['none', 'cloudflare'], { error: 'TRUSTED_PROXY doit valoir none ou cloudflare.' }).default('none'),
+  VAPID_PUBLIC_KEY: z.string().trim().default(''),
+  VAPID_PRIVATE_KEY: z.string().trim().default(''),
+  VAPID_SUBJECT: z.string().trim().default(''),
   // Fournisseur simulé réservé aux tests automatisés (NODE_ENV=test et base :memory:).
   AUTH_TEST_PROVIDER: booleanFlag('AUTH_TEST_PROVIDER'),
   NODE_ENV: z.string().default(''),
@@ -29,6 +32,21 @@ const envSchema = z.object({
 
 function isLoopback(host: string) {
   return ['127.0.0.1', '::1', 'localhost'].includes(host.replace(/^\[|\]$/g, '').toLowerCase()) || /^127\./.test(host);
+}
+
+/** Web Push keys (VAPID): both empty = notifications disabled. */
+function pushConfig(parsed: z.infer<typeof envSchema>, authEnabled: boolean, secureOrigin: boolean) {
+  const { VAPID_PUBLIC_KEY: publicKey, VAPID_PRIVATE_KEY: privateKey } = parsed;
+  if (!publicKey && !privateKey) return null;
+  if (!/^[A-Za-z0-9_-]{87}$/.test(publicKey) || !/^[A-Za-z0-9_-]{43}$/.test(privateKey)) {
+    throw new Error('VAPID_PUBLIC_KEY et VAPID_PRIVATE_KEY doivent être renseignées ensemble, telles que produites par « npm run admin -- vapid-keys ».');
+  }
+  if (!authEnabled) throw new Error('Les notifications (VAPID_*) exigent AUTH_ENABLED=true : elles sont envoyées aux comptes connectés.');
+  const subject = parsed.VAPID_SUBJECT || (secureOrigin ? parsed.PUBLIC_ORIGIN! : '');
+  if (!/^(mailto:[^\s@]+@[^\s@]+|https:\/\/\S+)$/.test(subject)) {
+    throw new Error('VAPID_SUBJECT doit être une adresse « mailto:vous@exemple.fr » ou une URL https (par défaut : PUBLIC_ORIGIN en https).');
+  }
+  return { publicKey, privateKey, subject };
 }
 
 export function readConfig(env: NodeJS.ProcessEnv = process.env) {
@@ -69,6 +87,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
     adminUserIds,
     authEnabled,
     secureCookies,
+    push: pushConfig(parsed, authEnabled, secureCookies),
     redirectUri: parsed.PUBLIC_ORIGIN ? `${parsed.PUBLIC_ORIGIN}/api/auth/google/callback` : '',
   };
 }

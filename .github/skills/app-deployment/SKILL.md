@@ -1,6 +1,6 @@
 ---
 name: app-deployment
-description: "Installer ou diagnostiquer À table ! sur Windows sans Docker : Node, SQLite, accès téléphone Wi-Fi/LAN, HOST et PUBLIC_ORIGIN, HTTP temporaire, HTTPS Caddy, pare-feu, serveur inaccessible, build PWA, sauvegarde et migration."
+description: "Installer ou diagnostiquer À table ! sur Windows sans Docker : Node, SQLite, accès téléphone Wi-Fi/LAN, HOST et PUBLIC_ORIGIN, HTTP temporaire, HTTPS Cloudflare Tunnel, pare-feu, serveur inaccessible, build PWA, sauvegarde et migration."
 ---
 
 # Déploiement et diagnostic d'accès
@@ -11,8 +11,7 @@ description: "Installer ou diagnostiquer À table ! sur Windows sans Docker : No
 - [Scripts npm](../../../package.json), [variables exemple](../../../.env.example)
   et [validation de configuration](../../../server/config.ts).
 - [API](../../../server/app.ts) : origines, débit et fichiers servis.
-- [Caddy public](../../../Caddyfile), [Caddy local](../../../Caddyfile.local),
-  [lancement Windows](../../../scripts/start.ps1) et
+- [lancement Windows](../../../scripts/start.ps1) et
   [sauvegarde](../../../scripts/backup.mjs).
 
 ## Comprendre les trois modes
@@ -21,7 +20,7 @@ description: "Installer ou diagnostiquer À table ! sur Windows sans Docker : No
 |---|---|---|---|
 | PC local par défaut | `127.0.0.1:3000` | `http://localhost:3000` | Oui, après build et mise en cache |
 | Essai Wi-Fi HTTP | `0.0.0.0:3000` | `http://IP_LOCALE:3000` | Non ; saisie et synchronisation possibles |
-| HTTPS via Caddy | `127.0.0.1:3000` | Origine HTTPS publique ou locale approuvée | Oui, après mise en cache |
+| HTTPS via Cloudflare Tunnel | `127.0.0.1:3000` | Origine HTTPS publique configurée dans `PUBLIC_ORIGIN` | Oui, après mise en cache |
 
 Les valeurs sont les valeurs par défaut ou exemples, pas une preuve de l'état réel.
 Le serveur lit `.env` au démarrage ; reconstruire le code ne modifie pas l'écoute
@@ -67,11 +66,11 @@ lecture ; utiliser le lockfile pour une installation reproductible.
 `npm run dev` sert le client sur 5173 avec un proxy vers 3000, sans service worker.
 Le build produit `dist/client` et `dist/server`; le serveur ne publie que le client.
 
-Pour HTTPS public, il faut un domaine/DNS, une IP joignable et les ports TCP 80/443
-vers Caddy. `APP_DOMAIN` appartient à l'environnement de Caddy et `PUBLIC_ORIGIN`
-à celui de Node. Ne pas exposer directement le port 3000 sur Internet.
-HTTPS local utilise une autorité à approuver sur chaque appareil ; ne pas installer
-de certificat de confiance ni modifier DNS/routeur sans accord.
+Pour un HTTPS public, configurer le domaine et Cloudflare Tunnel selon le guide
+d'authentification, puis définir `PUBLIC_ORIGIN` dans l'environnement de Node.
+Le tunnel transmet les requêtes à `127.0.0.1:3000` : ne pas exposer ce port sur
+Internet ni ouvrir de port entrant sur la box. Ne publier l'application qu'avec
+`AUTH_ENABLED=true`.
 
 ## Sauvegarde, migration et limites
 
@@ -91,6 +90,12 @@ de certificat de confiance ni modifier DNS/routeur sans accord.
   serveur refuse sinon de démarrer. L'URI de redirection Google est
   `<PUBLIC_ORIGIN>/api/auth/google/callback`. Derrière le tunnel Cloudflare :
   `HOST=127.0.0.1` et `TRUSTED_PROXY=cloudflare`. Ne jamais afficher ces secrets.
+- Notifications push : `npm run admin -- vapid-keys` produit `VAPID_PUBLIC_KEY`,
+  `VAPID_PRIVATE_KEY` (secrète) et `VAPID_SUBJECT` à copier dans `.env` ; elles
+  exigent `AUTH_ENABLED=true` et HTTPS côté téléphone (sur iPhone : app ajoutée à
+  l'écran d'accueil, iOS ≥ 16.4). Le serveur doit pouvoir joindre en HTTPS sortant
+  les services push (fcm.googleapis.com, *.push.apple.com…). Changer les clés
+  oblige chaque appareil à réactiver les notifications.
 - La migration v2 du schéma sauvegarde la base dans `data/backups/` avant de
   s'appliquer ; ensuite `npm run admin -- assign-common --email <adresse> --confirm`
   rattache le premier compte aux données existantes.
@@ -104,5 +109,4 @@ Pour le réseau HTTP, utiliser `E2E_HOST` avec l'IP réelle et le scénario `HTT
 de [Playwright](../../../e2e/planner.spec.ts) ; les
 [réglages E2E](../../../playwright.config.ts) utilisent une base mémoire sur 3199
 (sans comptes) et sur 3198 (comptes, fournisseur Google simulé, [scénarios](../../../e2e/auth.spec.ts)).
-Pour une configuration Caddy, utiliser `caddy validate` avant son lancement.
 Un changement documentaire seul ne nécessite pas de démarrer ces services.

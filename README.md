@@ -58,7 +58,7 @@ Ne pas désactiver le pare-feu, ni rediriger le port 3000 sur la box. Cette règ
 Remove-NetFirewallRule -DisplayName 'À table - test Wi-Fi TCP 3000'
 ```
 
-Sur HTTP LAN, les données restent sauvegardées dans IndexedDB et la saisie/synchronisation fonctionnent, mais **le rechargement sans serveur et l’installation PWA hors ligne ne sont pas disponibles**. Les échanges ne sont pas chiffrés : réserver cet essai à un réseau de confiance. Pour passer à Caddy/HTTPS, rétablir `HOST=127.0.0.1` et définir `PUBLIC_ORIGIN` avec l’adresse HTTPS.
+Sur HTTP LAN, les données restent sauvegardées dans IndexedDB et la saisie/synchronisation fonctionnent, mais **le rechargement sans serveur et l’installation PWA hors ligne ne sont pas disponibles**. Les échanges ne sont pas chiffrés : réserver cet essai à un réseau de confiance. Pour publier l’application en HTTPS, rétablir `HOST=127.0.0.1` et suivre le guide Cloudflare Tunnel ci-dessous.
 
 ### Développement
 
@@ -179,14 +179,27 @@ Les paramètres montrent les tentatives d’appel et les tokens des réponses tr
 ### Administration graphique
 
 Ouvrir **`https://dailyplanner.fr/admin`** (ou `<PUBLIC_ORIGIN>/admin` en local).
-L’interface comporte cinq rubriques : tableau de bord, utilisateurs/foyers,
-OpenAI, mentions légales (éditeur, adresse, contact, hébergeur affichés sur les
-pages publiques) et administration (catalogue, demandes, sauvegardes et journal des actions).
+La navigation est organisée en trois groupes :
+- **Pilotage** : tableau de bord, analyses et budget IA global.
+- **Communauté** : utilisateurs, foyers et quotas, demandes des utilisateurs.
+- **Contenu et serveur** : catalogue commun, mentions légales, sauvegardes et journal.
+
+Le tableau de bord donne accès aux listes correspondantes, notamment aux analyses
+en erreur, en attente ou en cours. Dans **Analyses**, filtrer par statut ou rechercher
+une fiche, un foyer ou un message d’erreur, puis choisir **Ouvrir la fiche** :
+le détail présente la recette, l’erreur éventuelle et les raisons de blocage.
+**Relancer l’IA**, après confirmation, remet la fiche en attente avec une nouvelle
+demande ; le serveur la traite automatiquement selon sa configuration et ses quotas.
+La relance ne déclenche pas immédiatement d’appel OpenAI, mais chaque tentative
+effectivement traitée compte dans les quotas, même en cas d’échec. Elle remplace le
+résultat IA sans réécrire les menus. Une fiche archivée, corrigée manuellement,
+une demande obsolète ou un traitement déjà en cours ne peut pas être relancé ici.
+
 Les listes sont paginées, par 50 éléments. L’admin n’ouvre pas le carnet local
 et ne synchronise aucune donnée vers IndexedDB ; les appels API et la page
 ne sont pas mis en cache hors ligne.
 
-Dans **Utilisateurs / foyers**, **Envoyer un message à tous** cible tous les comptes
+Dans **Utilisateurs**, **Envoyer un message à tous** cible tous les comptes
 inscrits au moment de l’envoi (indépendamment du filtre et de la pagination), ou
 **Envoyer un message à [nom]** cible un seul compte, pas son foyer. Le texte brut
 (4 000 caractères maximum) est confirmé avant l’envoi et n’est plus modifiable.
@@ -196,7 +209,9 @@ les sessions déjà ouvertes le reçoivent aussi à leur prochaine vérification
 enregistre sa fermeture sur le serveur : il ne réapparaît plus pour ce compte,
 même après reconnexion ou sur un autre appareil. Chaque destinataire ferme son
 propre exemplaire. Les futurs inscrits et les invités ne le reçoivent pas ;
-aucun e-mail ni notification push n’est envoyé. Hors ligne, la fermeture ne peut
+aucun e-mail n’est envoyé. La case **Envoyer aussi une notification** ajoute une
+notification push (240 premiers caractères) sur les appareils des destinataires
+qui l’ont activée (voir [Notifications](#notifications-push)). Hors ligne, la fermeture ne peut
 pas être confirmée ; une erreur permet de réessayer sans perdre le message.
 
 1. Configurer la connexion Google comme ci-dessous et activer la protection du
@@ -235,6 +250,51 @@ Les suppressions de comptes, migrations de foyers et restaurations restent en
 ligne de commande, avec les sauvegardes et confirmations existantes.
 
 Les recettes/ingrédients IA sont des suggestions, pas une composition garantie, une certification allergène ou un conseil médical. Ils sont modifiables.
+
+## Notifications push
+
+L’application installée peut recevoir des notifications (Web Push), y compris
+fermée. Elles exigent `AUTH_ENABLED=true`, HTTPS sur le téléphone et deux clés
+VAPID propres au serveur :
+
+1. `npm run admin -- vapid-keys`, puis copier les trois lignes affichées dans
+   `.env` (`VAPID_SUBJECT` : `mailto:` + votre adresse, ou l’URL https du site ;
+   par défaut `PUBLIC_ORIGIN` si elle est en https). La clé privée reste secrète.
+2. `npm run build` puis redémarrer le serveur.
+3. Sur chaque téléphone : **Paramètres → Notifications → Recevoir des
+   notifications sur cet appareil**, puis accepter l’autorisation. Sur iPhone
+   (iOS 16.4 ou plus récent), il faut d’abord **ajouter l’application à l’écran
+   d’accueil** et l’ouvrir depuis son icône ; Safari seul ne peut pas les recevoir.
+4. **Envoyer une notification de test** vérifie la chaîne complète.
+
+Le réglage est **par appareil** et par compte (10 appareils au maximum par
+compte). Les utilisateurs reçoivent :
+
+- les messages de l’administrateur, si la case de notification est cochée à l’envoi ;
+- la réponse à leurs demandes d’évolution (changement de statut ou de note,
+  depuis l’admin ou la ligne de commande) ;
+- un rappel du midi et/ou du soir à l’heure choisie (heure de Paris), avec le nom
+  des plats prévus. Rien n’est envoyé si le créneau est vide ; un rappel manqué
+  de plus d’une heure (serveur arrêté) est abandonné.
+
+Les comptes listés dans `ADMIN_USER_IDS` reçoivent en plus, sur leurs appareils
+abonnés : la création d’un compte, chaque nouvelle demande d’évolution et
+l’atteinte d’un plafond IA global (quotidien, mensuel ou horaire ; une alerte
+par période). Le bouton **Tester les notifications** de l’admin vérifie leurs
+appareils.
+
+Les événements sont mis en file dans SQLite avec la modification qui les
+déclenche, puis envoyés par le serveur toutes les 5 secondes ; une notification
+non envoyée après 24 heures est abandonnée, sans nouvel essai en cas d’échec.
+Les abonnements expirés sont supprimés automatiquement. Le serveur n’envoie
+qu’aux services push de Google, Apple, Mozilla et Microsoft. La déconnexion
+désabonne l’appareil et la révocation des sessions d’un compte supprime tous
+ses abonnements. Pour changer de compte sur un même navigateur, la réaffectation
+d’un abonnement exige ses deux clés conservées par le navigateur : connaître
+son URL seule ne permet ni de le remplacer ni de l’écraser lors d’un renouvellement.
+Sans clés VAPID, la carte indique que les notifications ne sont
+pas configurées et rien n’est mis en file. Changer de clés oblige chaque appareil
+à réactiver les notifications.
 
 ## HTTPS et exposition Internet
 
@@ -279,44 +339,26 @@ Les appareils qui contenaient l’ancien carnet commun proposent, après connexi
 
 **Avec `AUTH_ENABLED=false`** (valeur par défaut), il n’y a pas d’authentification : toute personne qui connaît l’adresse peut lire et modifier les menus et déclencher des appels OpenAI. HTTPS chiffre les échanges mais ne restreint pas l’accès. Dans ce mode, l’espace `common` partage les 20 requêtes quotidiennes. Avec les comptes activés, chaque foyer a son propre quota, sauf exemption administrative. Le serveur vérifie également les origines des requêtes navigateur et les modèles autorisés. Le quota n’est pas un plafond de dépenses OpenAI.
 
-Seul Caddy doit être exposé. Ne jamais ouvrir directement le port Node 3000 ni publier le dossier de données. Le serveur statique ne sert que `dist/client`.
+Pour un accès Internet, utiliser Cloudflare Tunnel comme décrit dans le
+[guide de configuration](docs/authentification-google.md#4-préparation-cloudflare-tunnel).
+Ne jamais exposer directement le port Node 3000 ni publier le dossier de données.
+Le serveur statique ne sert que `dist/client`.
 
-### Avec un domaine ou un DNS dynamique
-
-1. Choisir un domaine/sous-domaine pointant vers l’IP publique du domicile. En IP dynamique, configurer un DNS dynamique.
-2. Vérifier que la box dispose d’une IP publique joignable (pas de CGNAT bloquant les connexions entrantes). Rediriger **TCP 80 et 443** vers le PC et les autoriser dans le pare-feu Windows pour Caddy.
-3. Installer Caddy, par exemple `winget install CaddyServer.Caddy`.
-4. Dans `.env`, configurer `PUBLIC_ORIGIN=https://repas.votre-domaine.fr`, sans slash final. Conserver `HOST=127.0.0.1` et `PORT=3000`.
-5. Lancer l’application, puis Caddy dans un second PowerShell :
-
-```powershell
-$env:APP_DOMAIN = 'repas.votre-domaine.fr'
-caddy run --config .\Caddyfile --adapter caddyfile
-```
-
-Caddy obtient et renouvelle automatiquement le certificat et redirige HTTP vers HTTPS. La variable `APP_DOMAIN` appartient à l’environnement de Caddy ; Node lit séparément `.env`. Adapter le port du reverse proxy si `PORT` change.
-
-Le domaine et la connectivité de la box doivent être renseignés avant de pouvoir **valider** le HTTPS public. Aucune configuration DNS, redirection de ports ou émission de certificat public n’est effectuée automatiquement par ce dépôt.
-
-### HTTPS local de développement
-
-Pour tester avec Caddy sur le PC :
-
-```powershell
-# Dans .env, utiliser PUBLIC_ORIGIN=https://localhost:8443, puis redémarrer Node.
-caddy run --config .\Caddyfile.local --adapter caddyfile
-```
-
-Ouvrir https://localhost:8443. Caddy utilise une autorité locale, qui doit être approuvée par le navigateur (`caddy trust`, si nécessaire et volontairement exécuté avec les droits adaptés). Cette confiance n’est pas automatiquement transférée au téléphone. Pour un usage familial sur plusieurs appareils, privilégier un domaine et un certificat public.
+Le tunnel fournit le HTTPS et ne nécessite ni ouverture de ports entrants sur la box,
+ni serveur proxy supplémentaire. Il est destiné à l’usage public avec
+`AUTH_ENABLED=true` ; ne pas publier l’application sans authentification.
 
 ### Maintien du service et migration
 
-Configurer le Planificateur de tâches Windows pour lancer au démarrage :
+Configurer le Planificateur de tâches Windows pour lancer le serveur au démarrage :
 
 - `powershell.exe -NoProfile -File <DOSSIER_INSTALLATION>\scripts\start.ps1`, avec un compte dédié disposant des droits nécessaires ;
-- Caddy, avec un répertoire de travail dans le dépôt et `APP_DOMAIN` défini pour son compte.
 
-Activer le redémarrage des tâches en cas d’échec ; empêcher la mise en veille du PC si une synchronisation permanente est souhaitée. Un redémarrage serveur n’interrompt pas la consultation/saisie des clients déjà mis en cache.
+`cloudflared` est installé comme service Windows lors de la configuration du tunnel
+et démarre automatiquement. Activer le redémarrage de la tâche serveur en cas
+d’échec ; empêcher la mise en veille du PC si une synchronisation permanente est
+souhaitée. Un redémarrage serveur n’interrompt pas la consultation/saisie des
+clients déjà mis en cache.
 
 **Journal du serveur** : les requêtes réussies ne sont plus journalisées une à une. La console liste les actions des utilisateurs (champ `action`), attribuées à leur adresse e-mail (`anonyme` sans comptes) avec leur IP : connexion, déconnexion, modifications synchronisées (repas, fiches, paramètres), suggestions générées, demandes d’évolution, gestion du foyer et des invitations. Les appels d’API refusés (4xx) ou en échec (5xx) restent journalisés avec leur auteur.
 
@@ -358,7 +400,7 @@ les identifiants du client OAuth de développement et `PUBLIC_ORIGIN=http://loca
 `npm run build` et `npm start` en ouvrant `http://localhost:3001`. Gardez si possible la même origine HTTPS pour les appareils déjà
 installés.
 
-Pour migrer : installer Node et Caddy sur la nouvelle machine, copier le code et une sauvegarde cohérente de SQLite, recréer `.env`, exécuter `npm ci` puis `npm run build`, et déplacer le DNS. Garder si possible **la même origine HTTPS** : IndexedDB et le cache sont propres à chaque origine. Avant de changer d’adresse, synchroniser chaque appareil sur l’ancien serveur.
+Pour migrer : installer Node et `cloudflared` sur la nouvelle machine, copier le code et une sauvegarde cohérente de SQLite, recréer `.env`, exécuter `npm ci` puis `npm run build`, et déplacer le tunnel. Garder si possible **la même origine HTTPS** : IndexedDB et le cache sont propres à chaque origine. Avant de changer d’adresse, synchroniser chaque appareil sur l’ancien serveur.
 
 ## Sauvegardes
 

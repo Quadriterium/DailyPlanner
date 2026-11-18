@@ -4,7 +4,17 @@ const adminURL = `http://${process.env.E2E_HOST ?? '127.0.0.1'}:3197`;
 test.use({ baseURL: adminURL });
 
 async function login(page: Page, subject = 'admin-e2e') {
+  const sessionResponse = page.waitForResponse(response => response.url().endsWith('/api/admin/session'));
   await page.goto('/admin');
+  const response = await sessionResponse;
+  if (response.status() === 429) {
+    const seconds = Number(response.headers()['retry-after']);
+    if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 60) throw new Error('Délai de limitation admin invalide.');
+    const delay = (seconds + 1) * 1000;
+    test.info().setTimeout(test.info().timeout + delay);
+    await new Promise(resolve => setTimeout(resolve, delay));
+    await page.getByRole('button', { name: 'Vérifier la connexion' }).click();
+  }
   await page.getByRole('button', { name: 'Connexion admin avec Google' }).click();
   await expect(page.getByRole('heading', { name: 'Connexion simulée' })).toBeVisible();
   await page.getByLabel('Identifiant').fill(subject);
@@ -20,7 +30,7 @@ async function fits(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 }
 
-test('admin : cinq rubriques responsive, quotas, catalogue, demandes et déconnexion', async ({ page }) => {
+test('admin : rubriques regroupées responsive, quotas, catalogue, demandes et déconnexion', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await login(page);
@@ -28,13 +38,15 @@ test('admin : cinq rubriques responsive, quotas, catalogue, demandes et déconne
   await expect(navigation).toBeVisible();
   await expect(page.getByText('Comptes inscrits', { exact: true })).toBeVisible();
   await fits(page);
-  await navigation.getByRole('button', { name: 'Utilisateurs / foyers' }).click();
+  await expect(navigation.getByRole('button')).toHaveCount(10);
+  await navigation.getByRole('button', { name: 'Utilisateurs', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Comptes inscrits' })).toBeVisible();
   await expect(page.getByText('admin-e2e@example.org', { exact: true }).last()).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Foyers et espaces' })).toBeVisible();
+  await navigation.getByRole('button', { name: 'Foyers et quotas', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Quotas par foyer' })).toBeVisible();
   await fits(page);
 
-  await navigation.getByRole('button', { name: 'OpenAI', exact: true }).click();
+  await navigation.getByRole('button', { name: 'Budget IA', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Budget d’appels OpenAI' })).toBeVisible();
   await expect(page.getByText('Appels sur la dernière heure')).toBeVisible();
   await page.getByLabel('Activer le plafond horaire global').check();
@@ -47,6 +59,7 @@ test('admin : cinq rubriques responsive, quotas, catalogue, demandes et déconne
   await expect(page.getByText('Limites globales enregistrées.', { exact: true })).toBeVisible();
   await expect(page.getByLabel('Plafond horaire global (période glissante de 60 minutes)')).toHaveValue('12');
   await expect(page.getByLabel('Plafond quotidien global')).toHaveValue('25');
+  await navigation.getByRole('button', { name: 'Foyers et quotas', exact: true }).click();
   await page.getByRole('button', { name: 'Modifier les quotas de Foyer de Admin' }).click();
   await page.getByLabel('Quota quotidien', { exact: true }).fill('7');
   await page.getByLabel('Quota mensuel', { exact: true }).fill('50');
@@ -55,10 +68,8 @@ test('admin : cinq rubriques responsive, quotas, catalogue, demandes et déconne
   await expect(page.getByText('Quota quotidien : 7 · mensuel : 50')).toBeVisible();
   await fits(page);
 
-  await navigation.getByRole('button', { name: 'Administration', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Catalogue commun' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Demandes des utilisateurs' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Journal d’administration' })).toBeVisible();
+  await navigation.getByRole('button', { name: 'Catalogue commun', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Catalogue commun' }).last()).toBeVisible();
   const name = `Soupe admin ${crypto.randomUUID().slice(0, 8)}`;
   await page.getByRole('button', { name: /^Corriger Soupe admin/ }).click();
   await page.getByLabel('Nom de la recette').fill(name);
@@ -71,12 +82,17 @@ test('admin : cinq rubriques responsive, quotas, catalogue, demandes et déconne
   await expect(page.getByRole('heading', { name: `${name} · retirée` })).toBeVisible();
   await page.getByRole('button', { name: `Restaurer ${name}`, exact: true }).click();
   await confirm(page);
+  await navigation.getByRole('button', { name: 'Demandes', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Demandes des utilisateurs' })).toBeVisible();
   await page.getByLabel('Réponse au foyer').fill('Merci, demande étudiée.');
   await page.getByRole('combobox', { name: 'Statut', exact: true }).selectOption('planned');
   await page.getByRole('button', { name: 'Enregistrer la réponse' }).click();
   await confirm(page);
   await expect(page.getByLabel('Réponse au foyer')).toHaveValue('Merci, demande étudiée.');
+  await navigation.getByRole('button', { name: 'Journal', exact: true }).click();
   await expect(page.getByText('admin.request-update', { exact: true }).first()).toBeVisible();
+  await navigation.getByRole('button', { name: 'Sauvegardes', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Sauvegarde du serveur' })).toBeVisible();
   await fits(page);
 
   const persistence = await page.evaluate(async () => ({
@@ -116,10 +132,53 @@ test('admin : mentions légales publiées sur les pages publiques', async ({ pag
   await expect(page.getByText('Le serveur de l’application est hébergé en France.')).toBeVisible();
 });
 
+test('admin : consulter une erreur, expliquer et relancer une analyse sans modifier la recette', async ({ page }, testInfo) => {
+  await login(page);
+  const name = `Gratin à relancer ${testInfo.project.name}`;
+  const original = await (await page.request.get(`/api/admin/analyses?search=${encodeURIComponent(name)}`)).json();
+  expect(original.entries).toHaveLength(1);
+  await page.getByRole('button', { name: /En erreur/ }).click();
+  await expect(page.getByRole('button', { name: 'En erreur', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByText('Que fait une analyse ?', { exact: true }).click();
+  await expect(page.getByText(/Chaque tentative compte dans les quotas/)).toBeVisible();
+  await page.getByLabel('Rechercher une fiche, un foyer ou une erreur').fill(name);
+  await page.getByRole('button', { name: 'Rechercher', exact: true }).click();
+  await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Ouvrir la fiche' })).toHaveCount(1);
+  await page.getByRole('button', { name: 'Ouvrir la fiche' }).click();
+  const sheet = page.getByRole('dialog', { name: 'Fiche de l’analyse' });
+  await expect(sheet.getByText('Le fournisseur IA a refusé la demande de test.', { exact: true })).toBeVisible();
+  await expect(sheet.getByText('500 g de pommes de terre', { exact: true })).toBeVisible();
+  await expect(sheet.getByText('Cuire les pommes de terre au four.', { exact: true })).toBeVisible();
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+  await page.setViewportSize({ width: 320, height: 800 });
+  await fits(page);
+  await sheet.getByRole('button', { name: 'Relancer l’IA' }).click();
+  const confirmation = page.getByRole('dialog', { name: 'Relancer l’analyse', exact: true });
+  await expect(confirmation).toContainText('consommera un appel');
+  await confirmation.getByRole('button', { name: 'Annuler', exact: true }).click();
+  await expect(sheet).toBeVisible();
+  await sheet.getByRole('button', { name: 'Relancer l’IA' }).click();
+  await confirm(page);
+  await expect(page.getByRole('status')).toContainText('Analyse remise en attente');
+  const updated = await (await page.request.get(`/api/admin/analyses?search=${encodeURIComponent(name)}`)).json();
+  expect(updated.entries[0].analysis.status).toBe('pending');
+  expect(updated.entries[0].analysis.analysisKey).not.toBe(original.entries[0].analysis.analysisKey);
+  expect(updated.entries[0].dish.sourceRecipe).toEqual(original.entries[0].dish.sourceRecipe);
+  await page.getByRole('button', { name: 'Toutes', exact: true }).click();
+  await page.getByLabel('Rechercher une fiche, un foyer ou une erreur').fill('Soupe archivée');
+  await page.getByRole('button', { name: 'Rechercher', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Ouvrir la fiche' })).toHaveCount(1);
+  await page.getByRole('button', { name: 'Ouvrir la fiche' }).click();
+  await expect(sheet.getByRole('button', { name: 'Relancer l’IA' })).toBeDisabled();
+  await expect(sheet).toContainText('archivée');
+  await fits(page);
+});
+
 test('admin : messages ciblés et globaux, fermeture persistante entre appareils', async ({ page, context, browser }) => {
   await login(page);
   const navigation = page.getByRole('navigation', { name: 'Administration', exact: true });
-  await navigation.getByRole('button', { name: 'Utilisateurs / foyers' }).click();
+  await navigation.getByRole('button', { name: 'Utilisateurs', exact: true }).click();
   await page.getByRole('button', { name: 'Envoyer un message à Admin Test', exact: true }).click();
   const text = `Bienvenue !\nMessage ciblé ${crypto.randomUUID()}\n<script>alert("texte brut")</script>`;
   await page.getByLabel('Message', { exact: true }).fill(text);
@@ -159,7 +218,7 @@ test('admin : messages ciblés et globaux, fermeture persistante entre appareils
     await expect(page.getByRole('dialog', { name: 'Message de l’administration' })).toHaveCount(0);
 
     await page.goto('/admin');
-    await page.getByRole('navigation', { name: 'Administration', exact: true }).getByRole('button', { name: 'Utilisateurs / foyers' }).click();
+    await page.getByRole('navigation', { name: 'Administration', exact: true }).getByRole('button', { name: 'Utilisateurs', exact: true }).click();
     await page.getByRole('button', { name: 'Envoyer un message à tous', exact: true }).click();
     const broadcast = `Annonce générale ${crypto.randomUUID()}`;
     await page.getByLabel('Message', { exact: true }).fill(broadcast);
@@ -184,7 +243,7 @@ test('admin : refus des comptes ordinaires, absence de cache et retrait des donn
   expect((await page.request.get('/api/admin/users')).status()).toBe(403);
   await login(page);
   await expect(page.getByRole('navigation', { name: 'Administration', exact: true })).toBeVisible();
-  await page.getByRole('navigation').getByRole('button', { name: 'Utilisateurs / foyers' }).click();
+  await page.getByRole('navigation').getByRole('button', { name: 'Utilisateurs', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Comptes inscrits' })).toBeVisible();
   await context.setOffline(true);
   await expect(page.getByRole('navigation', { name: 'Administration', exact: true })).toHaveCount(0);

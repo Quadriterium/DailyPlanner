@@ -15,6 +15,7 @@ import {
 import { newId } from './id';
 import { catalogEntries, syncCatalog } from './catalog';
 import { applyRequiredClientUpdate } from './pwa';
+import { forgetPushDevice } from './push';
 
 export type AuthMode = 'unknown' | 'disabled' | 'guest' | 'signed-in' | 'expired' | 'revoked';
 export interface AuthState { mode: AuthMode; user: SessionUser | null; space: SessionSpace | null }
@@ -749,6 +750,7 @@ export async function signOut(): Promise<number> {
   await Promise.allSettled([...saving]);
   if (state.auth.mode === 'signed-in') await sendOutbox().catch(() => { /* Reported by the returned count. */ });
   const waiting = state.pending;
+  if (state.auth.mode === 'signed-in') await forgetPushDevice();
   await call('/api/auth/logout', 'POST', undefined, 'Serveur inaccessible. La déconnexion nécessite le réseau.');
   await enter({ mode: 'guest', user: null, space: null });
   return waiting;

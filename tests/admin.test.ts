@@ -11,11 +11,11 @@ import { Accounts } from '../server/auth/accounts';
 import { hashToken } from '../server/auth/tokens';
 import { backupDatabase } from '../server/maintenance';
 import {
-  adminAiSchema, adminAuditSchema, adminCatalogSchema, adminLegalSchema, adminLifetime, adminOverviewSchema,
+  adminAiSchema, adminAnalysesSchema, adminAuditSchema, adminCatalogSchema, adminLegalSchema, adminLifetime, adminOverviewSchema,
   adminRequestsSchema, adminSessionSchema, adminSpacesSchema, adminUsersSchema, defaultLegalInfo,
 } from '../shared/admin';
 import { commonSpaceId, parisDate, syncResponseSchema } from '../shared/model';
-import { details, dish } from './fixtures';
+import { details, dish, meal } from './fixtures';
 import { sentMessageSchema, userMessagesSchema } from '../shared/messages';
 
 const origin = 'http://localhost:3000';
@@ -94,7 +94,8 @@ describe('droits administrateur et connexion Google', () => {
   it('refuse tous les appels protégés anonymes, ordinaires et non administrateurs', async () => {
     const otherCookies = { atable_session: accounts.createSession(otherId).token };
     for (const request of [
-      ...['overview', 'users', 'spaces', 'ai', 'catalog', 'requests', 'audit', 'legal'].map(path => ({ method: 'GET' as const, url: `/api/admin/${path}` })),
+      ...['overview', 'users', 'spaces', 'ai', 'analyses', 'catalog', 'requests', 'audit', 'legal'].map(path => ({ method: 'GET' as const, url: `/api/admin/${path}` })),
+      { method: 'POST' as const, url: `/api/admin/analyses/common/${randomUUID()}/retry`, payload: {} },
       { method: 'PATCH' as const, url: '/api/admin/legal', payload: { info: defaultLegalInfo, expectedUpdatedAt: 0, confirm: true } },
       { method: 'PATCH' as const, url: '/api/admin/ai', payload: { paused: true, dailyLimit: null, monthlyLimit: null, hourlyLimit: null, confirm: true } },
       { method: 'PATCH' as const, url: `/api/admin/spaces/${accounts.membership(otherId)!.id}/ai`, payload: {} },
@@ -149,6 +150,9 @@ describe('droits administrateur et connexion Google', () => {
       const journal = adminAuditSchema.parse((await app.inject({ url: '/api/admin/audit', cookies })).json());
       expect(journal.entries[0]).toMatchObject({ action: 'admin.message-send', target: otherId });
       expect(journal.entries[0].details).not.toContain('Bienvenue');
+      // Without VAPID keys the notification option is accepted but reaches nobody.
+      const withPush = sentMessageSchema.parse((await write('/api/admin/messages', { text: 'Avec notification', userId: otherId, confirm: true, push: true })).json());
+      expect(withPush.pushed).toBe(0);
     });
     it('envoie à tous les inscrits, indépendamment des fermetures et sans inclure les futurs comptes', async () => {
       const otherCookies = { atable_session: accounts.createSession(otherId).token };
@@ -326,7 +330,7 @@ describe('rubriques et mutations', () => {
   it('retourne les contrats attendus sans cache ni secrets', async () => {
     for (const [path, schema] of [
       ['overview', adminOverviewSchema], ['users', adminUsersSchema], ['spaces', adminSpacesSchema],
-      ['ai', adminAiSchema], ['catalog', adminCatalogSchema], ['requests', adminRequestsSchema], ['audit', adminAuditSchema],
+      ['ai', adminAiSchema], ['analyses', adminAnalysesSchema], ['catalog', adminCatalogSchema], ['requests', adminRequestsSchema], ['audit', adminAuditSchema],
     ] as const) {
       const response = await app.inject({ url: `/api/admin/${path}`, cookies });
       expect(response.statusCode).toBe(200);
@@ -370,6 +374,178 @@ describe('rubriques et mutations', () => {
     expect(store.featureRequests(space.id)[0]).toMatchObject({ status: 'planned', note: 'Prévu prochainement' });
     expect(store.featureRequests(accounts.membership(adminId)!.id)).toHaveLength(0);
     expect((await write(`/api/admin/requests/${item.id}`, payload, 'PATCH')).statusCode).toBe(409);
+  });
+});
+
+describe('analyses administrateur', () => {
+  const retryUrl = (spaceId: string, dishId: string) => `/api/admin/analyses/${spaceId}/${dishId}/retry`;
+  function retryBody(spaceId: string, dishId: string) {
+    const analysis = store.analysis(spaceId, dishId)!;
+    return { expectedAnalysisKey: analysis.analysisKey, expectedUpdatedAt: analysis.updatedAt, confirm: true };
+  }
+  async function list(query = '') {
+    const response = await app.inject({ url: `/api/admin/analyses${query}`, cookies });
+    expect(response.statusCode).toBe(200);
+    return adminAnalysesSchema.parse(response.json());
+  }
+  it('recherche noms, foyers et erreurs, filtre les statuts et pagine sans analyses orphelines', async () => {
+    const space = accounts.membership(otherId)!;
+    store.db.prepare('UPDATE spaces SET name = ? WHERE id = ?').run('Foyer paginé', space.id);
+    const dishes = Array.from({ length: 53 }, (_, i) => dish({ name: `Plat ${i}`, modifiedAt: clock + i }));
+    store.merge(space.id, dishes);
+    const statuses = ['pending', 'processing', 'error', 'ready'] as const;
+    dishes.forEach((item, i) => store.copyAnalysis(space.id, {
+      ...store.analysis(space.id, item.id)!, status: statuses[i % 4],
+      updatedAt: clock + i, error: i === 2 ? 'Erreur réseau particulière' : null,
+      ...(i === 3 ? { name: 'Nom corrigé unique' } : {}),
+    }));
+    store.copyAnalysis(space.id, {
+      dishId: randomUUID(), analysisKey: randomUUID(), status: 'pending', details: null, error: null, updatedAt: clock + 999,
+    });
+    expect(await list()).toMatchObject({ more: true, entries: expect.any(Array) });
+    expect((await list()).entries).toHaveLength(50);
+    expect((await list('?offset=50')).entries).toHaveLength(3);
+    expect((await list('?offset=50')).more).toBe(false);
+    expect((await list('?search=FOYER%20PAGIN')).entries).toHaveLength(50);
+    expect((await list('?search=Plat%2052')).entries.map(entry => entry.dish.id)).toEqual([dishes[52].id]);
+    expect((await list('?search=particuli')).entries.map(entry => entry.dish.id)).toEqual([dishes[2].id]);
+    expect((await list('?search=nom%20corrig')).entries.map(entry => entry.dish.id)).toEqual([dishes[3].id]);
+    for (const status of statuses) {
+      const entries = (await list(`?status=${status}`)).entries;
+      expect(entries.length).toBeGreaterThan(0);
+      expect(entries.every(entry => entry.analysis.status === status)).toBe(true);
+    }
+    expect((await list('?status=error&search=Plat%2052')).entries).toEqual([]);
+    for (const query of ['?status=unknown', '?offset=-1', '?offset=1.5', '?unexpected=true']) {
+      expect((await app.inject({ url: `/api/admin/analyses${query}`, cookies })).statusCode).toBe(400);
+    }
+  });
+  it.each(['recipe', 'url'] as const)('relance atomiquement avec audit et version LWW, conserve source %s et planning, publie en sync', async source => {
+    const spaceId = accounts.membership(adminId)!.id;
+    const item = dish({
+      modifiedAt: clock + 100_000,
+      ...(source === 'url' ? { sourceUrl: 'https://example.org/recette' } :
+        { sourceRecipe: { ingredients: ['Poulet'], recipe: 'Cuire complètement.', servings: 4 } }),
+    });
+    const planned = meal({ dishId: item.id, text: 'Texte du planning inchangé' });
+    store.merge(spaceId, [item, planned]);
+    store.copyAnalysis(spaceId, { ...store.analysis(spaceId, item.id)!, status: 'error', error: 'Échec ancien', name: 'Ancien nom' });
+    const body = retryBody(spaceId, item.id);
+    const recordsBefore = store.db.prepare('SELECT key, data FROM records WHERE space_id = ? AND key != ? ORDER BY key')
+      .all(spaceId, `dish:${item.id}`);
+    const callsBefore = store.capabilities();
+    expect((await write(retryUrl(spaceId, item.id), body)).json()).toEqual({ ok: true });
+    const updated = store.get(spaceId, `dish:${item.id}`)!;
+    expect(updated).toMatchObject({ ...item, modifiedAt: item.modifiedAt + 1, analysisKey: expect.any(String), mutationId: expect.any(String) });
+    expect(updated.mutationId).not.toBe(item.mutationId);
+    expect(updated.type === 'dish' && updated.analysisKey).not.toBe(item.analysisKey);
+    const analysis = store.analysis(spaceId, item.id)!;
+    expect(analysis).toEqual({
+      dishId: item.id, analysisKey: updated.type === 'dish' ? updated.analysisKey : '', status: 'pending',
+      details: null, error: null, updatedAt: expect.any(Number),
+    });
+    expect(store.capabilities()).toEqual(callsBefore);
+    expect(store.db.prepare('SELECT key, data FROM records WHERE space_id = ? AND key != ? ORDER BY key')
+      .all(spaceId, `dish:${item.id}`)).toEqual(recordsBefore);
+    store.merge(spaceId, [item]);
+    expect(store.get(spaceId, `dish:${item.id}`)).toEqual(updated);
+    expect(store.finishAnalysis(spaceId, item, details, null)).toBe(false);
+    expect((await write(retryUrl(spaceId, item.id), body)).statusCode).toBe(409);
+    const snapshot = syncResponseSchema.parse((await app.inject({
+      method: 'POST', url: '/api/sync', cookies, payload: { mutations: [] },
+    })).json());
+    expect(snapshot.records).toContainEqual(updated);
+    expect(snapshot.records).toContainEqual(planned);
+    expect(snapshot.analyses).toContainEqual(analysis);
+    const auditRows = store.db.prepare("SELECT * FROM admin_audit WHERE action = 'admin.analysis-retry'").all();
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]).toMatchObject({ user_id: adminId, target: `${spaceId}/${item.id}` });
+    expect(JSON.stringify(auditRows)).not.toContain(config.OPENAI_API_KEY);
+  });
+  it('refuse clés et versions périmées, archives, détails manuels et traitements, sans écriture', async () => {
+    const spaceId = accounts.membership(otherId)!.id;
+    for (const state of ['key', 'timestamp', 'obsolete', 'archived', 'manual', 'processing', 'missing', 'deleted'] as const) {
+      const item = dish({ archived: state === 'archived', details: state === 'manual' ? details : null });
+      store.merge(spaceId, [item]);
+      const body = retryBody(spaceId, item.id);
+      if (state === 'key') body.expectedAnalysisKey = randomUUID();
+      if (state === 'timestamp') body.expectedUpdatedAt++;
+      if (state === 'obsolete') store.copyAnalysis(spaceId, { ...store.analysis(spaceId, item.id)!, analysisKey: randomUUID() });
+      if (state === 'processing') store.copyAnalysis(spaceId, { ...store.analysis(spaceId, item.id)!, status: 'processing' });
+      if (state === 'missing') store.db.prepare('DELETE FROM analyses WHERE space_id = ? AND dish_id = ?').run(spaceId, item.id);
+      if (state === 'deleted') store.db.prepare('DELETE FROM records WHERE space_id = ? AND key = ?').run(spaceId, `dish:${item.id}`);
+      const before = { records: store.records(spaceId), analyses: store.analyses(spaceId) };
+      expect((await write(retryUrl(spaceId, item.id), body)).statusCode).toBe(['missing', 'deleted'].includes(state) ? 404 : 409);
+      expect({ records: store.records(spaceId), analyses: store.analyses(spaceId) }).toEqual(before);
+      if (['obsolete', 'archived', 'manual', 'processing'].includes(state)) {
+        expect((await list(`?search=${encodeURIComponent(item.name)}`)).entries.find(entry => entry.dish.id === item.id))
+          .toMatchObject({ eligible: false, blockedReason: expect.any(String) });
+      }
+    }
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM admin_audit WHERE action = 'admin.analysis-retry'").get()!.n).toBe(0);
+  });
+  it('exige origine, CSRF, confirmation et corps stricts pour les relances', async () => {
+    const item = dish();
+    store.merge(commonSpaceId, [item]);
+    const url = retryUrl(commonSpaceId, item.id);
+    const body = retryBody(commonSpaceId, item.id);
+    for (const headers of [{ origin }, { origin: 'https://evil.example', 'x-admin-csrf': csrf }, { origin, 'x-admin-csrf': 'wrong' }]) {
+      expect((await app.inject({ method: 'POST', url, cookies, headers, payload: body })).statusCode).toBe(403);
+    }
+    for (const payload of [{ ...body, confirm: false }, { ...body, expectedAnalysisKey: 'invalid' }, { ...body, expectedUpdatedAt: -1 }, { ...body, extra: true }]) {
+      expect((await write(url, payload)).statusCode).toBe(400);
+    }
+    expect(store.get(commonSpaceId, `dish:${item.id}`)).toEqual(item);
+  });
+  it('annule si l’audit échoue et n’accepte qu’une seule relance concurrente', async () => {
+    const item = dish();
+    store.merge(commonSpaceId, [item]);
+    const analysis = store.analysis(commonSpaceId, item.id)!;
+    const url = retryUrl(commonSpaceId, item.id);
+    const body = retryBody(commonSpaceId, item.id);
+    store.db.exec(`CREATE TRIGGER reject_analysis_audit BEFORE INSERT ON admin_audit
+      WHEN NEW.action = 'admin.analysis-retry' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END;`);
+    expect((await write(url, body)).statusCode).toBe(500);
+    expect(store.get(commonSpaceId, `dish:${item.id}`)).toEqual(item);
+    expect(store.analysis(commonSpaceId, item.id)).toEqual(analysis);
+    store.db.exec('DROP TRIGGER reject_analysis_audit');
+    const responses = await Promise.all([write(url, body), write(url, body)]);
+    expect(responses.map(response => response.statusCode).sort()).toEqual([200, 409]);
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM admin_audit WHERE action = 'admin.analysis-retry'").get()!.n).toBe(1);
+  });
+  it('diagnostique sans réserver de quota et permet de remettre en file malgré pause ou quota', async () => {
+    const item = dish();
+    store.merge(commonSpaceId, [item]);
+    store.setGlobalAiPolicy({ paused: true, dailyLimit: null, monthlyLimit: null, hourlyLimit: null });
+    expect((await list()).entries[0]).toMatchObject({ eligible: true, blockedReason: expect.stringContaining('suspendus') });
+    expect((await write(retryUrl(commonSpaceId, item.id), retryBody(commonSpaceId, item.id))).statusCode).toBe(200);
+    store.setGlobalAiPolicy({ paused: false, dailyLimit: null, monthlyLimit: null, hourlyLimit: 0 });
+    expect((await list()).entries[0].blockedReason).toContain('horaire');
+    store.setGlobalAiPolicy({ paused: false, dailyLimit: null, monthlyLimit: null, hourlyLimit: null });
+    store.setSpaceAiPolicy(commonSpaceId, { dailyLimit: 0, monthlyLimit: null });
+    expect((await list()).entries[0]).toMatchObject({ eligible: true, blockedReason: expect.stringContaining('0 requêtes') });
+    expect((await write(retryUrl(commonSpaceId, item.id), retryBody(commonSpaceId, item.id))).statusCode).toBe(200);
+    const settings = store.settings(commonSpaceId);
+    store.merge(commonSpaceId, [{ ...settings, model: 'not-allowed', modifiedAt: clock, mutationId: randomUUID() }]);
+    expect((await list()).entries[0].blockedReason).toContain('Modèle');
+    const originalKey = store.config.OPENAI_API_KEY;
+    store.config.OPENAI_API_KEY = '';
+    expect((await list()).entries[0].blockedReason).toContain('Clé OpenAI');
+    store.config.OPENAI_API_KEY = originalKey;
+    expect(store.capabilities().callsToday).toBe(0);
+    expect(store.analysis(commonSpaceId, item.id)?.status).toBe('pending');
+  });
+  it('masque les secrets des erreurs renvoyées sans modifier les données enregistrées', async () => {
+    const item = dish();
+    store.merge(commonSpaceId, [item]);
+    const error = `Erreur ${config.OPENAI_API_KEY} Bearer abcsecret sk-proj-othersecret api_key=other-secret cookie=private`;
+    store.copyAnalysis(commonSpaceId, { ...store.analysis(commonSpaceId, item.id)!, status: 'error', error });
+    const entry = (await list()).entries[0];
+    for (const secret of [config.OPENAI_API_KEY, 'abcsecret', 'sk-proj-othersecret', 'other-secret', 'private']) {
+      expect(entry.analysis.error).not.toContain(secret);
+    }
+    expect(entry.analysis.error).toContain('[secret masqué]');
+    expect(store.analysis(commonSpaceId, item.id)!.error).toBe(error);
   });
 });
 
