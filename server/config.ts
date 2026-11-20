@@ -22,6 +22,7 @@ const envSchema = z.object({
     .refine(value => /^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 365, 'AUTH_SESSION_DAYS doit être un entier de 1 à 365.')
     .transform(Number),
   TRUSTED_PROXY: z.enum(['none', 'cloudflare'], { error: 'TRUSTED_PROXY doit valoir none ou cloudflare.' }).default('none'),
+  LOG_DIR: z.string().trim().default(''),
   VAPID_PUBLIC_KEY: z.string().trim().default(''),
   VAPID_PRIVATE_KEY: z.string().trim().default(''),
   VAPID_SUBJECT: z.string().trim().default(''),

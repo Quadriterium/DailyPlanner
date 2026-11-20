@@ -36,7 +36,7 @@ export async function registerAdmin(app: FastifyInstance, store: Store, config: 
   function recordAction(request: FastifyRequest, action: string, target: string, details: object) {
     store.db.prepare('INSERT INTO admin_audit (user_id, action, target, details, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(request.auth.user!.id, action, target, JSON.stringify(details), now());
-    audit(request, action, `administration : ${action}`, { target });
+    audit(request, action, `administration : ${action}`, { target }, config.TRUSTED_PROXY);
   }
   function mutate<T>(request: FastifyRequest, action: string, target: string, details: object, work: () => T): T {
     return store.transaction(() => {

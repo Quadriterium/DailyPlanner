@@ -44,7 +44,7 @@ PORT=3000
 PUBLIC_ORIGIN=http://IP_DU_PC:3000
 ```
 
-Reconstruire avec `npm run build`, puis arrêter le serveur existant avec `Ctrl+C` et le relancer avec `npm start`. Sur le téléphone connecté au même réseau, ouvrir **http://IP_DU_PC:3000**. Cette origine exacte est autorisée pour la synchronisation ; utiliser aussi cette adresse sur le PC pendant l’essai. Si l’IP change, mettre à jour `PUBLIC_ORIGIN` et redémarrer.
+Remplacer `IP_DU_PC` par l’adresse IPv4 locale du PC, puis reconstruire avec `npm run build`, arrêter le serveur existant avec `Ctrl+C` et le relancer avec `npm start`. Sur le téléphone connecté au même réseau, ouvrir `http://IP_DU_PC:3000` avec la même adresse réelle. Cette origine exacte est autorisée pour la synchronisation ; utiliser aussi cette adresse sur le PC pendant l’essai. Si l’IP change, mettre à jour `PUBLIC_ORIGIN` et redémarrer.
 
 Si le pare-feu Windows bloque les connexions, créer une règle entrante **limitée au sous-réseau local**, dans un PowerShell administrateur :
 
@@ -66,7 +66,7 @@ Sur HTTP LAN, les données restent sauvegardées dans IndexedDB et la saisie/syn
 npm run dev
 ```
 
-Client : http://localhost:5173 ; API : `PORT` de `.env` (3000 par défaut), via le proxy Vite. Les modifications sont rechargées automatiquement : remplacement à chaud pour l’interface (Vite), redémarrage de l’API (`tsx watch`). Arrêter d’abord `npm start` s’il occupe déjà ce port. Si `HOST=0.0.0.0`, le client de développement est aussi accessible sur le réseau local (http://IP_DU_PC:5173, ouvrir le port 5173 dans le pare-feu). Le service worker est volontairement absent en développement ; tester le mode hors ligne avec le **build de production**.
+Client : http://localhost:5173 ; API : `PORT` de `.env` (3000 par défaut), via le proxy Vite. Les modifications sont rechargées automatiquement : remplacement à chaud pour l’interface (Vite), redémarrage de l’API (`tsx watch`). Arrêter d’abord `npm start` s’il occupe déjà ce port. Si `HOST=0.0.0.0`, le client de développement est aussi accessible sur le réseau local à `http://IP_DU_PC:5173` (remplacer `IP_DU_PC` par l’IP locale et ouvrir le port 5173 dans le pare-feu). Le service worker est volontairement absent en développement ; tester le mode hors ligne avec le **build de production**.
 
 ## Utilisation
 
@@ -352,7 +352,7 @@ ni serveur proxy supplémentaire. Il est destiné à l’usage public avec
 
 Configurer le Planificateur de tâches Windows pour lancer le serveur au démarrage :
 
-- `powershell.exe -NoProfile -File <DOSSIER_INSTALLATION>\scripts\start.ps1`, avec un compte dédié disposant des droits nécessaires ;
+- `powershell.exe -NoProfile -File "<DOSSIER_INSTALLATION>\scripts\start.ps1"`, en remplaçant le chemin par celui du dossier d’installation et en utilisant un compte dédié disposant des droits nécessaires ;
 
 `cloudflared` est installé comme service Windows lors de la configuration du tunnel
 et démarre automatiquement. Activer le redémarrage de la tâche serveur en cas
@@ -360,8 +360,13 @@ d’échec ; empêcher la mise en veille du PC si une synchronisation permanente
 souhaitée. Un redémarrage serveur n’interrompt pas la consultation/saisie des
 clients déjà mis en cache.
 
-**Journal du serveur** : les requêtes réussies ne sont plus journalisées une à une. La console liste les actions des utilisateurs (champ `action`), attribuées à leur adresse e-mail (`anonyme` sans comptes) avec leur IP : connexion, déconnexion, modifications synchronisées (repas, fiches, paramètres), suggestions générées, demandes d’évolution, gestion du foyer et des invitations. Les appels d’API refusés (4xx) ou en échec (5xx) restent journalisés avec leur auteur.
+**Journal du serveur** : les requêtes réussies ne sont plus journalisées une à une. La console liste les actions des utilisateurs (champ `action`), attribuées à leur adresse e-mail (`anonyme` sans comptes) avec leur IP : connexion, déconnexion, modifications synchronisées (repas, fiches, paramètres), suggestions générées, demandes d’évolution, gestion du foyer et des invitations. Les appels d’API refusés (4xx) ou en échec (5xx) restent journalisés avec leur auteur. Avec `TRUSTED_PROXY=cloudflare`, l’IP du visiteur est lue depuis `CF-Connecting-IP` uniquement quand la connexion provient de `cloudflared` en local ; sans ce réglage, les journaux indiquent l’adresse de connexion directe (souvent `127.0.0.1` avec le tunnel).
 
+**Fichiers de journal** : définir `LOG_DIR` dans `.env` (par exemple `LOG_DIR=C:\apps\a-table\logs`, ou un chemin relatif au dossier de lancement) pour copier aussi les journaux dans un fichier par jour, `a-table-AAAA-MM-JJ.log` (date de Paris, une ligne JSON par entrée). Chaque fichier est plafonné à 5 Mo : une fois la limite atteinte, une dernière ligne le signale et la suite de la journée ne s’affiche plus que sur la console. Les anciens fichiers ne sont pas supprimés automatiquement. Le serveur ne publie que `dist/client` et refuse de démarrer si `LOG_DIR` s’y trouve : les journaux ne sont pas accessibles par une requête HTTP. Sans `LOG_DIR`, les journaux vont seulement sur la console.
+
+Une tâche planifiée peut démarrer le serveur de production avec le script
+`scripts\start.ps1`. Configurez son compte, son dossier de travail, ses conditions
+de démarrage et sa stratégie de redémarrage selon l’installation.
 
 ### Séparer le dépôt et la production (Windows)
 
@@ -376,9 +381,8 @@ npm run deploy
 ```
 
 La commande sauvegarde d’abord la base, puis demande l’arrêt du serveur et de son
-démarrage automatique. Désactivez la tâche, par exemple avec
-`Disable-ScheduledTask -TaskName NOM_DE_LA_TACHE`, arrêtez le processus Node et
-confirmez ; le build n’est lancé qu’après vérification que le port est libre. Les
+démarrage automatique. Désactivez la tâche planifiée du serveur, arrêtez le
+processus Node et confirmez ; le build n’est lancé qu’après vérification que le port est libre. Les
 déploiements suivants sauvegardent la base dans `backups\` et conservent les anciens
 builds dans `releases\`. Le fichier `.env` de production n’est pas écrasé ; lors du
 premier déploiement, son `DATABASE_PATH` est isolé dans le dossier de production.
@@ -390,7 +394,7 @@ Le script reste compatible avec Windows PowerShell 5.1 sans `Get-FileHash` :
 la comparaison des dépendances utilise SHA-256 via .NET. Conserver son encodage
 UTF-8 avec BOM pour afficher correctement les accents dans Windows PowerShell.
 
-Configurez le `.env` du dépôt pour le développement avec
+Pour le développement, configurez le `.env` du dépôt avec
 `HOST=127.0.0.1`, `PORT=3001` et `DATABASE_PATH=./data/dev.sqlite` ; gardez la clé
 OpenAI vide et ne définissez pas `PUBLIC_ORIGIN` en développement. `npm run dev`
 utilisera ainsi une API et une base distinctes ; la production gardera son port et
@@ -435,7 +439,7 @@ npm run build
 npx playwright install chromium firefox
 npm run test:e2e
 # Vérification HTTP sur une véritable origine non sécurisée (IP locale du PC) :
-$env:E2E_HOST = 'IP_DU_PC'
+$env:E2E_HOST = 'IP_DU_PC' # Remplacer par l'IP locale du PC de test.
 npm run test:e2e -- --project=pixel-chrome --grep='HTTP LAN'
 Remove-Item Env:E2E_HOST
 ```

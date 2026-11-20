@@ -319,10 +319,10 @@ Contraintes Google à respecter
 ([règles de validation](https://developers.google.com/identity/protocols/oauth2/web-server#uri-validation)) :
 
 - HTTPS obligatoire, sauf `localhost` ;
-- **pas d'adresse IP brute** : `http://IP_DU_PC:3000` est refusé ;
+- **pas d'adresse IP brute** : `http://192.0.2.1:3000` est refusé ;
 - pas de fragment, pas de joker, correspondance exacte.
 
-Conséquence : l'essai Wi-Fi HTTP actuel (`http://IP_DU_PC:3000`) **ne permet pas** la
+Conséquence : un essai Wi-Fi HTTP avec une adresse IP (`http://192.0.2.1:3000`) **ne permet pas** la
 connexion Google. Sur téléphone, il faut le domaine HTTPS (Cloudflare Tunnel, section 4). Sur
 le PC, `http://localhost:3000` suffit.
 
@@ -638,9 +638,10 @@ ce qui le rend reprenable après une coupure.
 ### 8.7 Sécurité transversale
 
 - Conserver la vérification d'origine actuelle pour toutes les méthodes non `GET`.
-- `TRUSTED_PROXY=cloudflare` : `keyGenerator` du limiteur de débit = `CF-Connecting-IP` si et
-  seulement si l'adresse source est `127.0.0.1` ou `::1` ; sinon l'adresse source. Sans cela,
-  tous les utilisateurs du tunnel partagent la même limite.
+- `TRUSTED_PROXY=cloudflare` : le limiteur de débit et les journaux utilisent
+  `CF-Connecting-IP` si et seulement si l'adresse source est `127.0.0.1`, `::1` ou
+  `::ffff:127.0.0.1` ; sinon ils utilisent l'adresse source. Sans cela, tous les utilisateurs
+  du tunnel partagent la même limite et les journaux indiquent généralement `127.0.0.1`.
 - Jetons (session, transaction, invitation) : `randomBytes(32)`, stockage et comparaison par
   hachage SHA-256.
 - Journaux : ne jamais journaliser cookies, jetons, codes OAuth (la query du retour Google

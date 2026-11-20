@@ -166,7 +166,7 @@ export function registerAuth(app: FastifyInstance, store: Store, config: Config,
     const who = { user: profile.email ?? profile.name };
     if (transaction.returnTo === '/admin') {
       if (!isAdminUser(store, config, result.userId)) {
-        audit(request, 'admin.login-denied', 'connexion admin refusée', who);
+        audit(request, 'admin.login-denied', 'connexion admin refusée', who, config.TRUSTED_PROXY);
         return redirect('/admin?auth=error&reason=forbidden');
       }
       store.transaction(() => {
@@ -175,14 +175,14 @@ export function registerAuth(app: FastifyInstance, store: Store, config: Config,
         store.db.prepare('INSERT INTO admin_audit (user_id, action, target, details, created_at) VALUES (?, ?, ?, ?, ?)')
           .run(result.userId, 'admin.login', result.userId, '{}', now());
       });
-      audit(request, 'admin.login', 'connexion admin (30 minutes)', who);
+      audit(request, 'admin.login', 'connexion admin (30 minutes)', who, config.TRUSTED_PROXY);
       return redirect('/admin?auth=ok');
     }
     if (result.invitationFailed) {
-      audit(request, 'auth.login', 'connexion (invitation invalide)', who);
+      audit(request, 'auth.login', 'connexion (invitation invalide)', who, config.TRUSTED_PROXY);
       return redirect('/?auth=error&reason=invitation_invalid');
     }
-    audit(request, 'auth.login', result.joined ? 'connexion et arrivée dans un foyer invité' : 'connexion', who);
+    audit(request, 'auth.login', result.joined ? 'connexion et arrivée dans un foyer invité' : 'connexion', who, config.TRUSTED_PROXY);
     return redirect(result.joined ? '/?auth=ok&joined=1' : '/?auth=ok');
   });
 
@@ -190,7 +190,7 @@ export function registerAuth(app: FastifyInstance, store: Store, config: Config,
     const token = request.cookies[names.session];
     if (token && tokenSchema.safeParse(token).success) accounts.deleteSession(token);
     reply.clearCookie(names.session, cookieOptions);
-    if (request.auth.user) audit(request, 'auth.logout', 'déconnexion');
+    if (request.auth.user) audit(request, 'auth.logout', 'déconnexion', {}, config.TRUSTED_PROXY);
     return { ok: true };
   });
 
@@ -216,7 +216,7 @@ export function registerAuth(app: FastifyInstance, store: Store, config: Config,
     const parsed = renameSpaceRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Le nom du foyer doit contenir 1 à 60 caractères.' });
     accounts.renameSpace(access.spaceId, parsed.data.name);
-    audit(request, 'space.rename', `foyer renommé en « ${parsed.data.name} »`);
+    audit(request, 'space.rename', `foyer renommé en « ${parsed.data.name} »`, {}, config.TRUSTED_PROXY);
     return accounts.spaceDetails(access.spaceId, access.userId);
   });
 
@@ -225,7 +225,7 @@ export function registerAuth(app: FastifyInstance, store: Store, config: Config,
     if (!access) return reply;
     const invitation = accounts.createInvitation(access.spaceId, access.userId);
     if (!invitation) return reply.code(409).send({ error: 'Ce foyer a déjà 10 invitations actives. Révoquez-en une avant d’en créer une autre.' });
-    audit(request, 'invitation.create', 'lien d’invitation créé');
+    audit(request, 'invitation.create', 'lien d’invitation créé', {}, config.TRUSTED_PROXY);
     return reply.code(201).send({
       id: invitation.id, url: `${config.PUBLIC_ORIGIN}/#invitation=${invitation.token}`, expiresAt: invitation.expiresAt,
     });
@@ -237,7 +237,7 @@ export function registerAuth(app: FastifyInstance, store: Store, config: Config,
     const parsed = revokeInvitationRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Invitation invalide.' });
     if (!accounts.revokeInvitation(access.spaceId, parsed.data.id)) return reply.code(404).send({ error: 'Invitation introuvable.' });
-    audit(request, 'invitation.revoke', 'lien d’invitation révoqué');
+    audit(request, 'invitation.revoke', 'lien d’invitation révoqué', {}, config.TRUSTED_PROXY);
     return accounts.spaceDetails(access.spaceId, access.userId);
   });
 
@@ -249,7 +249,7 @@ export function registerAuth(app: FastifyInstance, store: Store, config: Config,
     if (parsed.data.userId === access.userId) return reply.code(400).send({ error: 'Pour partir vous-même, utilisez « Quitter le foyer ».' });
     const removed = accounts.spaceDetails(access.spaceId, access.userId).members.find(member => member.id === parsed.data.userId);
     if (!accounts.removeMember(access.spaceId, parsed.data.userId)) return reply.code(404).send({ error: 'Ce membre ne fait plus partie du foyer.' });
-    audit(request, 'space.remove-member', `membre retiré du foyer : ${removed?.email ?? removed?.name ?? parsed.data.userId}`);
+    audit(request, 'space.remove-member', `membre retiré du foyer : ${removed?.email ?? removed?.name ?? parsed.data.userId}`, {}, config.TRUSTED_PROXY);
     return accounts.spaceDetails(access.spaceId, access.userId);
   });
 
@@ -257,7 +257,7 @@ export function registerAuth(app: FastifyInstance, store: Store, config: Config,
     const access = household(request, reply);
     if (!access) return reply;
     accounts.leave(access.userId);
-    audit(request, 'space.leave', 'a quitté son foyer');
+    audit(request, 'space.leave', 'a quitté son foyer', {}, config.TRUSTED_PROXY);
     return { ok: true };
   });
 
@@ -280,7 +280,7 @@ export function registerAuth(app: FastifyInstance, store: Store, config: Config,
       error: 'Vous faites déjà partie d’un foyer qui contient des données ou d’autres membres. Confirmez pour le quitter.',
       code: 'confirmation_required',
     });
-    audit(request, 'invitation.accept', `a rejoint le foyer « ${result.space.name} »`);
+    audit(request, 'invitation.accept', `a rejoint le foyer « ${result.space.name} »`, {}, config.TRUSTED_PROXY);
     return sessionPayload(user, result.space, request.auth.sessionExpiresAt);
   });
 

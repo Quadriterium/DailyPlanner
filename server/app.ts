@@ -17,22 +17,16 @@ import type { Store } from './database.js';
 import { AiQuotaError } from './database.js';
 import type { Config } from './config.js';
 import { registerAuth, type AuthOptions } from './auth/routes.js';
-import { audit, describeMutations, loggedUrl, logFailedRequest } from './audit.js';
+import { audit, clientIp, describeMutations, loggedUrl, logFailedRequest } from './audit.js';
 import { registerAdmin } from './admin-routes.js';
 import { registerPush } from './push.js';
 import { privacyPage, termsPage } from './legal-pages.js';
 import { messageIdSchema, userMessagesSchema } from '../shared/messages.js';
-
-const loopback = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+import { consoleAndFile, DailyLogFile, isInside } from './log-file.js';
 
 /** Rate-limit key: CF-Connecting-IP only when the request comes from the local cloudflared and the proxy is trusted. */
 export function rateLimitKey(config: Pick<Config, 'TRUSTED_PROXY'>) {
-  return (request: Pick<FastifyRequest, 'headers' | 'ip'> & { socket: { remoteAddress?: string } }) => {
-    const remote = request.socket.remoteAddress ?? request.ip;
-    const forwarded = request.headers['cf-connecting-ip'];
-    if (config.TRUSTED_PROXY === 'cloudflare' && loopback.has(remote) && typeof forwarded === 'string' && forwarded.trim()) return forwarded.trim();
-    return remote;
-  };
+  return (request: Pick<FastifyRequest, 'headers' | 'ip'> & { socket: { remoteAddress?: string } }) => clientIp(request, config.TRUSTED_PROXY);
 }
 
 export { loggedUrl };
@@ -40,15 +34,25 @@ export { loggedUrl };
 const legalPages = { '/confidentialite': privacyPage, '/conditions-utilisation': termsPage };
 
 export async function buildApp(store: Store, config: Config, options: { logger?: boolean; staticRoot?: string; aiRequest?: typeof fetch } & AuthOptions = {}) {
+  const staticRoot = options.staticRoot ?? resolve('dist/client');
+  const logging = options.logger ?? true;
+  if (logging && config.LOG_DIR && isInside(config.LOG_DIR, staticRoot)) {
+    throw new Error('LOG_DIR ne doit pas se trouver dans le dossier publié par le serveur (dist/client).');
+  }
+  const logFile = logging && config.LOG_DIR ? new DailyLogFile(resolve(config.LOG_DIR)) : null;
   const app = Fastify({
-    logger: (options.logger ?? true) ? { serializers: { req: request => ({
-      method: request.method, url: loggedUrl(request.url), host: request.host, remoteAddress: request.ip, remotePort: request.socket?.remotePort,
+    logger: logging ? { ...(logFile ? { stream: consoleAndFile(logFile) } : {}), serializers: { req: request => ({
+      method: request.method, url: loggedUrl(request.url), host: request.host, remoteAddress: clientIp(request, config.TRUSTED_PROXY), remotePort: request.socket?.remotePort,
     }) } } : false,
     // Every successful request (assets, polling, sync) drowned the console: only user actions and failures are logged.
     logController: new LogController({ disableRequestLogging: true }),
     bodyLimit: 2 * 1024 * 1024,
   });
-  app.addHook('onResponse', async (request, reply) => logFailedRequest(request, reply));
+  app.addHook('onRequest', async request => {
+    request.log = request.log.child({ ip: clientIp(request, config.TRUSTED_PROXY) });
+  });
+  if (logFile) app.addHook('onClose', async () => logFile.close());
+  app.addHook('onResponse', async (request, reply) => logFailedRequest(request, reply, config.TRUSTED_PROXY));
   app.addHook('onSend', async (request, reply, payload) => {
     if (/^\/admin(?:[/?]|$)/.test(request.url) || request.url.startsWith('/api/admin/')) {
       reply.header('Cache-Control', 'no-store').header('X-Robots-Tag', 'noindex, nofollow');
@@ -117,7 +121,7 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     const candidates = catalogCandidates(catalog, { date, level, vegetarian, avoid: settings.avoid, excludedNames });
     if (candidates.length >= catalogDrawThreshold) {
       const entry = candidates[randomInt(candidates.length)];
-      audit(request, 'meal.generate', `suggestion du catalogue pour le ${date} : « ${entry.details.name} »`, { date, level, source: 'catalog' });
+      audit(request, 'meal.generate', `suggestion du catalogue pour le ${date} : « ${entry.details.name} »`, { date, level, source: 'catalog' }, config.TRUSTED_PROXY);
       return { details: entry.details, source: 'catalog', ...(entry.sourceUrl ? { sourceUrl: entry.sourceUrl } : {}) };
     }
     const comparable = catalogCandidates(catalog, { date, level, vegetarian, avoid: '', excludedNames: [] }).map(entry => entry.details.name);
@@ -145,7 +149,7 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
       }
       store.recordTokens(day, result.inputTokens, result.outputTokens, spaceId);
       if (!result.troll) store.addToCatalog(result.details, undefined, spaceId);
-      audit(request, 'meal.generate', `suggestion IA pour le ${date} : « ${result.details.name} »`, { date, level, source: 'ai' });
+      audit(request, 'meal.generate', `suggestion IA pour le ${date} : « ${result.details.name} »`, { date, level, source: 'ai' }, config.TRUSTED_PROXY);
       return { details: result.details, source: 'ai' };
     }
     if (proposedName && !vegetarian) return {
@@ -170,7 +174,7 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     try {
       const result = await refineShoppingList(parsed.data.lines, config, settings.model, AbortSignal.timeout(60_000), options.aiRequest);
       store.recordTokens(day, result.inputTokens, result.outputTokens, spaceId);
-      audit(request, 'shopping.refine', `liste de courses affinée (${parsed.data.lines.length} lignes)`, { lines: parsed.data.lines.length });
+      audit(request, 'shopping.refine', `liste de courses affinée (${parsed.data.lines.length} lignes)`, { lines: parsed.data.lines.length }, config.TRUSTED_PROXY);
       return { list: result.list };
     } catch (error) {
       request.log.error(error);
@@ -193,7 +197,7 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     if (!spaceId) return reply;
     const parsed = createFeatureRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Décrivez votre demande en 3 à 1 000 caractères.' });
-    audit(request, 'feature-request.create', `demande d’évolution : « ${parsed.data.text.slice(0, 120)} »`);
+    audit(request, 'feature-request.create', `demande d’évolution : « ${parsed.data.text.slice(0, 120)} »`, {}, config.TRUSTED_PROXY);
     return reply.code(201).send({ request: store.addFeatureRequest(spaceId, parsed.data.text, request.auth.user?.id ?? null) });
   });
   app.post('/api/sync', { config: { rateLimit: { max: 180, timeWindow: '1 minute' } } }, async (request, reply) => {
@@ -213,7 +217,7 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
     const stale = (parsed.data.resetId ?? null) !== resetId;
     const applied = stale ? mutations.filter(record => !isResetScoped(record)) : mutations;
     store.merge(spaceId, applied);
-    if (applied.length) audit(request, 'sync', describeMutations(applied), { mutations: applied.length });
+    if (applied.length) audit(request, 'sync', describeMutations(applied), { mutations: applied.length }, config.TRUSTED_PROXY);
     return {
       ...(config.CLIENT_UPDATE_ID ? { forceClientUpdate: config.CLIENT_UPDATE_ID } : {}),
       resetId, records: store.records(spaceId), analyses: store.analyses(spaceId),
@@ -226,7 +230,6 @@ export async function buildApp(store: Store, config: Config, options: { logger?:
       return reply.type('text/html; charset=utf-8').header('Cache-Control', 'no-cache').send(render(info, updatedAt));
     });
   }
-  const staticRoot = options.staticRoot ?? resolve('dist/client');
   if (existsSync(staticRoot)) {
     await app.register(staticFiles, {
       root: staticRoot,
